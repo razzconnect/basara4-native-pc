@@ -96,7 +96,7 @@ def main():
         shutil.copy2(REPO / "scripts" / name, scripts / name)
     shutil.rmtree(target / "launcher", ignore_errors=True)
     (target / "launcher").mkdir()
-    for name in ("basara4_launcher.py", "basara4_patches.py", "basara4.ico"):
+    for name in ("basara4_launcher.py", "basara4_patches.py", "basara4_dlc.py", "basara4.ico"):
         shutil.copy2(LAUNCHER / name, target / "launcher" / name)
 
     # documents

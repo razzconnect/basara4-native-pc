@@ -21,6 +21,7 @@ import sys
 import threading
 import urllib.request
 from pathlib import Path
+from basara4_dlc import scan_extracted_dlc
 
 FROZEN = getattr(sys, "frozen", False)
 ROOT = (Path(sys.executable) if FROZEN else Path(__file__)).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
@@ -657,20 +658,36 @@ class Launcher(tk.Tk):
     def open_dlc_manager(self):
         window = tk.Toplevel(self)
         window.title("Extracted Basara 4 DLC")
+        window.geometry("920x480")
+        window.minsize(720, 360)
         window.transient(self)
-        window.resizable(False, False)
-        path_var = tk.StringVar(value=self.cfg.get("dlc_dir", str(DEFAULT_DLC_DIR)))
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
         frame = ttk.Frame(window, padding=16)
-        frame.grid(sticky="nsew")
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
         ttk.Label(frame, text="DLC folder", style="Head.TLabel").grid(row=0, column=0, sticky="w")
-        path_entry = ttk.Entry(frame, textvariable=path_var, width=64, state="readonly")
-        path_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 12))
-        ttk.Label(
-            frame,
-            text="Choose the parent folder containing extracted DLC folders. Each DLC folder must be named "
-                 "with its 16-character entitlement label and contain sce_sys\\param.sfo.",
-            style="Muted.TLabel", wraplength=480,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        path_var = tk.StringVar(value=self.cfg.get("dlc_dir", str(DEFAULT_DLC_DIR)))
+        path_entry = ttk.Entry(frame, textvariable=path_var, state="readonly")
+        path_entry.grid(row=1, column=0, sticky="ew", pady=(8, 12))
+        table_frame = ttk.Frame(frame)
+        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = ("folder", "title", "content_id", "status")
+        table = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        for column, heading, width in (
+                ("folder", "ENTITLEMENT", 180), ("title", "DLC", 220),
+                ("content_id", "CONTENT ID", 300), ("status", "STATUS", 180)):
+            table.heading(column, text=heading)
+            table.column(column, width=width, minwidth=100, stretch=column in ("title", "content_id"))
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+        table.configure(yscrollcommand=scrollbar.set)
+        table.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        summary = ttk.Label(frame, text="", style="Muted.TLabel")
+        summary.grid(row=3, column=0, sticky="w", pady=(10, 0))
 
         def choose_folder():
             selected = filedialog.askdirectory(
@@ -684,6 +701,26 @@ class Launcher(tk.Tk):
             self.cfg["dlc_dir"] = str(selected_path.resolve())
             path_var.set(self.cfg["dlc_dir"])
             save_config(self.cfg)
+            refresh()
+
+        def refresh():
+            table.delete(*table.get_children())
+            try:
+                records = scan_extracted_dlc(path_var.get())
+            except OSError as error:
+                messagebox.showerror("Cannot scan DLC folder", str(error), parent=window)
+                return
+            ready = sum(info is not None for _path, info, _error in records)
+            invalid = len(records) - ready
+            for path, info, error in records:
+                if info:
+                    table.insert("", "end", values=(
+                        path.name, info["title"], info["content_id"], "READY"))
+                else:
+                    table.insert("", "end", values=(path.name, "", "", f"CHECK: {error}"))
+            summary.configure(text=f"{ready} DLC ready for the next game launch"
+                               + (f"  |  {invalid} need attention" if invalid else "")
+                               if records else "No extracted DLC found in this folder.")
 
         def open_folder():
             folder = Path(path_var.get())
@@ -694,10 +731,12 @@ class Launcher(tk.Tk):
                 messagebox.showerror("Cannot open DLC folder", str(error), parent=window)
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="ew")
+        buttons.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(buttons, text="Choose folder…", command=choose_folder).pack(side="left")
         ttk.Button(buttons, text="Open folder", command=open_folder).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Refresh", command=refresh).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
+        refresh()
 
     def _refresh_image_label(self):
         game = self.game_var.get().strip()
