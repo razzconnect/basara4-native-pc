@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <math.h>
 #include "third_party/LibAtrac9/C/src/libatrac9.h"
@@ -202,12 +203,40 @@ static ABI int32_t pthread_cancel_guest(void *thread) {
     return ORBIS_OK;
 }
 
-/* ---- AppContent: base game only, temporary data on /temp0 (user/temp0) ---- */
-static ABI int32_t addcont_mount(uint32_t label, const void *entitlement, char *mount_point) {
-    if (label>7 || !entitlement || !mount_point) return APP_CONTENT_PARAMETER;
-    return APP_CONTENT_NOT_FOUND; /* no add-on content is installed */
+/* ---- AppContent: extracted add-ons and temporary data on /temp0 ---- */
+typedef struct { char data[17]; char padding[3]; } EntitlementLabel;
+typedef struct { char data[16]; } AppContentMountPoint;
+static char dlc_directory[512];
+int runtime_offline_configure_dlc_dir(const char *path) {
+    if (!path || !*path || strlen(path)>=sizeof(dlc_directory)) return -1;
+    snprintf(dlc_directory,sizeof(dlc_directory),"%s",path);
+    return 0;
 }
-static ABI int32_t addcont_unmount(const char *mount_point) { return mount_point ? ORBIS_OK : APP_CONTENT_PARAMETER; }
+static ABI int32_t addcont_mount(uint32_t service_label, const EntitlementLabel *entitlement,
+                                AppContentMountPoint *mount_point) {
+    if (service_label>7 || !entitlement || !mount_point ||
+        !memchr(entitlement->data,'\0',sizeof(entitlement->data))) return APP_CONTENT_PARAMETER;
+    int index=runtime_content_addon_index(service_label,entitlement->data);
+    if (index<0 || !dlc_directory[0]) return APP_CONTENT_NOT_FOUND;
+    char guest[16], host[512];
+    int guest_size=snprintf(guest,sizeof(guest),"/addcont%d",index);
+    int host_size=snprintf(host,sizeof(host),"%s/%s",dlc_directory,entitlement->data);
+    struct stat status;
+    if (guest_size<0 || (size_t)guest_size>=sizeof(guest) || host_size<0 ||
+        (size_t)host_size>=sizeof(host) || stat(host,&status) || !S_ISDIR(status.st_mode))
+        return APP_CONTENT_NOT_FOUND;
+    if (runtime_file_mount(guest,host)) return APP_CONTENT_NOT_FOUND;
+    memset(mount_point,0,sizeof(*mount_point));
+    memcpy(mount_point->data,guest,(size_t)guest_size);
+    printf("Runtime: AppContent mounted %s -> %s\n",guest,host);
+    return ORBIS_OK;
+}
+static ABI int32_t addcont_unmount(const AppContentMountPoint *mount_point) {
+    if (!mount_point || !memchr(mount_point->data,'\0',sizeof(mount_point->data)))
+        return APP_CONTENT_PARAMETER;
+    runtime_file_unmount(mount_point->data);
+    return ORBIS_OK;
+}
 static ABI int32_t temp_mount2(uint32_t option, char *mount_point) {
     (void)option; /* FORMAT would wipe user/temp0: the game recreates what it needs anyway */
     if (!mount_point) return APP_CONTENT_PARAMETER;

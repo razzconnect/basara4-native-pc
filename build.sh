@@ -27,8 +27,8 @@ MINGW*|MSYS*)
         grep -v '^\[' out/gpu-build.log | tail -40 >&2
         echo 'Build failed (full log: out/gpu-build.log)' >&2; exit 1
     fi
-    cp out/gpu/spartanport-probe.exe out/gpu/spartanport-gpu-capabilities.exe out/gpu/spartanport-play.exe out/
-    echo "Built $PWD/out/spartanport-probe.exe"
+    cp out/gpu/basara4-core.exe out/gpu/spartanport-gpu-capabilities.exe out/gpu/spartanport-play.exe out/
+    echo "Built $PWD/out/basara4-core.exe"
     exit 0
     ;;
 esac

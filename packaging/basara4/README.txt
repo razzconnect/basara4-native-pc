@@ -37,11 +37,19 @@ Frame rates above 60
   This is experimental: the game scales its movement by real frame time, but if anything feels
   faster or glitchy, go back to 60. Turn VSync off, or the monitor refresh rate is the limit.
 
+Extracted DLC
+  Use "Manage extracted DLC..." to choose the parent folder containing one folder per add-on.
+  Each add-on folder must be named with its 16-character entitlement label and contain
+  sce_sys\param.sfo. Supported folders are available when the game starts. Raw PKG files are
+  not opened or decrypted.
+
 In-game menu
   Insert, or R3 + L2 on the controller. F12 takes a screenshot. L1/R1 or Q/E switch tabs.
 
 Controller
-  XInput and SDL-supported pads work directly. Any other pad: "Map controller" in the launcher.
+  XInput and SDL-supported pads work directly. "Map controller" can customize any pad, lets you
+  select one when multiple are connected, and keeps mappings for other pads. To make Xbox A act
+  as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
 
 Problems
   Attach user\last_run.log (and user\prepare.log if the preparation failed) to your report.

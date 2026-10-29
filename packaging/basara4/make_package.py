@@ -60,7 +60,7 @@ def main():
 
     # the controller mapper (SDL3 console program)
     msys(args.msys2, "clang tools/gamepad_mapper.c $(pkg-config --cflags sdl3) -lSDL3 -mconsole "
-                     "-o out/basara4-pad-mapper.exe")
+                     "-lxinput1_4 -o out/basara4-pad-mapper.exe")
 
     # the launcher executable
     work = REPO / "out/basara4-package"
@@ -96,7 +96,7 @@ def main():
         shutil.copy2(REPO / "scripts" / name, scripts / name)
     shutil.rmtree(target / "launcher", ignore_errors=True)
     (target / "launcher").mkdir()
-    for name in ("basara4_launcher.py", "basara4_patches.py", "basara4.ico"):
+    for name in ("basara4_launcher.py", "basara4_patches.py", "basara4_dlc.py", "basara4.ico"):
         shutil.copy2(LAUNCHER / name, target / "launcher" / name)
 
     # documents
