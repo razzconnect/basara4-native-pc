@@ -31,7 +31,7 @@ typedef struct stat HostStat;
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define MAX_FILES 1024
-#define MAX_MOUNTS 16
+#define MAX_MOUNTS 80
 
 typedef struct { int64_t sec, nsec; } GuestTimespec;
 typedef struct {
@@ -532,4 +532,3 @@ void runtime_file_report(void) {
     printf("Runtime: files opened=%zu, reads=%zu (%llu bytes), writes=%zu, not found=%zu\n",
            opens,reads,(unsigned long long)bytes_read,writes,missing);
 }
-

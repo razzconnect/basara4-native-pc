@@ -533,14 +533,7 @@ static void sample_host(PadData *d) {
     if (spartanportgpu_overlay_captures_input()) { drop_wheel(); return; } /* settings menu open: neutral input */
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     load_button_maps();
-    /* If exactly 1 gamepad is connected and 2 players are active, route that gamepad to P2 only,
-     * leaving P1 exclusively on Keyboard & Mouse to prevent one gamepad controlling both players. */
-    int gamepad_count=0;
-    SDL_JoystickID *gamepad_ids=SDL_GetGamepads(&gamepad_count);
-    if (gamepad_ids) SDL_free(gamepad_ids);
-    if (gamepad_count>1 || (gamepad_count==1 && !opened[1])) {
-        sample_gamepad(d,g);
-    }
+    sample_gamepad(d,g);
     /* The keyboard works with or without a gamepad: its buttons add to the pad's, and a stick
      * follows the keys only while one of them is held. */
     if (!k) return;
@@ -790,30 +783,12 @@ static void sample(PadData *d) {
     }
 }
 
-/* Local 2-player co-op (coop-local-2p): the game's original PS4 release is a
- * 1-2 player game, so this runtime exposes two pads.
- * Hybrid Controller x Keyboard+Mouse:
- *   - If only 1 gamepad is connected, Pad 1 uses Keyboard+Mouse (P1) and
- *     Pad 2 automatically uses that gamepad (P2), allowing Co-op with 1 Controller + KBM!
- *   - If 2 gamepads are connected:
- *       Gamepad 1 -> P1 (along with Keyboard/Mouse)
- *       Gamepad 2 -> P2
- */
-static SDL_Gamepad *current_gamepad_for_p2(void) {
-    int count=0;
-    SDL_JoystickID *ids=SDL_GetGamepads(&count);
-    if (ids) SDL_free(ids);
-    /* If exactly 1 gamepad is plugged in, assign it to P2 so P1 can use KBM */
-    if (count==1) return current_gamepad_for_slot(0);
-    return current_gamepad_for_slot(1);
-}
-
 static void sample_p2(PadData *d) {
     memset(d,0,sizeof(*d));
     d->left_x=d->left_y=d->right_x=d->right_y=128;
     d->orientation[3]=1.0f;
     d->timestamp=now_us();
-    SDL_Gamepad *g=current_gamepad_for_p2();
+    SDL_Gamepad *g=current_gamepad_for_slot(1);
     d->connected=g ? 1 : 0;
     d->connected_count=connected_count ? connected_count : 1;
     if (spartanportgpu_overlay_captures_input()) { click[1].side=-1; return; }

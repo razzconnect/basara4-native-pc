@@ -88,6 +88,10 @@ Place your decrypted PS4 game dump folder (which contains `eboot.bin`, `sce_modu
    - *Note:* The very first launch will automatically prepare the linked binary image into `out\` (takes roughly 30–60 seconds). Subsequent boots start immediately.
 4. To launch directly with your last saved settings without opening the launcher GUI, use **`Play Sengoku Basara 4.cmd`**.
 
+### Extracted DLC
+
+The launcher detects extracted DLC under the `DLC` folder beside the installation, or `user\dlc` when that folder does not exist. Use **Manage extracted DLC…** to select a parent folder. Each add-on must be in a subfolder named with its 16-character entitlement label and contain `sce_sys\param.sfo`. Raw PKG files are not opened or decrypted.
+
 ---
 
 ## Launcher Settings

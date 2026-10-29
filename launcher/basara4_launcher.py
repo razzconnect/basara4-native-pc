@@ -126,6 +126,9 @@ MAPPING = USER / "gamepad_mapping.txt"
 AUDIO_LOG = USER / "audio_debug.log"
 AUDIO_WAV = USER / "audio_wav"  # SPARTAN_AUDIO_WAV_DIR: float WAV capture of the mix and of long voices
 STAMP = OUT / "prepared.json"
+DEFAULT_DLC_DIR = ROOT.parent / "DLC"
+if not DEFAULT_DLC_DIR.is_dir():
+    DEFAULT_DLC_DIR = USER / "dlc"
 WAV_WARNING = ("WAV capture saves the final mix and every long voice as uncompressed audio in user\\audio_wav: about 70 MB per "
                "minute, up to 3 GB for one session.\n\nUse it only to find an audio problem, and delete the files afterwards.\n\n"
                "It applies to the next game start only and switches itself off after that. It also turns on the audio debug "
@@ -205,7 +208,8 @@ except ImportError:  # still works, just without artwork
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import basara4_patches  # noqa: E402
 
-DEFAULTS = {"game": "", "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
+DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
+            "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
             "anisotropy": 0, "resolution": "native", "upscale": "off", "audio_log": False, "audio_wav": False,
             "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100}
 
@@ -411,6 +415,20 @@ def prepare_image(game, progress):
     return None
 
 
+def prepare_content_profile(game, dlc_dir):
+    """Refresh AppContent metadata for every launch, even when the game image is cached."""
+    script = [sys.executable, "--run-script", "content_profile.py"] if FROZEN else [
+        sys.executable, str(SCRIPTS / "content_profile.py")]
+    command = script + [str(game), "--out", str(OUT), "--sku", "full", "--dlc-dir", str(dlc_dir)]
+    USER.mkdir(parents=True, exist_ok=True)
+    with open(PREPARE_LOG, "a", encoding="utf-8", errors="replace") as log:
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                creationflags=NO_WINDOW)
+    if result.returncode:
+        return f"content_profile.py failed (exit {result.returncode}). See user\\prepare.log"
+    return None
+
+
 class Launcher(tk.Tk):
     def __init__(self, play_now=False):
         super().__init__()
@@ -538,6 +556,7 @@ class Launcher(tk.Tk):
         r += 1
         self.image_label = ttk.Label(right, text="", style="Muted.TLabel")
         self.image_label.grid(row=r, column=1, sticky="w", padx=8)
+        ttk.Button(right, text="Manage extracted DLC…", command=self.open_dlc_manager).grid(row=r, column=2)
         r += 1
 
         ttk.Separator(right).grid(row=r, column=0, columnspan=3, sticky="ew", pady=12)
@@ -634,6 +653,51 @@ class Launcher(tk.Tk):
         path = filedialog.askdirectory(initialdir=self.game_var.get() or str(ROOT), mustexist=True)
         if path:
             self.game_var.set(os.path.normpath(path))
+
+    def open_dlc_manager(self):
+        window = tk.Toplevel(self)
+        window.title("Extracted Basara 4 DLC")
+        window.transient(self)
+        window.resizable(False, False)
+        path_var = tk.StringVar(value=self.cfg.get("dlc_dir", str(DEFAULT_DLC_DIR)))
+        frame = ttk.Frame(window, padding=16)
+        frame.grid(sticky="nsew")
+        ttk.Label(frame, text="DLC folder", style="Head.TLabel").grid(row=0, column=0, sticky="w")
+        path_entry = ttk.Entry(frame, textvariable=path_var, width=64, state="readonly")
+        path_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 12))
+        ttk.Label(
+            frame,
+            text="Choose the parent folder containing extracted DLC folders. Each DLC folder must be named "
+                 "with its 16-character entitlement label and contain sce_sys\\param.sfo.",
+            style="Muted.TLabel", wraplength=480,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 12))
+
+        def choose_folder():
+            selected = filedialog.askdirectory(
+                parent=window, title="Select the parent folder of extracted Basara 4 DLC",
+                initialdir=path_var.get() or str(ROOT.parent), mustexist=True)
+            if not selected:
+                return
+            selected_path = Path(selected)
+            if (selected_path / "sce_sys" / "param.sfo").is_file():
+                selected_path = selected_path.parent
+            self.cfg["dlc_dir"] = str(selected_path.resolve())
+            path_var.set(self.cfg["dlc_dir"])
+            save_config(self.cfg)
+
+        def open_folder():
+            folder = Path(path_var.get())
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                os.startfile(str(folder))
+            except OSError as error:
+                messagebox.showerror("Cannot open DLC folder", str(error), parent=window)
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew")
+        ttk.Button(buttons, text="Choose folder…", command=choose_folder).pack(side="left")
+        ttk.Button(buttons, text="Open folder", command=open_folder).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
 
     def _refresh_image_label(self):
         game = self.game_var.get().strip()
@@ -795,17 +859,21 @@ class Launcher(tk.Tk):
         self.busy = True
         self.play.config(state="disabled")
         self.pending = None
-        threading.Thread(target=self._prepare_then_launch, args=(game, exe), daemon=True).start()
+        dlc_dir = self.cfg.get("dlc_dir") or str(DEFAULT_DLC_DIR)
+        threading.Thread(target=self._prepare_then_launch, args=(game, exe, dlc_dir), daemon=True).start()
         self.after(200, self._wait_prepare)
 
     def _progress(self, text):
         self.pending_text = text
 
-    def _prepare_then_launch(self, game, exe):
+    def _prepare_then_launch(self, game, exe, dlc_dir):
         self.pending_text = "Starting…"
         error = None
         if not image_ready(game):
             error = prepare_image(game, self._progress)
+        if not error:
+            self._progress("Preparing the DLC profile…")
+            error = prepare_content_profile(game, dlc_dir)
         patch_args, notice = [], ""
         if not error and self.cfg["fps_limit"] != 60:
             try:
@@ -817,14 +885,14 @@ class Launcher(tk.Tk):
             else:
                 self.cfg["fps_limit"] = 60
                 notice = "Frame limiter not found in this eboot.bin: staying at 60.  "
-        self.pending = (error, game, exe, patch_args, notice)
+        self.pending = (error, game, exe, patch_args, notice, dlc_dir)
 
     def _wait_prepare(self):
         if self.pending is None:
             self.status.config(text=getattr(self, "pending_text", "Starting…"))
             self.after(200, self._wait_prepare)
             return
-        error, game, exe, patch_args, notice = self.pending
+        error, game, exe, patch_args, notice, dlc_dir = self.pending
         self.busy = False
         if error:
             self.play.config(state="normal")
@@ -856,7 +924,8 @@ class Launcher(tk.Tk):
         log = open(LOG, "wb")
         self.proc = subprocess.Popen(
             [str(exe), str(OUT / "boot-linked.bin"), "--content-profile", str(OUT / "content.bin"),
-             "--app0", str(game), "--user", str(USER), "--no-game-hooks"] + extra_args + patch_args,
+             "--app0", str(game), "--user", str(USER), "--dlc-dir", str(dlc_dir),
+             "--no-game-hooks"] + extra_args + patch_args,
             env=self._env(), cwd=str(USER), stdout=log, stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
         if self.cfg.get("audio_wav"):  # a one-session option: the next start has it off again
             self.cfg["audio_wav"] = False
