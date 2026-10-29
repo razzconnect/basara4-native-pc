@@ -690,9 +690,16 @@ class Launcher(tk.Tk):
         summary.grid(row=3, column=0, sticky="w", pady=(10, 0))
 
         def choose_folder():
-            selected = filedialog.askdirectory(
-                parent=window, title="Select the parent folder of extracted Basara 4 DLC",
-                initialdir=path_var.get() or str(ROOT.parent), mustexist=True)
+            initial_dir = Path(path_var.get())
+            if not initial_dir.is_dir():
+                initial_dir = ROOT if ROOT.is_dir() else Path.home()
+            try:
+                selected = filedialog.askdirectory(
+                    parent=self, title="Select the parent folder of extracted Basara 4 DLC",
+                    initialdir=str(initial_dir), mustexist=True)
+            except (OSError, tk.TclError) as error:
+                messagebox.showerror("Cannot open folder picker", str(error), parent=self)
+                return
             if not selected:
                 return
             try:
