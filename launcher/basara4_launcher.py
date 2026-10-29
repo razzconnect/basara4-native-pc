@@ -695,12 +695,26 @@ class Launcher(tk.Tk):
                 initialdir=path_var.get() or str(ROOT.parent), mustexist=True)
             if not selected:
                 return
-            selected_path = Path(selected)
-            if (selected_path / "sce_sys" / "param.sfo").is_file():
-                selected_path = selected_path.parent
-            self.cfg["dlc_dir"] = str(selected_path.resolve())
+            try:
+                selected_path = Path(selected).resolve(strict=True)
+                if (selected_path / "sce_sys" / "param.sfo").is_file():
+                    selected_path = selected_path.parent
+                if not selected_path.is_dir():
+                    raise NotADirectoryError(selected_path)
+                previous = self.cfg.get("dlc_dir")
+                self.cfg["dlc_dir"] = str(selected_path)
+                try:
+                    save_config(self.cfg)
+                except OSError:
+                    if previous is None:
+                        self.cfg.pop("dlc_dir", None)
+                    else:
+                        self.cfg["dlc_dir"] = previous
+                    raise
+            except (OSError, RuntimeError) as error:
+                messagebox.showerror("Cannot select DLC folder", str(error), parent=window)
+                return
             path_var.set(self.cfg["dlc_dir"])
-            save_config(self.cfg)
             refresh()
 
         def refresh():
