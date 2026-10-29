@@ -120,7 +120,7 @@ The launcher detects extracted DLC under the `DLC` folder beside the installatio
 ## Controller Support
 
 - **Native XInput & SDL3**: Xbox One / Series, DualShock 4, DualSense, and Nintendo Switch Pro controllers are recognized automatically.
-- **Generic / DirectInput Gamepads**: Click **Map controller** in the launcher to calibrate button and stick axes using `basara4-pad-mapper.exe`. Mapping values are saved to `user\gamepad_mapping.txt`.
+- **Controller Mapping**: XInput and other SDL-supported gamepads work directly. Use **Map controller** to customize button/stick mappings; select the controller when more than one is connected. Mappings for other controllers are preserved in `user\gamepad_mapping.txt`. To make Xbox A act as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
 
 ---
 

@@ -60,7 +60,7 @@ def main():
 
     # the controller mapper (SDL3 console program)
     msys(args.msys2, "clang tools/gamepad_mapper.c $(pkg-config --cflags sdl3) -lSDL3 -mconsole "
-                     "-o out/basara4-pad-mapper.exe")
+                     "-lxinput1_4 -o out/basara4-pad-mapper.exe")
 
     # the launcher executable
     work = REPO / "out/basara4-package"

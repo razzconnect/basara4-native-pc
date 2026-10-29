@@ -120,7 +120,7 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 ## Dukungan Controller
 
 - **XInput & SDL3**: Stik Xbox One/Series, DualShock 4, DualSense, dan Nintendo Switch Pro langsung terbaca otomatis.
-- **Stik Generik / DirectInput**: Klik **Map controller** di launcher untuk merekam tombol dan analog stik lewat program `basara4-pad-mapper.exe`. Hasil tersimpan di `user\gamepad_mapping.txt`.
+- **Mapping Controller**: XInput dan gamepad lain yang didukung SDL bisa langsung digunakan. Klik **Map controller** untuk mengubah tombol/stik; pilih controller jika lebih dari satu terhubung. Mapping controller lain tetap tersimpan di `user\gamepad_mapping.txt`. Untuk menjadikan Xbox A sebagai Circle, tekan Xbox B pada prompt Cross dan Xbox A pada prompt Circle.
 
 ---
 

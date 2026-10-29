@@ -47,7 +47,9 @@ In-game menu
   Insert, or R3 + L2 on the controller. F12 takes a screenshot. L1/R1 or Q/E switch tabs.
 
 Controller
-  XInput and SDL-supported pads work directly. Any other pad: "Map controller" in the launcher.
+  XInput and SDL-supported pads work directly. "Map controller" can customize any pad, lets you
+  select one when multiple are connected, and keeps mappings for other pads. To make Xbox A act
+  as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
 
 Problems
   Attach user\last_run.log (and user\prepare.log if the preparation failed) to your report.
