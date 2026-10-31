@@ -89,6 +89,11 @@ def extract_crash_summary(log_path, max_context_lines=10):
     }
 
 
+def parse_version(tag):
+    nums = re.findall(r"\d+", str(tag))
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
 def check_latest_release(repo=GITHUB_REPO):
     """Checks the latest GitHub release. Returns dict of asset info or None."""
     try:
