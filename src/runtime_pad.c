@@ -721,8 +721,7 @@ static void apply_mouse_aim(PadData *d) {
     } else {
         mouse_look.carry_x = 0.0f;
         mouse_look.carry_y = 0.0f;
-        d->right_x = 128;
-        d->right_y = 128;
+        /* Do NOT overwrite d->right_x/d->right_y if a physical controller is actively tilting! */
     }
 }
 
