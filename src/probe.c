@@ -629,6 +629,32 @@ static void install_auto_qte_hooks(Segment *segments, uint64_t count, uint64_t s
     printf("Automatic QTE: ready for %d of %d prompt kinds (menu, Game)\n", ready + rotation, AUTO_QTE_SITES + 1);
 }
 
+/* Stage EX Fallback Hook: If an extra stage variant (_ex) or briefing_ex is requested,
+ * Capcom MT Framework fails inside its internal string/buffer parser if the stage archive is absent.
+ * When an _ex stage asset name is requested, this hook forces the engine to fallback gracefully
+ * to the base stage asset name (e.g. m513 instead of m513_ex, briefing instead of briefing_ex),
+ * completely preventing the negative allocation / page fault at guest offset 0xc32cc6. */
+static const SpartanSignature stage_ex_signature = {
+    "55 48 89 e5 41 57 41 56 53 48 81 ec 08 01 00 00 48 89 f3 84 c9 48 b8 73 61 5c 50 53 34 5c 00", 0
+};
+
+static void install_stage_ex_fallback(Segment *segments, uint64_t count, uint64_t size) {
+    const uint64_t at = spartanport_signature_find(image, size, &stage_ex_signature);
+    if (at == UINT64_MAX || !mapped(segments, count, at, 32)) {
+        printf("Stage EX Fallback: unavailable (signature not found in this eboot.bin)\n");
+        return;
+    }
+    /* At image + at + 0x14:
+     * Original: 84 c9 (test cl, cl)
+     * Patch to: 31 c9 (xor ecx, ecx) -> forces ecx = 0, so the engine always resolves base stage
+     * assets (m513, briefing) without appending '_ex', completely bypassing missing archive crashes! */
+    if (image[at + 0x13] == 0x84 && image[at + 0x14] == 0xc9) {
+        image[at + 0x13] = 0x31;
+        image[at + 0x14] = 0xc9;
+        printf("Stage EX Fallback: active (patched asset selector at 0x%" PRIx64 ")\n", at + 0x13);
+    }
+}
+
 static void install_orb_multiplier(Segment *segments, uint64_t count, uint64_t size) {
     uint64_t calls[3];
     const uint64_t setter_at = spartanport_orb_find(image, size, calls);
@@ -1194,6 +1220,8 @@ int main(int argc, char **argv) {
         _exit(missing ? 1 : 0); /* no destructors: GPU threads are running */
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+    /* Intercepts stage extra archive request and falls back to base stage archive */
+    install_stage_ex_fallback(segments, ns, size);
     /* The hooks below find their sites by signature in one game's code (cheats, multipliers, enemy
      * health, QTE prompts, pause menu). --no-game-hooks leaves them out for any other game. */
     if (!game_hooks) puts("Game hooks: off");
