@@ -533,12 +533,17 @@ static void sample_host(PadData *d) {
     if (spartanportgpu_overlay_captures_input()) { drop_wheel(); return; } /* settings menu open: neutral input */
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     load_button_maps();
-    /* If exactly 1 gamepad is connected and 2 players are active, route that gamepad to P2 only,
-     * leaving P1 exclusively on Keyboard & Mouse to prevent one gamepad controlling both players. */
+    /* Input routing mode:
+     * - "kbm_coop": 1 gamepad assigned to P2, P1 exclusively on Keyboard & Mouse.
+     * - "controller" (default): Standard console behaviour. Gamepad 0 -> P1, Gamepad 1 -> P2. */
+    const char *mode_env = getenv("SPARTAN_INPUT_MODE");
+    const bool kbm_coop = mode_env && !strcmp(mode_env, "kbm_coop");
+
     int gamepad_count=0;
     SDL_JoystickID *gamepad_ids=SDL_GetGamepads(&gamepad_count);
     if (gamepad_ids) SDL_free(gamepad_ids);
-    if (gamepad_count>1 || (gamepad_count==1 && !opened[1])) {
+
+    if (!kbm_coop || gamepad_count>1 || (gamepad_count==1 && !opened[1])) {
         sample_gamepad(d,g);
     }
     /* The keyboard works with or without a gamepad: its buttons add to the pad's, and a stick
@@ -812,11 +817,15 @@ static void sample(PadData *d) {
  *       Gamepad 2 -> P2
  */
 static SDL_Gamepad *current_gamepad_for_p2(void) {
+    const char *mode_env = getenv("SPARTAN_INPUT_MODE");
+    const bool kbm_coop = mode_env && !strcmp(mode_env, "kbm_coop");
+
     int count=0;
     SDL_JoystickID *ids=SDL_GetGamepads(&count);
     if (ids) SDL_free(ids);
-    /* If exactly 1 gamepad is plugged in, assign it to P2 so P1 can use KBM */
-    if (count==1) return current_gamepad_for_slot(0);
+
+    /* In kbm_coop mode, if only 1 gamepad is plugged in, assign it to P2 */
+    if (kbm_coop && count==1) return current_gamepad_for_slot(0);
     return current_gamepad_for_slot(1);
 }
 

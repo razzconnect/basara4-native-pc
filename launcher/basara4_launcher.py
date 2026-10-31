@@ -217,7 +217,8 @@ import basara4_patches  # noqa: E402
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
             "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
             "anisotropy": 0, "resolution": "native", "upscale": "off", "audio_log": False, "audio_wav": False,
-            "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100}
+            "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100,
+            "input_mode": "controller"}
 
 DEFAULT_PC_KEYMAP = {
     "square": "Mouse Left",       # Normal Attack (Serangan Biasa)
@@ -636,12 +637,24 @@ class Launcher(tk.Tk):
 
         ttk.Separator(right).grid(row=r, column=0, columnspan=3, sticky="ew", pady=12)
         r += 1
-        ttk.Label(right, text="Controller & files", style="Head.TLabel").grid(
+        ttk.Label(right, text="Controller & Input", style="Head.TLabel").grid(
             row=r, column=0, columnspan=3, sticky="w")
         r += 1
+
+        # Mode Input Bar: Radio selector Controller vs KBM Co-op
+        input_mode_frame = ttk.Frame(right, style="Panel.TFrame")
+        input_mode_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 6))
+        ttk.Label(input_mode_frame, text="Input Mode:", style="Panel.TLabel").pack(side="left", padx=(0, 10))
+        self.input_mode_var = tk.StringVar(value=self.cfg.get("input_mode", "controller"))
+        ttk.Radiobutton(input_mode_frame, text="🎮 Controller Utama (Stik 1 = P1, Stik 2 = P2)",
+                        value="controller", variable=self.input_mode_var).pack(side="left", padx=(0, 14))
+        ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stik 1 = P2)",
+                        value="kbm_coop", variable=self.input_mode_var).pack(side="left")
+        r += 1
+
         # Row 1 of tools
         tools1 = ttk.Frame(right, style="Panel.TFrame")
-        tools1.grid(row=r, column=0, columnspan=3, sticky="w", pady=(6, 4))
+        tools1.grid(row=r, column=0, columnspan=3, sticky="w", pady=(4, 4))
         ttk.Button(tools1, text="⌨️ Keyboard & Mouse Controls", command=self.open_keymap_ui).pack(side="left", padx=(0, 8))
         ttk.Button(tools1, text="Map controller", command=lambda: self.map_pad([])).pack(side="left", padx=(0, 8))
         ttk.Button(tools1, text="Map sticks only", command=lambda: self.map_pad(["--sticks"])).pack(side="left", padx=(0, 8))
@@ -845,7 +858,8 @@ class Launcher(tk.Tk):
             resolution=dict(RESOLUTIONS)[self.res_var.get()], upscale=dict(UPSCALERS)[self.up_var.get()],
             anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.audio_var.get(),
             audio_wav=self.audio_var.get() and self.wav_var.get(),
-            gpu_index=selected_gpu_idx)
+            gpu_index=selected_gpu_idx,
+            input_mode=self.input_mode_var.get())
         save_config(self.cfg)
         write_ini(self._ini(), {
             "display_mode": self.cfg["display_mode"], "vsync": int(self.cfg["vsync"]),
@@ -902,6 +916,8 @@ class Launcher(tk.Tk):
             env["SPARTAN_MOUSE_AIM_STYLE"] = "0"  # 0: relative / free camera rotation
             sens = int(self.cfg.get("mouse_sens", 100))
             env["SPARTAN_MOUSE_AIM_SENSITIVITY"] = str(sens)
+
+        env["SPARTAN_INPUT_MODE"] = str(self.cfg.get("input_mode", "controller"))
 
         return env
 
