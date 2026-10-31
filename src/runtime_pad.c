@@ -897,7 +897,7 @@ static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
     info->dead_zone_left=info->dead_zone_right=2;
     info->connection_type=0; info->device_class=0;
     pthread_mutex_lock(&lock);
-    SDL_Gamepad *g=current_gamepad_for_slot(slot);
+    SDL_Gamepad *g=slot==0 ? current_gamepad() : current_gamepad_for_p2();
     /* P1 keeps the old behaviour (keyboard fallback counts as connected);
      * P2 reports its real gamepad, so the game does not wait for a pad
      * that is not plugged in. */
