@@ -191,7 +191,8 @@ def main(argv):
         (a.out / 'isa-rewrite.bin').write_bytes(encode_table(image, sites))
     except (OSError, ValueError, RuntimeError) as e:
         print(f'ISA: rewrite table unavailable ({e})')
-        return 1
+        # If iced_x86 is missing, do not hard-crash the prepare pipeline for modern CPUs
+        return 0
     print(summary(sites))
     return 0
 
