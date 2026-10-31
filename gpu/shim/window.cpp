@@ -69,6 +69,11 @@ static bool StartSize(s32& width, s32& height, SDL_DisplayID display) {
 }
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
+    // Pure Raw Input bypass: disable Windows pointer precision / acceleration curves
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_WARP_MOTION, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, "1");
+
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
@@ -280,6 +285,7 @@ bool WindowSDL::PollEvents() {
                       !SpartanOverlay::CapturesInput() && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
     if (lock != mouse_locked) {
         if (lock) SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
+        SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "0");
         if (SDL_SetWindowRelativeMouseMode(window, lock)) mouse_locked = lock;
     }
     if (const bool show = paused && !mouse_locked; show != cursor_shown) {

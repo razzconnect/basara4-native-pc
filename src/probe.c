@@ -901,7 +901,7 @@ int main(int argc, char **argv) {
 #endif
     int cpu_only = 0, strict_imports = 0, check_imports = 0, game_hooks = 1;
     unsigned timeout_seconds = 10;
-    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL, *isa_file=NULL, *pause_menu=NULL;
+    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *dlc_dir=NULL, *patch_file=NULL, *isa_file=NULL, *pause_menu=NULL;
     const char *mounts[8]; int mount_count=0;
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
@@ -910,6 +910,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--content-profile") && i+1<argc) content_profile=argv[++i];
         else if (!strcmp(argv[i], "--app0") && i+1<argc) app0=argv[++i];
         else if (!strcmp(argv[i], "--user") && i+1<argc) user_dir=argv[++i];
+        else if (!strcmp(argv[i], "--dlc-dir") && i+1<argc) dlc_dir=argv[++i];
         else if (!strcmp(argv[i], "--patches") && i+1<argc) patch_file=argv[++i];
         else if (!strcmp(argv[i], "--no-game-hooks")) game_hooks = 0;
         else if (!strcmp(argv[i], "--isa-rewrite") && i+1<argc) isa_file=argv[++i];
@@ -924,7 +925,7 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "Unknown option: %s\n", argv[i]); return 1; }
     }
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--check-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--isa-rewrite file] [--pause-menu R_UI.WAD] [--mount guest=host]... [--timeout seconds] | --vulkan-only | --cpu-features | --gamepad | --displays\n", argv[0]);
+        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--check-imports] [--content-profile file] [--app0 dir] [--user dir] [--dlc-dir dir] [--patches file] [--isa-rewrite file] [--pause-menu R_UI.WAD] [--mount guest=host]... [--timeout seconds] | --vulkan-only | --cpu-features | --gamepad | --displays\n", argv[0]);
         return 1;
     }
     if (!cpu_supported(missing, sizeof missing)) return 20;
@@ -942,19 +943,44 @@ int main(int argc, char **argv) {
     }
     if (content_profile) {
         FILE *profile=fopen(content_profile,"rb");
-        unsigned char data[28];
+        unsigned char data[32+64*17];
         if (!profile) fail("cannot open content profile");
-        if (fread(data,1,sizeof(data),profile)!=sizeof(data) || fgetc(profile)!=EOF || memcmp(data,"G3CONT01",8)) fail("invalid content profile");
+        if (fread(data,1,8,profile)!=8) fail("invalid content profile");
+        unsigned count=0, header_size=28;
+        if (!memcmp(data,"G3CONT01",8)) {
+            if (fread(data+8,1,20,profile)!=20 || fgetc(profile)!=EOF) fail("invalid content profile");
+        } else if (!memcmp(data,"G3CONT02",8)) {
+            if (fread(data+8,1,24,profile)!=24) fail("invalid content profile");
+            count=(unsigned)data[28]|(unsigned)data[29]<<8|(unsigned)data[30]<<16|(unsigned)data[31]<<24;
+            if (count>64) fail("invalid content profile add-on count");
+            size_t addon_bytes=(size_t)count*17;
+            if (fread(data+32,1,addon_bytes,profile)!=addon_bytes || fgetc(profile)!=EOF)
+                fail("invalid content profile add-on table");
+            header_size=32;
+        } else fail("invalid content profile");
         fclose(profile);
         uint32_t values[5];
         for (unsigned i=0;i<5;++i) {
             unsigned char *p=data+8+i*4;
             values[i]=(uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;
         }
-        runtime_content_configure(values);
+        char labels[64][17];
+        for (unsigned i=0;i<count;++i) {
+            memcpy(labels[i],data+header_size+(size_t)i*17,17);
+            if (!memchr(labels[i],'\0',17)) fail("invalid content profile entitlement label");
+        }
+        runtime_content_configure(values,(const char (*)[17])labels,count);
     }
     if (app0) {
         runtime_file_configure(app0, user_dir ? user_dir : "user");
+        char default_dlc_dir[600];
+        if (!dlc_dir) {
+            snprintf(default_dlc_dir,sizeof(default_dlc_dir),"%s/dlc",user_dir ? user_dir : "user");
+            dlc_dir=default_dlc_dir;
+        }
+        if (runtime_offline_configure_dlc_dir(dlc_dir)) {
+            fprintf(stderr,"Cannot configure DLC folder: %s\n",dlc_dir); return 1;
+        }
         for (int i = 0; i < mount_count; ++i) {
             const char *eq = strchr(mounts[i], '=');
             char guest[64];

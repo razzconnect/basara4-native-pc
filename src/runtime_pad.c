@@ -674,38 +674,50 @@ static void replay_sample(PadData *d) {
  * where the mouse is (full tilt AIM_RADIUS_PX away at 100 %; the offset stops there, so coming back
  * works at once). The menu's sensitivity divides both distances. Reads after the stick prompts, so a
  * prompt drawn with the mouse comes first. */
-enum { AIM_HOLD_US=40000, AIM_STEP_MIN_US=1000, AIM_STEP_MAX_US=50000, AIM_RADIUS_PX=200 };
-static const float AIM_FULL_PX_PER_MS=1.2f;
-static struct { uint64_t last, moved; int x, y; bool held; float offset_x, offset_y; } aim;
+static struct {
+    uint64_t last;
+    float carry_x, carry_y;
+} mouse_look;
+
 static void apply_mouse_aim(PadData *d) {
-    const float dx=SDL_SetAtomicInt(&mouse_motion[0],0)/16.0f, dy=SDL_SetAtomicInt(&mouse_motion[1],0)/16.0f;
-    uint64_t step=d->timestamp-aim.last;
-    aim.last=d->timestamp;
-    if (!(d->buttons & BTN_L2)) { aim.moved=0; aim.held=false; return; }
-    if (!aim.held) { aim.held=true; aim.offset_x=aim.offset_y=0; }  /* a new press: the centre is here */
-    const float sensitivity=spartanportgpu_mouse_aim_sensitivity()/100.0f;
-    if (spartanportgpu_mouse_aim_style()==1) {
-        const float radius=AIM_RADIUS_PX/sensitivity;
-        aim.offset_x+=dx; aim.offset_y+=dy;
-        const float length=sqrtf(aim.offset_x*aim.offset_x+aim.offset_y*aim.offset_y);
-        if (length>radius) { aim.offset_x*=radius/length; aim.offset_y*=radius/length; }
-        if (aim.offset_x!=0 || aim.offset_y!=0) {
-            d->right_x=(uint8_t)(128+(int)(aim.offset_x*127/radius));
-            d->right_y=(uint8_t)(128+(int)(aim.offset_y*127/radius));
+    const float raw_dx = (float)SDL_SetAtomicInt(&mouse_motion[0], 0) / 16.0f;
+    const float raw_dy = (float)SDL_SetAtomicInt(&mouse_motion[1], 0) / 16.0f;
+    mouse_look.last = d->timestamp;
+
+    const float sens_val = (float)spartanportgpu_mouse_aim_sensitivity();
+    const float sensitivity = (sens_val > 0.0f ? sens_val : 100.0f) / 100.0f;
+
+    /* Native PC Mouse Look:
+     * When mouse moves, directly push the right stick at full deflection
+     * proportional to physical mouse speed. When mouse stops, stick returns
+     * immediately to exact center (128, 128) with ZERO delay/lag. */
+    if (raw_dx != 0.0f || raw_dy != 0.0f) {
+        float in_x = -raw_dx * sensitivity * 16.0f + mouse_look.carry_x;
+        float in_y = -raw_dy * sensitivity * 16.0f + mouse_look.carry_y;
+
+        /* Filter micro vertical jitter on horizontal swipes */
+        if (fabsf(in_y) < fabsf(in_x) * 0.20f && fabsf(in_y) < 20.0f) {
+            in_y = 0.0f;
         }
-        return;
-    }
-    if (dx!=0 || dy!=0) {
-        step=step<AIM_STEP_MIN_US ? AIM_STEP_MIN_US : step>AIM_STEP_MAX_US ? AIM_STEP_MAX_US : step;
-        const float scale=127.0f*1000.0f*sensitivity/(AIM_FULL_PX_PER_MS*(float)step);
-        const float x=dx*scale, y=dy*scale;
-        aim.x=x>127 ? 127 : x<-128 ? -128 : (int)x;
-        aim.y=y>127 ? 127 : y<-128 ? -128 : (int)y;
-        aim.moved=d->timestamp;
-    }
-    if (aim.moved && d->timestamp-aim.moved<AIM_HOLD_US) {
-        d->right_x=(uint8_t)(128+aim.x);
-        d->right_y=(uint8_t)(128+aim.y);
+
+        int stick_x = (int)in_x;
+        int stick_y = (int)in_y;
+
+        mouse_look.carry_x = in_x - (float)stick_x;
+        mouse_look.carry_y = in_y - (float)stick_y;
+
+        if (stick_x > 127) stick_x = 127;
+        else if (stick_x < -128) stick_x = -128;
+        if (stick_y > 127) stick_y = 127;
+        else if (stick_y < -128) stick_y = -128;
+
+        d->right_x = (uint8_t)(128 + stick_x);
+        d->right_y = (uint8_t)(128 + stick_y);
+    } else {
+        mouse_look.carry_x = 0.0f;
+        mouse_look.carry_y = 0.0f;
+        d->right_x = 128;
+        d->right_y = 128;
     }
 }
 

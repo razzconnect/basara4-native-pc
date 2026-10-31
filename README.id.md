@@ -88,6 +88,10 @@ Salin folder dump game PS4 Anda (yang berisi `eboot.bin`, `sce_module\`, dan `sc
    - *Catatan:* Boot pertama akan menyiapkan image binary ke folder `out\` (memakan waktu sekitar 30–60 detik). Boot berikutnya langsung jalan instan.
 4. Jika ingin langsung membuka game dengan konfigurasi terakhir tanpa membuka GUI launcher, gunakan **`Play Sengoku Basara 4.cmd`**.
 
+### DLC hasil ekstrak
+
+Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalasi, atau `user\dlc` jika folder tersebut belum ada. Pilih folder induk DLC melalui **Manage extracted DLC…**. Setiap add-on harus berada di subfolder bernama entitlement label 16 karakter dan berisi `sce_sys\param.sfo`. File PKG mentah tidak dibuka atau didekripsi.
+
 ---
 
 ## Pengaturan Launcher
@@ -116,7 +120,7 @@ Salin folder dump game PS4 Anda (yang berisi `eboot.bin`, `sce_module\`, dan `sc
 ## Dukungan Controller
 
 - **XInput & SDL3**: Stik Xbox One/Series, DualShock 4, DualSense, dan Nintendo Switch Pro langsung terbaca otomatis.
-- **Stik Generik / DirectInput**: Klik **Map controller** di launcher untuk merekam tombol dan analog stik lewat program `basara4-pad-mapper.exe`. Hasil tersimpan di `user\gamepad_mapping.txt`.
+- **Mapping Controller**: XInput dan gamepad lain yang didukung SDL bisa langsung digunakan. Klik **Map controller** untuk mengubah tombol/stik; pilih controller jika lebih dari satu terhubung. Mapping controller lain tetap tersimpan di `user\gamepad_mapping.txt`. Untuk menjadikan Xbox A sebagai Circle, tekan Xbox B pada prompt Cross dan Xbox A pada prompt Circle.
 
 ---
 

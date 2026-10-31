@@ -83,6 +83,7 @@ public:
         info.initialized = true;
         info.game_serial = config.serial ? config.serial : "UNKNOWN";
         info.title = config.title ? config.title : "";
+        info.app_ver = "01.00";
         info.sdk_ver = config.sdk_version;
         info.psf_attributes.raw = config.psf_attributes;
     }

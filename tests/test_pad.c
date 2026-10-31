@@ -41,6 +41,11 @@ static PadData read_pad(void) {
     assert(pad_read_state(1,&d)==0);
     return d;
 }
+static PadData read_pad_user(int user) {
+    PadData d;
+    assert(pad_read_state(user,&d)==0);
+    return d;
+}
 /* One finger in the middle of the left (480) or right (1440) half of the touchpad. */
 static int touch_at(const PadData *d, int x) {
     return d->touch_count==1 && d->touches[0].x==x && d->touches[0].y==471;
@@ -171,13 +176,16 @@ int main(void) {
     assert(id!=0);
     SDL_Joystick *joystick=SDL_OpenJoystick(id);
     assert(joystick);
+    assert(pad_open(2,0,0,NULL)==2);
+    data=read_pad_user(2);
+    assert(!data.connected && !data.buttons);
     /* A real touchpad: the fingers and the click go to the game as they are. */
     assert(SDL_SetJoystickVirtualTouchpad(joystick,0,0,true,0.75f,0.5f,1.0f));
     assert(SDL_SetJoystickVirtualTouchpad(joystick,0,1,true,0.25f,1.0f,1.0f));
     assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_TOUCHPAD,true));
     pump();
     data=read_pad();
-    assert(gamepad && data.touch_count==2 && (data.buttons & BTN_TOUCHPAD));
+    assert(gamepads[0] && data.touch_count==2 && (data.buttons & BTN_TOUCHPAD));
     const uint8_t motors[]={255,128};
     assert(pad_vibration(1,motors)==0);
     assert(rumble_low==65535 && rumble_high==32896);
@@ -236,9 +244,26 @@ int main(void) {
     usleep(220000);
     data=read_pad();
     assert(data.buttons==0 && data.touch_count==0);
+
+    SDL_JoystickID second_id=SDL_AttachVirtualJoystick(&desc);
+    assert(second_id!=0);
+    SDL_Joystick *second_joystick=SDL_OpenJoystick(second_id);
+    assert(second_joystick);
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,true));
+    assert(SDL_SetJoystickVirtualButton(second_joystick,SDL_GAMEPAD_BUTTON_EAST,true));
+    pump();
+    PadData player1=read_pad_user(1), player2=read_pad_user(2);
+    assert((player1.buttons & BTN_CROSS) && !(player1.buttons & BTN_CIRCLE));
+    assert((player2.buttons & BTN_CIRCLE) && !(player2.buttons & BTN_CROSS));
+    assert(player1.connected && player2.connected && player2.connected_count==2);
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,false));
+    assert(SDL_SetJoystickVirtualButton(second_joystick,SDL_GAMEPAD_BUTTON_EAST,false));
+    pump();
+    SDL_CloseJoystick(second_joystick);
+    assert(SDL_DetachVirtualJoystick(second_id));
     SDL_CloseJoystick(joystick);
-    if (gamepad) SDL_CloseGamepad(gamepad);
-    gamepad=NULL;
+    if (gamepads[0]) SDL_CloseGamepad(gamepads[0]);
+    gamepads[0]=NULL;
     assert(SDL_DetachVirtualJoystick(id));
     SDL_Quit();
     unlink(path);

@@ -35,6 +35,21 @@ Copyright (C) 2026 Razz, released under the GNU GPL v2 or later.
 - **Diagnostics**: the `SPARTAN_NGS2_TRACE`, `SPARTAN_AVPLAYER_TRACE`, `SPARTAN_TIME_TRACE` and
   `SPARTAN_FILE_TRACE` environment switches (off by default).
 
+## Community Credits & Contributors
+
+A special thank you to our passionate community members on Discord for deep research, testing, reporting, and code contributions:
+
+- **@iqzir.adhi (supalii)**: Code contribution (Pull Request #4) for extracted DLC mounting (`/addcont`), dual-user pad arbitration, and XInput mapper integration.
+- **@tonysafa4705**: Discovered and verified the AMD Vulkan driver layer collision workaround (`DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1`).
+- **@jambumengkel**: Pioneered extracted PS4 DLC packaging, costume test archives, and savedata mod verification.
+- **Community Bug Testers & Log Analysts**: @warvon, @afan1241, @vhierm, @alansyahcohitta, @giyoliyoliyo, @zu1343, @jagen1010, @luthfitokisaki, @nobarpov, @noan2736, @ilhamamongus, @loghoriz0n, @kazam4839, @luckser.
+
+## Community & Official Links
+
+- **Discord Community**: https://discord.gg/UBZc57bBMa (Setup help, controller configs & gaming community)
+- **TikTok**: https://www.tiktok.com/@razzconnect (@razzconnect - Devlogs, gameplay showcases & updates)
+- **Support Solo Dev**: https://sociabuzz.com/razzgame/tribe
+
 ## What this project is built on
 
 This is a fork. The architecture, the loader, most of the runtime and the whole GPU side come from

@@ -19,7 +19,12 @@ int main(int argc,char **argv) {
     assert(!runtime_content_resolve("g8cM39EUZ6o#libkernel"));
     if (argc>1 && !strcmp(argv[1],"--missing")) { load(0xb4); return 99; }
     const uint32_t profile[]={1,13,0x80000000,0,7};
-    runtime_content_configure(profile);
+    const char labels[2][17]={"DLCXBGMXXXXXX000","PLCOS00004XXX007"};
+    runtime_content_configure(profile,labels,2);
+    assert(runtime_content_addon_index(0,labels[0])==0);
+    assert(runtime_content_addon_index(0,labels[1])==1);
+    assert(runtime_content_addon_index(1,labels[0])==-1);
+    assert(runtime_content_addon_index(0,"unknown-label-00")==-1);
     if (argc>1 && !strcmp(argv[1],"--unknown")) {
         /* Other system modules are host-provided: reference counted, independent. */
         assert((uint32_t)loaded(0xb5)==0x805a1001);
@@ -50,14 +55,21 @@ int main(int argc,char **argv) {
     assert((uint32_t)param(0,NULL)==0x80d90002);
     unsigned char entries[48]; memset(entries,0xaa,sizeof(entries));
     struct { uint32_t hits,canary; } h={99,0xabcdef};
-    assert(list(0,NULL,0,&h.hits)==0 && h.hits==0 && h.canary==0xabcdef);
-    assert(list(0,entries,2,&h.hits)==0 && h.hits==0);
-    for (unsigned i=0;i<sizeof(entries);++i) assert(entries[i]==0xaa);
+    assert(list(0,NULL,0,&h.hits)==0 && h.hits==2 && h.canary==0xabcdef);
+    assert(list(0,entries,2,&h.hits)==0 && h.hits==2);
+    assert(!memcmp(entries,"DLCXBGMXXXXXX000",16));
+    assert(!memcmp(entries+24,"PLCOS00004XXX007",16));
+    for (unsigned i=17;i<20;++i) assert(entries[i]==0);
+    uint32_t first_status,second_status;
+    memcpy(&first_status,entries+20,sizeof(first_status));
+    memcpy(&second_status,entries+44,sizeof(second_status));
+    assert(first_status==4 && second_status==4);
+    for (unsigned i=48;i<sizeof(entries);++i) assert(entries[i]==0xaa);
     assert((uint32_t)list(0,NULL,0,NULL)==0x80d90002);
     assert(unload(0xb4)==0 && loaded(0xb4)==0);
     assert((uint32_t)init(initial,b.boot)==0x80d90003);
     assert(unload(0xb4)==0 && (uint32_t)loaded(0xb4)==0x805a1001);
     assert(load(0xb4)==0 && init(initial,b.boot)==0 && unload(0xb4)==0);
-    puts("PASS: AppContent lifecycle, profile and output boundaries");
+    puts("PASS: AppContent lifecycle, add-on list and output boundaries");
     return 0;
 }

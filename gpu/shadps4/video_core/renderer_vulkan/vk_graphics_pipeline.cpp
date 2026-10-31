@@ -438,9 +438,11 @@ GraphicsPipeline::GraphicsPipeline(
                                      instance.GetPipelineBinaryGlobalKey(), binary_directory);
     for (int retry = 0; pipeline_result != vk::Result::eSuccess && retry < 10; ++retry) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        std::tie(pipeline_result, pipe) =
+        auto retry_res =
             CreateCachedGraphicsPipeline(device, pipeline_cache, pipeline_info, key,
                                          instance.GetPipelineBinaryGlobalKey(), binary_directory);
+        pipeline_result = retry_res.result;
+        pipe = std::move(retry_res.value);
     }
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
@@ -459,9 +461,11 @@ GraphicsPipeline::GraphicsPipeline(
                                          instance.GetPipelineBinaryGlobalKey(), binary_directory);
         for (int retry = 0; square_result != vk::Result::eSuccess && retry < 10; ++retry) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            std::tie(square_result, square) =
+            auto retry_res =
                 CreateCachedGraphicsPipeline(device, pipeline_cache, square_info, key,
                                              instance.GetPipelineBinaryGlobalKey(), binary_directory);
+            square_result = retry_res.result;
+            square = std::move(retry_res.value);
         }
         ASSERT_MSG(square_result == vk::Result::eSuccess,
                    "Failed to create the squaring pipeline: {}", vk::to_string(square_result));

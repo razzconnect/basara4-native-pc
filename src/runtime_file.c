@@ -31,7 +31,7 @@ typedef struct stat HostStat;
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define MAX_FILES 1024
-#define MAX_MOUNTS 16
+#define MAX_MOUNTS 80
 
 typedef struct { int64_t sec, nsec; } GuestTimespec;
 typedef struct {
@@ -47,7 +47,7 @@ typedef struct {
 _Static_assert(sizeof(GuestStat)==120,"FreeBSD stat layout");
 
 typedef struct { char *names; size_t count, *offsets; unsigned char *types; } Listing;
-typedef struct { int used, host; Listing *dir; size_t position; char path[512]; } File;
+typedef struct { int used, host; Listing *dir; size_t position; const unsigned char *mem_data; size_t mem_size; char path[512]; } File;
 typedef struct { char guest[64]; char host[512]; } Mount;
 static File files[MAX_FILES];
 static Mount mounts[MAX_MOUNTS];
@@ -198,12 +198,36 @@ static int game_path(const char *p) {
     return (!strncmp(p,"/app0",5) && (!p[5] || p[5]=='/')) ||
            (!strncmp(p,"/hostapp",8) && (!p[8] || p[8]=='/'));
 }
+/* Empty ARC v7 header (8 bytes): magic='ARC\0', version=7, num_files=0 */
+static const unsigned char empty_arc_stub[8] = {'A','R','C',0, 7,0, 0,0};
+/* Empty LMT v67 header (16 bytes): magic='LMT\0', version=67, num_motions=0, reserved=0 */
+static const unsigned char empty_lmt_stub[16] = {'L','M','T',0, 67,0, 0,0, 0,0,0,0, 0,0,0,0};
+
+/* Returns stub data if file is an optional Capcom MT Framework asset that causes engine crashes when absent */
+static const unsigned char *get_stub_data(const char *guest, size_t *out_size) {
+    if (!guest) return NULL;
+    size_t len = strlen(guest);
+    /* Missing stage extra archives (_ex.arc) e.g. m513_ex.arc, briefing_ex.arc */
+    if (len >= 7 && !strcmp(guest + len - 7, "_ex.arc")) {
+        *out_size = sizeof(empty_arc_stub);
+        return empty_arc_stub;
+    }
+    /* Missing horse motion data (_uma.lmt) e.g. pl014_uma.lmt */
+    if (len >= 8 && !strcmp(guest + len - 8, "_uma.lmt")) {
+        *out_size = sizeof(empty_lmt_stub);
+        return empty_lmt_stub;
+    }
+    return NULL;
+}
+
 /* All operations return >=0 or -(host errno); wrappers adapt the convention. */
 static int64_t do_open(const char *guest,int flags,int mode) {
     if (game_path(guest) && (flags & (3|0x8|0x200|0x400|0x800))) return -EROFS;
     char path[1024];
     int e=translate(guest,path,sizeof(path));
     if (e) return -e;
+    const unsigned char *stub_bytes = NULL;
+    size_t stub_size = 0;
 #ifdef _WIN32
     /* Windows cannot open a directory as a CRT descriptor: directories are listings only. */
     (void)mode;
@@ -221,27 +245,45 @@ static int64_t do_open(const char *guest,int flags,int mode) {
         host=open(path,host_flags(flags)&~O_DIRECTORY,_S_IREAD|_S_IWRITE);
         if (host<0) {
             e=errno;
-            if (e==ENOENT) { ++missing; printf("Runtime: open(%s) -> not found\n",guest); }
-            return -e;
+            if (e==ENOENT) {
+                stub_bytes = get_stub_data(guest, &stub_size);
+                if (stub_bytes) {
+                    printf("Runtime: open(%s) -> not found, mounted empty stub (%zu bytes)\n", guest, stub_size);
+                } else {
+                    ++missing; printf("Runtime: open(%s) -> not found\n",guest);
+                    return -e;
+                }
+            } else {
+                return -e;
+            }
         }
-        if (host_fstat(host,&s)) memset(&s,0,sizeof(s));
+        if (host>=0 && host_fstat(host,&s)) memset(&s,0,sizeof(s));
     }
 #else
     int host=open(path,host_flags(flags),mode ? mode : 0644);
     if (host<0) {
         e=errno;
-        if (e==ENOENT) { ++missing; printf("Runtime: open(%s) -> not found\n",guest); }
-        return -e;
+        if (e==ENOENT) {
+            stub_bytes = get_stub_data(guest, &stub_size);
+            if (stub_bytes) {
+                printf("Runtime: open(%s) -> not found, mounted empty stub (%zu bytes)\n", guest, stub_size);
+            } else {
+                ++missing; printf("Runtime: open(%s) -> not found\n",guest);
+                return -e;
+            }
+        } else {
+            return -e;
+        }
     }
     struct stat s;
     Listing *dir=NULL;
-    if (!fstat(host,&s) && S_ISDIR(s.st_mode)) dir=list_directory(path);
+    if (host>=0 && !fstat(host,&s) && S_ISDIR(s.st_mode)) dir=list_directory(path);
 #endif
     pthread_mutex_lock(&lock);
     int fd=-1;
     for (int i=3;i<MAX_FILES;++i) if (!files[i].used) { fd=i; break; }
     if (fd<0) { pthread_mutex_unlock(&lock); if (host>=0) close(host); free_listing(dir); return -EMFILE; }
-    files[fd]=(File){.used=1,.host=host,.dir=dir};
+    files[fd]=(File){.used=1,.host=host,.dir=dir,.mem_data=stub_bytes,.mem_size=stub_size};
     snprintf(files[fd].path,sizeof(files[fd].path),"%s",guest);
     ++opens;
     pthread_mutex_unlock(&lock);
@@ -305,7 +347,20 @@ static void touch_for_write(void *buffer,uint64_t size) {
     }
 }
 static int64_t do_read(int fd,void *buffer,uint64_t size) {
-    int h=host_fd(fd);
+    File *f=get(fd);
+    if (!f) return -EBADF;
+    if (f->mem_data) {
+        if (!size) return 0;
+        touch_for_write(buffer,size);
+        if (f->position>=f->mem_size) return 0;
+        size_t avail=f->mem_size-f->position;
+        size_t n=size<avail ? (size_t)size : avail;
+        memcpy(buffer,f->mem_data+f->position,n);
+        f->position+=n;
+        __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
+        return (int64_t)n;
+    }
+    int h=f->host;
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
     ssize_t n=host_read(h,buffer,size);
@@ -315,7 +370,19 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     return n;
 }
 static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
-    int h=host_fd(fd);
+    File *f=get(fd);
+    if (!f) return -EBADF;
+    if (f->mem_data) {
+        if (!size || offset<0) return 0;
+        touch_for_write(buffer,size);
+        if ((size_t)offset>=f->mem_size) return 0;
+        size_t avail=f->mem_size-(size_t)offset;
+        size_t n=size<avail ? (size_t)size : avail;
+        memcpy(buffer,f->mem_data+offset,n);
+        __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
+        return (int64_t)n;
+    }
+    int h=f->host;
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
     ssize_t n=pread(h,buffer,size,offset);
@@ -347,34 +414,74 @@ static int64_t do_lseek(int fd,int64_t offset,int whence) {
         if (whence==0 && offset>=0) { f->position=(size_t)offset; return offset; }
         return -EINVAL;
     }
+    if (f->mem_data) {
+        int64_t new_pos=0;
+        if (whence==0) new_pos=offset;
+        else if (whence==1) new_pos=(int64_t)f->position+offset;
+        else if (whence==2) new_pos=(int64_t)f->mem_size+offset;
+        if (new_pos<0) return -EINVAL;
+        f->position=(size_t)new_pos;
+        return new_pos;
+    }
     int64_t r=host_lseek(f->host,offset,whence);
     if (audio_trace()) printf("Audio trace: lseek(fd %d, %lld, whence=%d) -> %lld\n",fd,(long long)offset,whence,(long long)r);
     return r<0 ? -errno : r;
 }
 static int64_t do_fstat(int fd,GuestStat *out) {
-    int h=host_fd(fd);
+    File *f=get(fd);
+    if (!f) return -EBADF;
+    if (!out) return -EFAULT;
+    if (f->mem_data) {
+        memset(out,0,sizeof(*out));
+        out->mode=0100644; /* S_IFREG | 0644 */
+        out->size=(int64_t)f->mem_size;
+        out->blocks=(f->mem_size+511)/512;
+        out->blksize=4096;
+        return 0;
+    }
+    int h=f->host;
     HostStat s;
 #ifdef _WIN32
     if (h<0) { /* directory: a listing only, stat the path it was opened with */
-        File *f=get(fd); char path[1024];
-        if (!f || !f->dir) return -EBADF;
-        if (!out) return -EFAULT;
+        char path[1024];
+        if (!f->dir) return -EBADF;
         if (translate(f->path,path,sizeof(path)) || host_stat(path,&s)) return -EBADF;
         convert_stat(&s,out); return 0;
     }
 #else
     if (h<0) return -EBADF;
 #endif
-    if (!out) return -EFAULT;
     if (host_fstat(h,&s)) return -errno;
     convert_stat(&s,out); return 0;
 }
 static int64_t do_stat(const char *guest,GuestStat *out) {
+    if (!out) return -EFAULT;
+    size_t stub_size=0;
+    const unsigned char *stub=get_stub_data(guest,&stub_size);
     char path[1024]; HostStat s;
     int e=translate(guest,path,sizeof(path));
-    if (e) return -e;
-    if (!out) return -EFAULT;
-    if (host_stat(path,&s)) return -errno;
+    if (e) {
+        if (stub) {
+            memset(out,0,sizeof(*out));
+            out->mode=0100644;
+            out->size=(int64_t)stub_size;
+            out->blocks=(stub_size+511)/512;
+            out->blksize=4096;
+            return 0;
+        }
+        return -e;
+    }
+    if (host_stat(path,&s)) {
+        if (stub) {
+            memset(out,0,sizeof(*out));
+            out->mode=0100644;
+            out->size=(int64_t)stub_size;
+            out->blocks=(stub_size+511)/512;
+            out->blksize=4096;
+            return 0;
+        }
+        return -errno;
+    }
     convert_stat(&s,out); return 0;
 }
 static int64_t do_getdents(int fd,char *buffer,uint64_t size,int64_t *basep) {
@@ -532,4 +639,3 @@ void runtime_file_report(void) {
     printf("Runtime: files opened=%zu, reads=%zu (%llu bytes), writes=%zu, not found=%zu\n",
            opens,reads,(unsigned long long)bytes_read,writes,missing);
 }
-
