@@ -72,6 +72,13 @@ stay intact; the Basara 4 build does not use it (`--no-game-hooks`).
 Files that come from these projects keep their original headers. Where this project changed them, the
 change is described in the file or in the commit history.
 
+## Game cheat data
+
+The selectable Sengoku Basara 4 Sumeragi (CUSA01159, update 01.02) cheat data is adapted from the
+[GoldHEN Cheat Repository](https://github.com/GoldHEN/GoldHEN_Cheat_Repository/blob/main/json/CUSA01159_01.02.json).
+The original trainer credits **Q8Despair**. The repository is licensed under GPL-3.0; the launcher
+shows the source and author alongside the available cheats.
+
 ## License
 
 GNU General Public License, version 2 or (at your option) any later version. See `LICENSE`.

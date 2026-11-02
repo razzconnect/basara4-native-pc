@@ -65,6 +65,7 @@ The game's original x86-64 code executes directly on your PC's CPU without emula
 - **Vulkan 1.3 Graphics Translation**: High-performance translation of PlayStation 4 AMD GCN shader bytecode and draw calls directly into SPIR-V / Vulkan.
 - **Custom Basara 4 PC Launcher**: Built from scratch with a themed Sengoku aesthetic, resolution picker, display modes, anisotropic filtering, FSR 1 upscaling, and controller configuration.
 - **True Unlimited FPS Unlock**: Integrated memory patch (`basara4_patches.py`) that scans for the engine's internal frame limiter and disables it, unlocking 90, 120, 144, 165, 240, and uncapped FPS on high-refresh displays.
+- **GoldHEN Cheats**: Selectable launcher cheats for game update 01.02, credited to cheat author **Q8Despair**. The launcher checks compatibility before applying them.
 - **AMD FidelityFX Super Resolution (FSR 1)** & **RCAS Sharpening**: Upscale cleanly from 720p/900p/1080p to 1440p or 4K.
 - **Anisotropic Filtering (up to 16x)**: Greatly enhances floor and terrain texture clarity across battlefields.
 - **Dynamic Asset & Import Preparation**: Automatic game image preparation pipeline (`prepare.py`, `link_libc.py`, `link_modules.py`, `content_profile.py`) that adapts to official patches without touching your original dump.
@@ -118,6 +119,7 @@ The launcher detects extracted DLC under the `DLC` folder beside the installatio
 | **Frame Limit** | 60 (Default), 90, 120, 144, 165, 240, Unlimited | Overrides engine cap using automated signature patching. |
 | **VSync** | Enabled / Disabled | Synchronize buffer swaps to display refresh rate. |
 | **Audio Debug Log** | Enabled / Disabled | Writes granular Ngs2 voice and bus diagnostics to `user\audio_debug.log`. |
+| **Cheats** | Gold, special coin, growth points, weapon points, weapon rank points | GoldHEN cheats by **Q8Despair** for CUSA01159 update 01.02. All cheats can be enabled together; the launcher separates their trampolines to avoid patch address conflicts. |
 
 ---
 
@@ -233,6 +235,7 @@ This project is built upon open-source foundations and prior reverse-engineering
 | Project / Component | Author(s) | Role & Contribution | License |
 |---|---|---|---|
 | **Basara 4 PC Port** | **Razz** | Port author, reverse-engineering of Basara 4 system contracts (`runtime_offline.c`), software Ngs2 implementation, LibAtrac9 hardening, custom launcher GUI, frame-limiter patch, pad mapper, packaging | GPL-2.0+ |
+| **Sengoku Basara 4 Sumeragi cheats** | **Q8Despair** | Cheat data for CUSA01159 update 01.02, adapted from the [GoldHEN Cheat Repository](https://github.com/GoldHEN/GoldHEN_Cheat_Repository/blob/main/json/CUSA01159_01.02.json) | GPL-3.0 |
 | **SpartanPort** (`gow3_pc`) | **Felipe Prado** | Upstream base native runtime architecture, probe loader, and core harness | GPL-2.0+ |
 | **bloodborne_pc** | **Supermedo** & **deadinside28** | Foundational PS4 native PC porting methodology and runtime libraries | GPL-2.0+ |
 | **shadPS4** | **shadPS4 Team** | Translated GPU core, shader translation to SPIR-V/Vulkan, NID table (`aerolib`) | GPL-2.0+ |

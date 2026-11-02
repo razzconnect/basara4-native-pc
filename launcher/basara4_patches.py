@@ -14,6 +14,8 @@ import struct
 import sys
 from pathlib import Path
 
+import basara4_cheats
+
 EBOOT_BASE = 0x400000
 
 # vsubss/vmulss, vucomiss, jb (sleep only when the wait is long) ... call usleep ... vucomiss, jbe (leave
@@ -37,6 +39,19 @@ def eboot_image(elf):
     for vaddr, offset, filesz in loads:
         image[vaddr:vaddr + filesz] = elf[offset:offset + filesz]
     return bytes(image)
+
+
+def eboot_load_segments(elf):
+    """[(virtual address, memory size, flags)] for PT_LOAD segments."""
+    phoff, = struct.unpack_from('<Q', elf, 0x20)
+    phentsize, phnum = struct.unpack_from('<HH', elf, 0x36)
+    loads = []
+    for i in range(phnum):
+        kind, flags, _, vaddr, _, _, memsz, _ = struct.unpack_from(
+            '<IIQQQQQQ', elf, phoff + i * phentsize)
+        if kind == 1:
+            loads.append((vaddr, memsz, flags))
+    return loads
 
 
 def find(image, text):
@@ -81,16 +96,21 @@ def write_patches(path, writes):
     Path(path).write_bytes(blob)
 
 
-def build(elf_path, out_path, unlimited):
+def build(elf_path, out_path, unlimited, cheats=(), game_version=None):
     writes = []
     notes = []
-    image = eboot_image(Path(elf_path).read_bytes())
+    elf = Path(elf_path).read_bytes()
+    image = eboot_image(elf)
     if unlimited:
         try:
             writes += unlimited_fps(image)
             notes.append('unlimited fps')
         except LookupError as error:
             notes.append(f'unlimited fps skipped: {error}')
+    if cheats:
+        writes += basara4_cheats.compile_cheats(
+            cheats, game_version, image, eboot_load_segments(elf))
+        notes.append(f'{len(cheats)} cheat(s)')
     write_patches(out_path, writes)
     return writes, notes
 

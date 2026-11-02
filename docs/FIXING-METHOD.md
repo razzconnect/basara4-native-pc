@@ -253,17 +253,20 @@ Select-String user\last_run.log -Pattern 'still does not fit'            # HARUS
 
 ## 7. Kasus 4: crash di pemilihan stage
 
-- **Gejala.** Crash saat membuka pemilihan stage atau teks pengarahan (issue #1).
-- **Penyebab (dari log crash).** Pemecah markup teks UI MT Framework, di rentang kode `0xc32400` sampai `0xc36c00` pada image game, menarik node dari **daftar bebas yang rusak** di offset `0xc33d55`.
-  *Mengapa* daftar itu rusak **belum diketahui**.
+- **Gejala.** Crash atau freeze saat membuka pemilihan stage atau teks pengarahan (issue #1).
+- **Crash lama.** Log sebelumnya menunjukkan pemecah markup teks UI MT Framework membaca daftar bebas yang rusak di offset `0xc33d55`. *Mengapa* daftar itu rusak belum diketahui.
 - **Perbaikan (`313eef4`, `src/probe.c`).** Di penanganan pengecualian: bila RIP berada pada offset `0xc33d55` atau `0xc33cf0` dari image game, RIP dipindahkan ke epilog fungsi di `0xc33d9f`
   (`pop rbx; pop r14; pop rbp; ret`) lalu eksekusi dilanjutkan. Fungsi pemecah teks dengan demikian kembali lebih awal.
 - **Sifat perbaikan.** Penjinak gejala yang sempit: hanya dua alamat, hanya dump yang sama. Teks yang sedang dipecah bisa terpotong; status internal daftar bebas tetap rusak.
+- **Temuan crash terbaru.** Log stack-protector berhenti di caller `0xc32f66`. Dalam dump, salinan runtime satu baris teks Inggris terpotong di tengah tag warna, meskipun entry sumber di arsip lengkap. Pemeriksaan statis menemukan loop tag pada `0xc32cc0` menyalin byte sampai `>` tanpa memeriksa NUL atau kapasitas buffer lokal 256 byte. Ini mendukung dugaan overflow saat input runtime terpotong, tetapi belum menjelaskan mengapa salinan runtime tersebut terpotong.
+- **Guard parser tambahan (`src/probe.c`).** Untuk signature fungsi yang cocok, trampoline memeriksa batas input, NUL, dan batas buffer 256 byte sebelum menyalin. Input/tag yang tidak valid mengakhiri parser lewat epilognya; teks tersebut mungkin tidak lengkap. Signature yang berbeda tidak dipatch.
+- **Batasan.** Guard ini mencegah loop tag menulis melewati buffer, tetapi tidak memperbaiki korupsi yang mungkin terjadi lebih awal, tidak menjelaskan kerusakan data runtime, dan bukan bukti bahwa semua crash stage telah selesai.
 - **Cara memeriksa.**
   1. Buka pemilihan stage dan teks pengarahan beberapa kali.
-  2. `Select-String user\last_run.log -Pattern 'Exception|Crash dump|Fault' -CaseSensitive` kosong dan tidak ada berkas di `user\crash\`.
-  3. Hal yang **tidak** bisa diperiksa lewat log: apakah teks pengarahan tampil lengkap. Periksa dengan mata (manual).
-  4. Mengenali dump yang berbeda: bila RIP crash berada di offset lain, guard ini tidak berlaku; itu masalah baru.
+  2. Pastikan `user\last_run.log` memuat `Text parser guard: ready`; bila tertulis `skipped`, kirim baris itu beserta log.
+  3. `Select-String user\last_run.log -Pattern 'Exception|Crash dump|Fault' -CaseSensitive` kosong dan tidak ada berkas baru di `user\crash\`.
+  4. Hal yang **tidak** bisa diperiksa lewat log: apakah teks pengarahan tampil lengkap. Periksa dengan mata (manual).
+  5. Mengenali dump yang berbeda: bila RIP crash berada di offset lain, guard ini mungkin tidak berlaku; itu masalah baru.
 
 ---
 

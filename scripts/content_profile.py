@@ -40,9 +40,6 @@ def find_addons(dlc_dir, title_id):
         if any(not (chr(char).isalnum() or char == ord('_')) for char in encoded):
             print(f'DLC: skipped {path.name}: invalid entitlement label')
             continue
-        if path.name != label:
-            print(f'DLC: skipped {path.name}: folder must be named {label}')
-            continue
         addons.setdefault(label, (label, values.get('TITLE', label), path.name))
     all_addons = list(addons.values())
     for label, _title, _source in all_addons[MAX_ADDONS:]:

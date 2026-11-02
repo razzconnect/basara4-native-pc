@@ -213,11 +213,12 @@ except ImportError:  # still works, just without artwork
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import basara4_patches  # noqa: E402
+import basara4_cheats  # noqa: E402
 
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
             "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
             "anisotropy": 0, "resolution": "native", "upscale": "off", "audio_log": False, "audio_wav": False,
-            "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100,
+            "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100, "cheats": [],
             "input_mode": "controller"}
 
 DEFAULT_PC_KEYMAP = {
@@ -664,6 +665,7 @@ class Launcher(tk.Tk):
         # Row 2 of tools
         tools2 = ttk.Frame(right, style="Panel.TFrame")
         tools2.grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 8))
         ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 8))
         ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 8))
         ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 8))
@@ -783,6 +785,72 @@ class Launcher(tk.Tk):
         ttk.Button(buttons, text="Refresh", command=refresh).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
         refresh()
+
+    def open_cheats_manager(self):
+        try:
+            current = basara4_cheats.normalize_selection(self.cfg.get("cheats", []))
+        except ValueError as error:
+            messagebox.showerror("Invalid cheat settings", str(error), parent=self)
+            return
+
+        window = tk.Toplevel(self)
+        window.title("Basara 4 Cheats")
+        window.configure(bg=BG)
+        window.geometry("640x430")
+        window.minsize(580, 390)
+        window.transient(self)
+        window.grab_set()
+
+        frame = ttk.Frame(window, style="Panel.TFrame", padding=18)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="GoldHEN cheats · CUSA01159 · update 01.02",
+                  style="Head.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Cheat codes by Q8Despair. These are applied on the next game launch.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+
+        selected = set(current)
+        toggles = {}
+        for cheat_id, cheat in basara4_cheats.CHEATS.items():
+            var = tk.BooleanVar(value=cheat_id in selected)
+            toggles[cheat_id] = var
+            ttk.Checkbutton(
+                frame, text=f"{basara4_cheats.CHEATS[cheat_id]['name']}  ·  by {basara4_cheats.AUTHOR}",
+                variable=var).pack(anchor="w", pady=4)
+        ttk.Label(frame, text="Cave dan hook tiap cheat dipisahkan agar semuanya bisa aktif bersamaan.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+
+        source_row = ttk.Frame(frame, style="Panel.TFrame")
+        source_row.pack(fill="x", pady=(10, 0))
+        ttk.Label(source_row, text="Source: GoldHEN Cheat Repository (GPL-3.0)",
+                  style="Muted.TLabel").pack(side="left")
+
+        def open_source():
+            import webbrowser
+            webbrowser.open(basara4_cheats.SOURCE_URL)
+
+        ttk.Button(source_row, text="View source", command=open_source).pack(side="right")
+
+        buttons = ttk.Frame(frame, style="Panel.TFrame")
+        buttons.pack(fill="x", side="bottom", pady=(16, 0))
+
+        def save():
+            choices = [cheat_id for cheat_id, var in toggles.items() if var.get()]
+            try:
+                basara4_cheats.validate_selection(choices)
+                previous = self.cfg.get("cheats", [])
+                self.cfg["cheats"] = choices
+                try:
+                    save_config(self.cfg)
+                except OSError:
+                    self.cfg["cheats"] = previous
+                    raise
+            except (OSError, ValueError) as error:
+                messagebox.showerror("Cannot save cheats", str(error), parent=window)
+                return
+            window.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="right")
+        ttk.Button(buttons, text="Save cheats", command=save).pack(side="right", padx=(0, 8))
 
     def _refresh_image_label(self):
         game = self.game_var.get().strip()
@@ -965,14 +1033,20 @@ class Launcher(tk.Tk):
             self._progress("Preparing the DLC profile…")
             error = prepare_content_profile(game, dlc_dir)
         patch_args, notice = [], ""
-        if not error and self.cfg["fps_limit"] != 60:
+        selected_cheats = self.cfg.get("cheats", [])
+        if not error and (self.cfg["fps_limit"] != 60 or selected_cheats):
             try:
-                writes, _ = basara4_patches.build(OUT / "eboot.elf", OUT / "patches.bin", True)
-            except OSError:
-                writes = []
-            if writes:
-                patch_args = ["--patches", str(OUT / "patches.bin")]
-            else:
+                version = basara4_cheats.game_version(game) if selected_cheats else None
+                writes, notes = basara4_patches.build(
+                    OUT / "eboot.elf", OUT / "patches.bin", self.cfg["fps_limit"] != 60,
+                    cheats=selected_cheats, game_version=version)
+            except (OSError, ValueError) as patch_error:
+                error = f"Cannot prepare requested patches: {patch_error}"
+                writes, notes = [], []
+            if not error:
+                if writes:
+                    patch_args = ["--patches", str(OUT / "patches.bin")]
+            if not error and self.cfg["fps_limit"] != 60 and "unlimited fps" not in notes:
                 self.cfg["fps_limit"] = 60
                 notice = "Frame limiter not found in this eboot.bin: staying at 60.  "
         self.pending = (error, game, exe, patch_args, notice, dlc_dir)

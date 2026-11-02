@@ -53,8 +53,6 @@ def read_extracted_dlc(path):
     if len(encoded_label) != 16 or any(
             not (char.isalnum() or char == "_") for char in label):
         raise ValueError("invalid DLC entitlement label in CONTENT_ID")
-    if path.name != label:
-        raise ValueError(f"folder name must match its entitlement label ({label})")
     return {
         "title": values.get("TITLE") or label,
         "content_id": content_id,

@@ -53,6 +53,7 @@ Kode x86-64 asli game berjalan langsung di prosesor PC Anda tanpa emulator (tanp
 - **Translasi Grafis Vulkan 1.3**: Menerjemahkan shader AMD GCN PS4 ke SPIR-V / Vulkan secara langsung dengan performa tinggi.
 - **Launcher Resmi Basara 4 PC**: Dibuat khusus oleh Razz dengan tema visual Sengoku, pilihan resolusi, mode layar, anisotropic filtering, FSR 1 upscaling, dan kalibrasi controller.
 - **Patch FPS Unlimited**: Scanner signature memory otomatis (`basara4_patches.py`) yang mematikan pembatas FPS bawaan game (bisa main di 90, 120, 144, 165, 240, hingga unlimited FPS).
+- **Cheat GoldHEN**: Pilihan cheat di launcher untuk update game 01.02, dengan kredit pembuat cheat **Q8Despair**. Kompatibilitas versi dicek sebelum patch diterapkan.
 - **AMD FidelityFX Super Resolution (FSR 1)** & **RCAS Sharpening**: Upscaling bersih ke 1440p atau 4K.
 - **Anisotropic Filtering (hingga 16x)**: Mempertajam tekstur lantai, tanah, dan arena pertempuran dari sudut kamera miring.
 - **Pipeline Relokasi & Binding Otomatis**: Skrip otomatis (`prepare.py`, `link_libc.py`, `link_modules.py`, `content_profile.py`) yang menyiapkan executable dari dump tanpa merusak file asli.
@@ -106,6 +107,7 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 | **Frame Limit** | 60 (Default), 90, 120, 144, 165, 240, Unlimited | Membuka cap FPS bawaan game menggunakan signature patch. |
 | **VSync** | Aktif / Nonaktif | Sinkronisasi frame rate dengan refresh rate monitor. |
 | **Audio Debug Log** | Aktif / Nonaktif | Mencatat detail alokasi suara Ngs2 ke `user\audio_debug.log`. |
+| **Cheats** | Gold, special coin, growth points, weapon points, weapon rank points | Cheat GoldHEN oleh **Q8Despair**, untuk CUSA01159 update 01.02. Semua cheat dapat diaktifkan bersamaan; launcher memisahkan trampoline agar alamat patch tidak bertabrakan. |
 
 ---
 
@@ -191,6 +193,7 @@ python tools/audio_log_summary.py user/audio_debug.log
 | Komponen | Penulis / Kontributor | Kontribusi | Lisensi |
 |---|---|---|---|
 | **Basara 4 PC Port** | **Razz** | Pembuat port, reverse-engineering fungsi sistem Basara 4 (`runtime_offline.c`), implementasi Ngs2 audio, LibAtrac9 hardening, launcher GUI, patch unlock FPS, pad mapper, packaging | GPL-2.0+ |
+| **Cheat Sengoku Basara 4 Sumeragi** | **Q8Despair** | Data cheat CUSA01159 update 01.02, diadaptasi dari [GoldHEN Cheat Repository](https://github.com/GoldHEN/GoldHEN_Cheat_Repository/blob/main/json/CUSA01159_01.02.json) | GPL-3.0 |
 | **SpartanPort** (`gow3_pc`) | **Felipe Prado** | Fondasi arsitektur runtime native PC dan loader probe | GPL-2.0+ |
 | **bloodborne_pc** | **Supermedo** & **deadinside28** | Perintis teknik dan metodologi native port PS4 PC | GPL-2.0+ |
 | **shadPS4** | **shadPS4 Team** | Penerjemah shader GPU ke Vulkan / SPIR-V, tabel NID (`aerolib`) | GPL-2.0+ |

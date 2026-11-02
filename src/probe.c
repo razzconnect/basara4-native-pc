@@ -141,22 +141,44 @@ void spartanport_write_minidump(void *exception_pointers) {
     if (InterlockedExchange(&once,1)) return;
     HMODULE dbghelp=LoadLibraryA("dbghelp.dll");
     minidump_write_fn write=dbghelp ? (minidump_write_fn)(void *)GetProcAddress(dbghelp,"MiniDumpWriteDump") : NULL;
-    if (!write) return;
+    if (!write) {
+        fprintf(stderr,"Crash dump failed: %s (%lu)\n",
+                dbghelp ? "MiniDumpWriteDump unavailable" : "cannot load dbghelp.dll",
+                GetLastError());
+        if (dbghelp) FreeLibrary(dbghelp);
+        return;
+    }
     const char *user=getenv("SPARTAN_GPU_USER_DIR");
     char dir[MAX_PATH],path[MAX_PATH];
     snprintf(dir,sizeof(dir),"%s\\crash",user && *user ? user : "user");
-    CreateDirectoryA(dir,NULL);
+    if (!CreateDirectoryA(dir,NULL) && GetLastError()!=ERROR_ALREADY_EXISTS) {
+        fprintf(stderr,"Crash dump failed: cannot create %s (%lu)\n",dir,GetLastError());
+        FreeLibrary(dbghelp);
+        return;
+    }
     SYSTEMTIME now;
     GetLocalTime(&now);
     snprintf(path,sizeof(path),"%s\\core-%04d%02d%02d-%02d%02d%02d.dmp",dir,now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond);
     HANDLE file=CreateFileA(path,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-    if (file==INVALID_HANDLE_VALUE) return;
+    if (file==INVALID_HANDLE_VALUE) {
+        fprintf(stderr,"Crash dump failed: cannot create %s (%lu)\n",path,GetLastError());
+        FreeLibrary(dbghelp);
+        return;
+    }
     minidump_exception ex={GetCurrentThreadId(),(EXCEPTION_POINTERS *)exception_pointers,FALSE};
     /* thread info, process/thread data, indirectly referenced memory, unloaded modules */
     BOOL ok=write(GetCurrentProcess(),GetCurrentProcessId(),file,0x1000|0x100|0x40|0x20,exception_pointers ? &ex : NULL,NULL,NULL);
     CloseHandle(file);
     fprintf(stderr,ok ? "Crash dump written: %s\n" : "Crash dump failed: %s\n",path);
     fflush(stderr);
+    FreeLibrary(dbghelp);
+}
+static void report_stack_failure(uintptr_t caller) {
+    char where[MAX_PATH+64];
+    describe_address(where,sizeof(where),caller);
+    fprintf(stderr,"Stack protector caller: %s\n",where);
+    fflush(stderr);
+    spartanport_write_minidump(NULL);
 }
 static int fatal_reported;
 static LONG fatal_exception(EXCEPTION_POINTERS *info) {
@@ -629,32 +651,6 @@ static void install_auto_qte_hooks(Segment *segments, uint64_t count, uint64_t s
     printf("Automatic QTE: ready for %d of %d prompt kinds (menu, Game)\n", ready + rotation, AUTO_QTE_SITES + 1);
 }
 
-/* Stage EX Fallback Hook: If an extra stage variant (_ex) or briefing_ex is requested,
- * Capcom MT Framework fails inside its internal string/buffer parser if the stage archive is absent.
- * When an _ex stage asset name is requested, this hook forces the engine to fallback gracefully
- * to the base stage asset name (e.g. m513 instead of m513_ex, briefing instead of briefing_ex),
- * completely preventing the negative allocation / page fault at guest offset 0xc32cc6. */
-static const SpartanSignature stage_ex_signature = {
-    "55 48 89 e5 41 57 41 56 53 48 81 ec 08 01 00 00 48 89 f3 84 c9 48 b8 73 61 5c 50 53 34 5c 00", 0
-};
-
-static void install_stage_ex_fallback(Segment *segments, uint64_t count, uint64_t size) {
-    const uint64_t at = spartanport_signature_find(image, size, &stage_ex_signature);
-    if (at == UINT64_MAX || !mapped(segments, count, at, 32)) {
-        printf("Stage EX Fallback: unavailable (signature not found in this eboot.bin)\n");
-        return;
-    }
-    /* At image + at + 0x14:
-     * Original: 84 c9 (test cl, cl)
-     * Patch to: 31 c9 (xor ecx, ecx) -> forces ecx = 0, so the engine always resolves base stage
-     * assets (m513, briefing) without appending '_ex', completely bypassing missing archive crashes! */
-    if (image[at + 0x13] == 0x84 && image[at + 0x14] == 0xc9) {
-        image[at + 0x13] = 0x31;
-        image[at + 0x14] = 0xc9;
-        printf("Stage EX Fallback: active (patched asset selector at 0x%" PRIx64 ")\n", at + 0x13);
-    }
-}
-
 static void install_orb_multiplier(Segment *segments, uint64_t count, uint64_t size) {
     uint64_t calls[3];
     const uint64_t setter_at = spartanport_orb_find(image, size, calls);
@@ -697,6 +693,86 @@ static int install_jump(uint64_t at, unsigned length, unsigned char *stub) {
     memcpy(image + at + 1, &relative, 4);
     memset(image + at + 5, 0x90, length - 5);
     return 1;
+}
+
+static size_t parser_guard_emit_jcc(unsigned char *stub, size_t *used, unsigned char condition) {
+    stub[(*used)++] = 0x0f;
+    stub[(*used)++] = condition;
+    size_t displacement = *used;
+    memset(stub + *used, 0, 4);
+    *used += 4;
+    return displacement;
+}
+
+static size_t parser_guard_emit_jmp(unsigned char *stub, size_t *used) {
+    stub[(*used)++] = 0xe9;
+    size_t displacement = *used;
+    memset(stub + *used, 0, 4);
+    *used += 4;
+    return displacement;
+}
+
+static void parser_guard_patch_rel32(unsigned char *stub, size_t displacement, uintptr_t target) {
+    uintptr_t next = (uintptr_t)(stub + displacement + 4);
+    int64_t delta = (int64_t)target - (int64_t)next;
+    if (delta < INT32_MIN || delta > INT32_MAX) fail("text parser guard branch out of range");
+    int32_t relative = (int32_t)delta;
+    memcpy(stub + displacement, &relative, sizeof(relative));
+}
+
+static void install_text_parser_guard(Segment *segments, uint64_t count, uint64_t size) {
+    const uint64_t entry = 0xc328e0, hook = 0xc32cc0, resume = 0xc32cc6, epilogue = 0xc32f3e;
+    static const unsigned char entry_signature[] = {
+        0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,
+        0x53,0x48,0x81,0xe4,0xe0,0xff,0xff,0xff,0x48,0x81,0xec,0x40
+    };
+    static const unsigned char loop_signature[] = {0x41,0x8a,0x1b,0x48,0xff,0xc2};
+    static const unsigned char epilogue_signature[] = {
+        0x48,0x8b,0x05,0xbb,0x93,0x7c,0x00,0x48,0x8b,0x00,0x48,0x3b,
+        0x84,0x24,0x20,0x01,0x00,0x00,0x75,0x0f,0x48,0x8d,0x65,0xd8
+    };
+    if (size < epilogue + sizeof(epilogue_signature)) return;
+    if (!mapped(segments, count, entry, sizeof(entry_signature)) ||
+        !mapped(segments, count, hook, sizeof(loop_signature)) ||
+        !mapped(segments, count, epilogue, sizeof(epilogue_signature))) {
+        puts("Text parser guard: skipped (parser code not mapped)");
+        return;
+    }
+    if (memcmp(image + entry, entry_signature, sizeof(entry_signature)) ||
+        memcmp(image + hook, loop_signature, sizeof(loop_signature)) ||
+        memcmp(image + epilogue, epilogue_signature, sizeof(epilogue_signature))) {
+        puts("Text parser guard: skipped (parser signature mismatch)");
+        return;
+    }
+
+    unsigned char *stub = allocate(page_size);
+    size_t used = 0;
+    memcpy(stub + used, "\x4b\x8d\x34\x2e\x4c\x3b\xde", 7);
+    used += 7;
+    size_t input_end = parser_guard_emit_jcc(stub, &used, 0x83);
+    memcpy(stub + used, "\x41\x80\x3b\x00", 4);
+    used += 4;
+    size_t input_nul = parser_guard_emit_jcc(stub, &used, 0x84);
+    memcpy(stub + used, "\x49\x8d\x34\x10\x48\x81\xfe\x00\x01\x00\x00", 11);
+    used += 11;
+    size_t output_end = parser_guard_emit_jcc(stub, &used, 0x83);
+    memcpy(stub + used, "\x41\x8a\x1b\x48\xff\xc2", 6);
+    used += 6;
+    size_t continue_parse = parser_guard_emit_jmp(stub, &used);
+    uintptr_t invalid_tag = (uintptr_t)(stub + used);
+    size_t abort_parse = parser_guard_emit_jmp(stub, &used);
+
+    parser_guard_patch_rel32(stub, input_end, invalid_tag);
+    parser_guard_patch_rel32(stub, input_nul, invalid_tag);
+    parser_guard_patch_rel32(stub, output_end, invalid_tag);
+    parser_guard_patch_rel32(stub, continue_parse, (uintptr_t)(image + resume));
+    parser_guard_patch_rel32(stub, abort_parse, (uintptr_t)(image + epilogue));
+    protect(stub, page_size, 5);
+    if (!install_jump(hook, sizeof(loop_signature), stub)) {
+        puts("Text parser guard: skipped (trampoline outside relative-jump range)");
+        return;
+    }
+    puts("Text parser guard: ready (input bounds and 256-byte local-buffer limit)");
 }
 
 /* Damage dealt/taken and green/blue/gold orb multipliers (src/damage_hook.h, src/orb_hook.h):
@@ -757,7 +833,39 @@ static void install_menu_exit(Segment *segments, uint64_t count, uint64_t size, 
 /* G3PATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
  * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
  * function pointers): the patch holds the address at the patches' base, rebased here. */
-static void apply_patches(const char *path, Segment *segments, uint64_t ns, const Reloc *relocs, uint64_t nr) {
+static int add_patch_cave_segment(Segment **segments_ptr, uint64_t *count_ptr,
+                                 uint64_t image_size, uint64_t offset, uint64_t length) {
+    uint64_t page_start = offset & ~((uint64_t)page_size - 1);
+    uint64_t page_end;
+    if (offset > image_size || length > image_size - offset || !length ||
+        length > page_size || offset + length > UINT64_MAX - page_size + 1) return 0;
+    page_end = round_page((size_t)(offset + length));
+    if (page_end > image_size || page_end - page_start != page_size) return 0;
+
+    Segment *segments = *segments_ptr;
+    uint64_t count = *count_ptr;
+    int executable_before = 0, segment_after = 0;
+    for (uint64_t i = 0; i < count; ++i) {
+        uint64_t end = segments[i].address + segments[i].size;
+        uint64_t protected_end = round_page((size_t)end);
+        if (page_start < protected_end && segments[i].address < page_end) return 0;
+        if ((segments[i].flags & 1) && protected_end <= page_start &&
+            page_start - protected_end <= 16 * page_size) executable_before = 1;
+        if (segments[i].address >= page_end &&
+            segments[i].address - page_end <= 16 * page_size) segment_after = 1;
+    }
+    if (!executable_before || !segment_after) return 0;
+
+    Segment *grown = realloc(segments, (size_t)(count + 1) * sizeof(*segments));
+    if (!grown) fail("cannot allocate patch code-cave segment");
+    grown[count] = (Segment){.address = page_start, .size = page_size, .flags = 5};
+    *segments_ptr = grown;
+    *count_ptr = count + 1;
+    return 1;
+}
+
+static void apply_patches(const char *path, Segment **segments_ptr, uint64_t *ns_ptr,
+                          uint64_t image_size, const Reloc *relocs, uint64_t nr) {
     FILE *f=fopen(path,"rb");
     char magic[8];
     if (!f || fread(magic,1,8,f)!=8 || memcmp(magic,"G3PATCH2",8)) fail("invalid patch file");
@@ -765,8 +873,16 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
     unsigned char data[4096];
     for (uint64_t i=0;i<count;++i) {
         uint64_t offset=read64(f), length=read64(f);
-        if (!length || length>sizeof(data) || !mapped(segments,ns,offset,length) || fread(data,1,length,f)!=length)
+        if (!length || length>sizeof(data) || offset>image_size || length>image_size-offset ||
+            fread(data,1,length,f)!=length)
             fail("bad patch entry");
+        Segment *segments = *segments_ptr;
+        uint64_t ns = *ns_ptr;
+        if (!mapped(segments,ns,offset,length) &&
+            !add_patch_cave_segment(segments_ptr,ns_ptr,image_size,offset,length))
+            fail("bad patch entry");
+        segments = *segments_ptr;
+        ns = *ns_ptr;
         uint64_t slots[sizeof(data)/8]; size_t nslots=0;
         for (uint64_t r=0;r<nr;++r) {
             if (!(relocs[r].target<offset+length && offset<relocs[r].target+8)) continue;
@@ -1219,9 +1335,8 @@ int main(int argc, char **argv) {
         fflush(NULL);
         _exit(missing ? 1 : 0); /* no destructors: GPU threads are running */
     }
-    if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
-    /* Intercepts stage extra archive request and falls back to base stage archive */
-    install_stage_ex_fallback(segments, ns, size);
+    if (patch_file) apply_patches(patch_file, &segments, &ns, size, relocs, nr);
+    install_text_parser_guard(segments, ns, size);
     /* The hooks below find their sites by signature in one game's code (cheats, multipliers, enemy
      * health, QTE prompts, pause menu). --no-game-hooks leaves them out for any other game. */
     if (!game_hooks) puts("Game hooks: off");
@@ -1248,6 +1363,9 @@ int main(int argc, char **argv) {
         protect(stubs, stub_area, 5);
     }
     runtime_set_report_hook(loader_report_hook);
+#ifdef _WIN32
+    runtime_set_stack_failure_hook(report_stack_failure);
+#endif
     protect(traps, round_page((import_count + 1) * 32), 5);
     protect(image, round_page(size), 0);
     int executable_entry = 0;
