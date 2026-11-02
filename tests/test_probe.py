@@ -121,6 +121,18 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(r.returncode, 132)
         self.assertIn('at guest offset 0x0,', r.stderr)
 
+    def test_text_parser_guard_is_installed_for_matching_game_code(self):
+        image = bytearray(0xc33000)
+        image[0] = 0xc3
+        image[0xc328e0:0xc328e0 + 24] = bytes.fromhex(
+            '55 48 89 e5 41 57 41 56 41 55 41 54 53 48 81 e4 e0 ff ff ff 48 81 ec 40')
+        image[0xc32cc0:0xc32cc6] = bytes.fromhex('41 8a 1b 48 ff c2')
+        image[0xc32f3e:0xc32f3e + 24] = bytes.fromhex(
+            '48 8b 05 bb 93 7c 00 48 8b 00 48 3b 84 24 20 01 00 00 75 0f 48 8d 65 d8')
+        r = self.run_image(package(image))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('Text parser guard: ready', r.stdout)
+
     def test_runtime_returns_from_verified_init_env(self):
         # Align stack, call _init_env through +32, then tail-jump to unknown +40.
         code = b'\x48\x83\xec\x08\xff\x15\x16\0\0\0\x48\x83\xc4\x08\xff\x25\x14\0\0\0'

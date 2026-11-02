@@ -68,6 +68,7 @@ void runtime_start(uint64_t flags) {
     stack_canary &= ~UINT64_C(255);
 }
 static void (*report_hook)(void); /* loader extras (ISA site counts) */
+static void (*stack_failure_hook)(uintptr_t caller);
 void runtime_report(void) {
     printf("Runtime: _init_env=%zu, atexit=%zu, __cxa_atexit=%zu, registered handlers=%zu\n",
            calls_init, calls_atexit, calls_cxa, handler_count);
@@ -87,6 +88,7 @@ void runtime_report(void) {
     if (report_hook) report_hook();
 }
 void runtime_set_report_hook(void (*hook)(void)) { report_hook = hook; }
+void runtime_set_stack_failure_hook(void (*hook)(uintptr_t caller)) { stack_failure_hook = hook; }
 static ABI void init_env(void) {
     /* prepare.py verified the supplied libc export consists of exactly C3. */
     ++calls_init;
@@ -161,6 +163,9 @@ static ABI void guard_abort(uint64_t *guard) {
 }
 static ABI __attribute__((noreturn)) void stack_fail(void) {
     fputs("STOP: guest stack protector detected corruption\n", stderr);
+#ifdef _WIN32
+    if (stack_failure_hook) stack_failure_hook((uintptr_t)__builtin_return_address(0));
+#endif
     exit(22);
 }
 static ABI void *guest_memset(void *dst, int value, size_t size) {

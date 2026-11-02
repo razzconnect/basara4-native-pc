@@ -17,6 +17,7 @@
 #include "runtime.h"
 #include "gpu/spartanportgpu.h"
 #include <errno.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,6 +213,68 @@ int runtime_offline_configure_dlc_dir(const char *path) {
     snprintf(dlc_directory,sizeof(dlc_directory),"%s",path);
     return 0;
 }
+static int dlc_folder_has_label(const char *folder, const char *label) {
+    char sfo_path[1024];
+    int path_size=snprintf(sfo_path,sizeof(sfo_path),"%s/sce_sys/param.sfo",folder);
+    if (path_size<0 || (size_t)path_size>=sizeof(sfo_path)) return 0;
+    FILE *file=fopen(sfo_path,"rb");
+    if (!file) return 0;
+    unsigned char data[65536];
+    size_t size=fread(data,1,sizeof(data),file);
+    fclose(file);
+    if (size<20 || memcmp(data,"\0PSF",4)) return 0;
+    uint32_t keys, values, count;
+    memcpy(&keys,data+8,4);
+    memcpy(&values,data+12,4);
+    memcpy(&count,data+16,4);
+    if (count>(size-20)/16 || keys<20+count*16 || keys>values || values>size) return 0;
+    for (uint32_t i=0;i<count;++i) {
+        const unsigned char *entry=data+20+i*16;
+        uint16_t key_offset;
+        uint32_t length, value_offset;
+        memcpy(&key_offset,entry,2);
+        memcpy(&length,entry+4,4);
+        memcpy(&value_offset,entry+12,4);
+        if (key_offset>values-keys || value_offset>size-values) continue;
+        size_t key_start=(size_t)keys+key_offset;
+        size_t value_start=(size_t)values+value_offset;
+        if (key_start>=values || length>size-value_start) continue;
+        const unsigned char *key_end=memchr(data+key_start,0,(size_t)values-key_start);
+        if (!key_end || (size_t)(key_end-(data+key_start))!=10 ||
+            memcmp(data+key_start,"CONTENT_ID",10)) continue;
+        char content_id[256];
+        size_t content_length=length;
+        const unsigned char *terminator=memchr(data+value_start,0,content_length);
+        if (terminator) content_length=(size_t)(terminator-(data+value_start));
+        if (content_length!=36) return 0;
+        memcpy(content_id,data+value_start,content_length);
+        content_id[content_length]=0;
+        return !memcmp(content_id+20,label,16);
+    }
+    return 0;
+}
+static int find_dlc_folder(const char *label, char *host, size_t host_size) {
+    int host_length=snprintf(host,host_size,"%s/%s",dlc_directory,label);
+    struct stat status;
+    if (host_length>=0 && (size_t)host_length<host_size &&
+        !stat(host,&status) && S_ISDIR(status.st_mode) && dlc_folder_has_label(host,label))
+        return 0;
+
+    DIR *directory=opendir(dlc_directory);
+    if (!directory) return -1;
+    int found=0;
+    for (struct dirent *entry;(entry=readdir(directory))!=NULL;) {
+        if (!strcmp(entry->d_name,".") || !strcmp(entry->d_name,"..")) continue;
+        host_length=snprintf(host,host_size,"%s/%s",dlc_directory,entry->d_name);
+        if (host_length<0 || (size_t)host_length>=host_size ||
+            stat(host,&status) || !S_ISDIR(status.st_mode) || !dlc_folder_has_label(host,label))
+            continue;
+        found=1;
+        break;
+    }
+    closedir(directory);
+    return found ? 0 : -1;
+}
 static ABI int32_t addcont_mount(uint32_t service_label, const EntitlementLabel *entitlement,
                                 AppContentMountPoint *mount_point) {
     if (service_label>7 || !entitlement || !mount_point ||
@@ -220,10 +283,8 @@ static ABI int32_t addcont_mount(uint32_t service_label, const EntitlementLabel 
     if (index<0 || !dlc_directory[0]) return APP_CONTENT_NOT_FOUND;
     char guest[16], host[512];
     int guest_size=snprintf(guest,sizeof(guest),"/addcont%d",index);
-    int host_size=snprintf(host,sizeof(host),"%s/%s",dlc_directory,entitlement->data);
-    struct stat status;
-    if (guest_size<0 || (size_t)guest_size>=sizeof(guest) || host_size<0 ||
-        (size_t)host_size>=sizeof(host) || stat(host,&status) || !S_ISDIR(status.st_mode))
+    if (guest_size<0 || (size_t)guest_size>=sizeof(guest) ||
+        find_dlc_folder(entitlement->data,host,sizeof(host)))
         return APP_CONTENT_NOT_FOUND;
     if (runtime_file_mount(guest,host)) return APP_CONTENT_NOT_FOUND;
     memset(mount_point,0,sizeof(*mount_point));
