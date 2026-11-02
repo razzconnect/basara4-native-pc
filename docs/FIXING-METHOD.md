@@ -253,20 +253,20 @@ Select-String user\last_run.log -Pattern 'still does not fit'            # HARUS
 
 ## 7. Kasus 4: crash di pemilihan stage
 
-- **Gejala.** Crash atau freeze saat membuka pemilihan stage atau teks pengarahan (issue #1).
-- **Crash lama.** Log sebelumnya menunjukkan pemecah markup teks UI MT Framework membaca daftar bebas yang rusak di offset `0xc33d55`. *Mengapa* daftar itu rusak belum diketahui.
-- **Perbaikan (`313eef4`, `src/probe.c`).** Di penanganan pengecualian: bila RIP berada pada offset `0xc33d55` atau `0xc33cf0` dari image game, RIP dipindahkan ke epilog fungsi di `0xc33d9f`
-  (`pop rbx; pop r14; pop rbp; ret`) lalu eksekusi dilanjutkan. Fungsi pemecah teks dengan demikian kembali lebih awal.
-- **Sifat perbaikan.** Penjinak gejala yang sempit: hanya dua alamat, hanya dump yang sama. Teks yang sedang dipecah bisa terpotong; status internal daftar bebas tetap rusak.
-- **Temuan crash terbaru.** Log stack-protector berhenti di caller `0xc32f66`. Dalam dump, salinan runtime satu baris teks Inggris terpotong di tengah tag warna, meskipun entry sumber di arsip lengkap. Pemeriksaan statis menemukan loop tag pada `0xc32cc0` menyalin byte sampai `>` tanpa memeriksa NUL atau kapasitas buffer lokal 256 byte. Ini mendukung dugaan overflow saat input runtime terpotong, tetapi belum menjelaskan mengapa salinan runtime tersebut terpotong.
-- **Guard parser tambahan (`src/probe.c`).** Untuk signature fungsi yang cocok, trampoline memeriksa batas input, NUL, dan batas buffer 256 byte sebelum menyalin. Input/tag yang tidak valid mengakhiri parser lewat epilognya; teks tersebut mungkin tidak lengkap. Signature yang berbeda tidak dipatch.
-- **Batasan.** Guard ini mencegah loop tag menulis melewati buffer, tetapi tidak memperbaiki korupsi yang mungkin terjadi lebih awal, tidak menjelaskan kerusakan data runtime, dan bukan bukti bahwa semua crash stage telah selesai.
-- **Cara memeriksa.**
+- **Gejala.** Crash atau freeze pas buka pemilihan stage atau teks pengarahan (issue #1).
+- **Crash lama.** Log sebelumnya nunjukin pemecah markup teks UI MT Framework baca daftar bebas yang rusak di offset `0xc33d55`. *Kenapa* daftar itu bisa rusak masih belum ketahuan.
+- **Perbaikan (`313eef4`, `src/probe.c`).** Di penanganan pengecualian: kalau RIP ada di offset `0xc33d55` atau `0xc33cf0` dari image game, RIP dipindahin ke epilog fungsi di `0xc33d9f`
+  (`pop rbx; pop r14; pop rbp; ret`) terus eksekusi dilanjutin. Fungsi pemecah teks jadi balik lebih awal.
+- **Sifat perbaikan.** Ini cuma nutupin gejala doang, scope-nya sempit: cuma dua alamat, cuma dump yang sama. Teks yang lagi dipecah bisa kepotong; status internal daftar bebas tetap rusak.
+- **Temuan crash terbaru.** Log stack-protector berhenti di caller `0xc32f66`. Di dump-nya, salinan runtime satu baris teks Inggris kepotong di tengah tag warna, padahal entry sumbernya lengkap di arsip. Pas dicek statis, ketemu loop tag di `0xc32cc0` yang nyalin byte sampai `>` tanpa ngecek NUL atau batas buffer lokal 256 byte. Ini nguatin dugaan overflow pas input runtime-nya kepotong, tapi belum jelasin kenapa salinan runtime itu bisa kepotong.
+- **Guard parser tambahan (`src/probe.c`).** Buat signature fungsi yang cocok, trampoline ngecek batas input, NUL, dan batas buffer 256 byte dulu sebelum nyalin. Kalau input/tag-nya nggak valid, parser langsung diakhirin lewat epilognya; teksnya mungkin jadi nggak lengkap. Signature yang beda nggak kena patch.
+- **Batasan.** Guard ini nyegah loop tag nulis kelewat buffer, tapi nggak ngebenerin korupsi yang mungkin udah kejadian lebih awal, nggak jelasin kerusakan data runtime, dan bukan jaminan semua crash stage udah kelar.
+- **Cara ngecek.**
   1. Buka pemilihan stage dan teks pengarahan beberapa kali.
-  2. Pastikan `user\last_run.log` memuat `Text parser guard: ready`; bila tertulis `skipped`, kirim baris itu beserta log.
-  3. `Select-String user\last_run.log -Pattern 'Exception|Crash dump|Fault' -CaseSensitive` kosong dan tidak ada berkas baru di `user\crash\`.
-  4. Hal yang **tidak** bisa diperiksa lewat log: apakah teks pengarahan tampil lengkap. Periksa dengan mata (manual).
-  5. Mengenali dump yang berbeda: bila RIP crash berada di offset lain, guard ini mungkin tidak berlaku; itu masalah baru.
+  2. Pastiin `user\last_run.log` ada baris `Text parser guard: ready`; kalau isinya `skipped`, kirim baris itu plus log-nya.
+  3. `Select-String user\last_run.log -Pattern 'Exception|Crash dump|Fault' -CaseSensitive` hasilnya kosong dan nggak ada file baru di `user\crash\`.
+  4. Hal yang **nggak** bisa dicek lewat log: apakah teks pengarahannya muncul lengkap atau nggak. Cek manual pake mata sendiri.
+  5. Buat ngenalin dump yang beda: kalau RIP crash-nya ada di offset lain, guard ini mungkin nggak berlaku; berarti itu masalah baru.
 
 ---
 
