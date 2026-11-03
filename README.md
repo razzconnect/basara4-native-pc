@@ -19,7 +19,19 @@ The game's original x86-64 code executes directly on your PC's CPU without emula
 
 > 💬 **Discord Community**: [https://discord.gg/UBZc57bBMa](https://discord.gg/UBZc57bBMa) — Setup help, controller configs & gaming community  
 > 🎬 **TikTok**: [@razzconnect](https://www.tiktok.com/@razzconnect) ([https://www.tiktok.com/@razzconnect](https://www.tiktok.com/@razzconnect)) — Development progress, showcases & devlogs  
-> ☕ **Support Solo Dev**: [https://sociabuzz.com/razzgame/tribe](https://sociabuzz.com/razzgame/tribe)
+> ☕ **Support Solo Dev**: [https://sociabuzz.com/razzgame/tribe](https://sociabuzz.com/razzgame/tribe) | Crypto (see below)
+
+<details>
+<summary>🪙 <b>Donate via Cryptocurrency (Click to expand)</b></summary>
+<br>
+
+| Network / Coin | Wallet Address |
+| :--- | :--- |
+| **USDT (BEP-20 / BSC)** | `0xa27C80C925D768568e288e19Dc4A4ea11A3B0190` |
+| ** Ethereum / ERC-20** | `0xa27C80C925D768568e288e19Dc4A4ea11A3B0190` |
+| **Solana (SOL)** | `CTfiedryHqBAV8N2eSQ9MnXSRmDA8FtVWizLK5MNHNGw` |
+
+</details>
 
 > **No copyrighted game files are included.** You must provide your own legally dumped copy of the game from your PlayStation 4 console (tested: CUSA01159).
 >
