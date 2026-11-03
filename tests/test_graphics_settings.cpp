@@ -132,13 +132,13 @@ int main() {
         // ones and keep their names through a load and a save; repeated or built-in names are not added twice.
         SetEnvironment("SPARTAN_EXTRA_RESOLUTIONS", "3840x1080;2880x1200;;2880x1200;4K;3440x1440");
         const auto names = G::ResolutionNames();
-        assert(names.size() == 25 && names[22] == "8K" && names[23] == "3840x1080" && names[24] == "2880x1200");
+        assert(names.size() == 27 && names[22] == "8K" && names[25] == "3840x1080" && names[26] == "2880x1200");
         {
             std::ofstream out(path);
             out << "render_resolution=2880x1200\n";
         }
         SpartanSettings::Load();
-        assert(v.render_resolution == 24);
+        assert(v.render_resolution == 26);
         SpartanSettings::Save();
         assert(Read(path).find("render_resolution=2880x1200\n") != std::string::npos);
         SetEnvironment("SPARTAN_EXTRA_RESOLUTIONS", "");  // the mod is off: its resolution is unknown, so native

@@ -322,8 +322,17 @@ DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless
                  ("Exclusive fullscreen", "fullscreen")]
 FPS_LIMITS = [("60 (game default)", 60), ("90", 90), ("120", 120), ("144", 144), ("165", 165),
               ("240", 240), ("Unlimited", 0)]
-RESOLUTIONS = [("1920 x 1080  (native)", "native"), ("1280 x 720", "720p"), ("1600 x 900", "900p"),
-               ("2560 x 1440", "1440p"), ("3200 x 1800", "1800p"), ("3840 x 2160  (4K)", "4K")]
+RESOLUTIONS = [
+    ("1920 x 1080  (1080p Native)", "native"),
+    ("1600 x 900  (900p)", "900p"),
+    ("1280 x 720  (720p HD)", "720p"),
+    ("960 x 540  (540p qHD - Spek Kentang)", "540p"),
+    ("854 x 480  (480p SD - Super Kentang)", "480p"),
+    ("640 x 360  (360p nHD - Ultra Kentang)", "360p"),
+    ("2560 x 1440  (1440p 2K)", "1440p"),
+    ("3200 x 1800  (1800p)", "1800p"),
+    ("3840 x 2160  (4K UHD)", "4K"),
+]
 UPSCALERS = [("Off  (plain scaling)", "off"), ("FSR 1  (sharper)", "fsr1")]
 ANISO = [("Off", 0), ("2x", 2), ("4x", 4), ("8x", 8), ("16x", 16)]
 BG, PANEL, FG, MUTED, GOLD, RED = "#12100e", "#1c1916", "#eadfcb", "#8d8374", "#c9a24a", "#9c2b24"
@@ -986,6 +995,22 @@ class Launcher(tk.Tk):
             env["SPARTAN_MOUSE_AIM_SENSITIVITY"] = str(sens)
 
         env["SPARTAN_INPUT_MODE"] = str(self.cfg.get("input_mode", "controller"))
+
+        # True internal render resolution scaling for potato PCs
+        res = self.cfg.get("resolution", "native")
+        res_map = {
+            "360p": "640x360",
+            "480p": "854x480",
+            "540p": "960x540",
+            "720p": "1280x720",
+            "900p": "1600x900",
+            "native": "1920x1080",
+            "1440p": "2560x1440",
+            "1800p": "3200x1800",
+            "4K": "3840x2160",
+        }
+        if res in res_map:
+            env["SPARTAN_RENDER_RES"] = res_map[res]
 
         return env
 

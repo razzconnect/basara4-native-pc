@@ -15,6 +15,7 @@
 #include <vk_mem_alloc.h>
 
 #include "spartanport_settings.h"
+#include "spartanport_graphics.h"
 #include "spartanport_toggles.h"
 #include "ffx_vk_portable.h"
 #include "video_core/host_shaders/upscale_merge_comp.h"
@@ -190,7 +191,7 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     }
     // Explicit resolution overrides retain the old compatibility path. Normal presets
     // keep guest allocations/UI native and change only host raster targets at frame boundaries.
-    scaled_session = std::getenv("SPARTAN_RENDER_RES") && std::getenv("SPARTAN_RENDER_RES")[0];
+    scaled_session = std::getenv("SPARTAN_GUEST_SCALED") && std::getenv("SPARTAN_GUEST_SCALED")[0];
     render_width = 1920;
     render_height = 1080;
     if (const char* res = std::getenv("SPARTAN_RENDER_RES")) {
@@ -317,13 +318,28 @@ bool TemporalUpscaler::OnFrameStart() {
     // Dynamic scene resolution scaling (live preset switching) works on all GPUs.
     // On GPUs without D32S8 blit support, UI depth is cleared instead of copied from scene.
     if (!scaled_session) {
-        scene_targets.SetSize(SceneResolution::ForPreset(active ? preset : 0,
-                                                        {target_width, target_height}));
+        SceneResolution::Size target_scene_size{1920, 1080};
+        if (active) {
+            target_scene_size = SceneResolution::ForPreset(preset, {target_width, target_height});
+        } else {
+            const std::vector<std::string> res_names = SpartanGraphics::ResolutionNames();
+            const int res_idx = std::clamp(settings.render_resolution.load(), 0, int(res_names.size()) - 1);
+            const auto [rw, rh] = SpartanGraphics::ResolutionSize(res_names[res_idx]);
+            if (rw > 0 && rh > 0 && (rw < 1920 || rh < 1080)) {
+                target_scene_size = {uint32_t((rw / 2) * 2), uint32_t((rh / 2) * 2)};
+            } else if (const char* env_res = std::getenv("SPARTAN_RENDER_RES")) {
+                u32 ew = 0, eh = 0;
+                if (std::sscanf(env_res, "%ux%u", &ew, &eh) == 2 && ew && eh && (ew < 1920 || eh < 1080)) {
+                    target_scene_size = {uint32_t((ew / 2) * 2), uint32_t((eh / 2) * 2)};
+                }
+            }
+        }
+        scene_targets.SetSize(target_scene_size);
         render_width = scene_targets.Size().width;
         render_height = scene_targets.Size().height;
     }
-    SpartanSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
-    SpartanSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
+    SpartanSettings::Get().active_render_width = render_width;
+    SpartanSettings::Get().active_render_height = render_height;
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
