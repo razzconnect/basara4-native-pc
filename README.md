@@ -28,7 +28,7 @@ The game's original x86-64 code executes directly on your PC's CPU without emula
 | Network / Coin | Wallet Address |
 | :--- | :--- |
 | **USDT (BEP-20 / BSC)** | `0xa27C80C925D768568e288e19Dc4A4ea11A3B0190` |
-| ** Ethereum / ERC-20** | `0xa27C80C925D768568e288e19Dc4A4ea11A3B0190` |
+| **Ethereum / ERC-20** | `0xa27C80C925D768568e288e19Dc4A4ea11A3B0190` |
 | **Solana (SOL)** | `CTfiedryHqBAV8N2eSQ9MnXSRmDA8FtVWizLK5MNHNGw` |
 
 </details>
