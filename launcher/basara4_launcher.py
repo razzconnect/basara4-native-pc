@@ -996,21 +996,19 @@ class Launcher(tk.Tk):
 
         env["SPARTAN_INPUT_MODE"] = str(self.cfg.get("input_mode", "controller"))
 
-        # True internal render resolution scaling for potato PCs
+        # True internal render resolution scaling for potato PCs (sub-1080p only)
         res = self.cfg.get("resolution", "native")
-        res_map = {
+        sub_1080p_map = {
             "360p": "640x360",
             "480p": "854x480",
             "540p": "960x540",
             "720p": "1280x720",
             "900p": "1600x900",
-            "native": "1920x1080",
-            "1440p": "2560x1440",
-            "1800p": "3200x1800",
-            "4K": "3840x2160",
         }
-        if res in res_map:
-            env["SPARTAN_RENDER_RES"] = res_map[res]
+        if res in sub_1080p_map:
+            env["SPARTAN_RENDER_RES"] = sub_1080p_map[res]
+        else:
+            env.pop("SPARTAN_RENDER_RES", None)
 
         return env
 

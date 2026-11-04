@@ -1107,10 +1107,6 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(info.pixel_format)) {
             continue;
         }
-        if (cache_image.info.resources.levels < info.resources.levels ||
-            cache_image.info.resources.layers < info.resources.layers) {
-            continue;
-        }
         image_id = cache_id;
     }
 
@@ -1164,12 +1160,15 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
             created.reason = "exact format";
-        } else if (image_resolved.info.resources < info.resources || depth_mismatch) {
+        } else if (image_resolved.info.resources < info.resources) {
             // The image was clearly picked up wrong.
             FreeImage(image_id);
             image_id = {};
             LOG_WARNING(Render_Vulkan, "Image overlap resolve failed");
-            created.reason = depth_mismatch ? "depth mismatch" : "fewer resources";
+            created.reason = "fewer resources";
+        } else if (depth_mismatch) {
+            image_id = {};
+            created.reason = "depth mismatch";
         }
     }
     // Create and register a new image
@@ -1215,14 +1214,6 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
         image_id = slot_images.insert(instance, runtime, slot_image_views, info);
         RegisterImage(image_id);
-        p_image = &slot_images[image_id];
-        p_image->tick_accessed_last = scheduler.CurrentTick();
-        TouchImage(*p_image);
-        view_mip = view_slice = -1;
-    } else if (p_image->info.resources.levels < info.resources.levels) {
-        // Cutscene bloom/DoF chain: if image has fewer mip levels than the descriptor requested,
-        // expand the image so downsample passes write to proper mip levels and never clamp to level 0.
-        image_id = ExpandImage(info, image_id);
         p_image = &slot_images[image_id];
         p_image->tick_accessed_last = scheduler.CurrentTick();
         TouchImage(*p_image);

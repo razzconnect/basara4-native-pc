@@ -338,8 +338,8 @@ bool TemporalUpscaler::OnFrameStart() {
         render_width = scene_targets.Size().width;
         render_height = scene_targets.Size().height;
     }
-    SpartanSettings::Get().active_render_width = render_width;
-    SpartanSettings::Get().active_render_height = render_height;
+    SpartanSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
+    SpartanSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
