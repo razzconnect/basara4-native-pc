@@ -690,6 +690,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         // The guest requires a depth sampled texture, but cache can offer only Rxf. Need to
         // recreate the image.
         recreate |= requested_info.props.is_depth && !cache_image.info.props.is_depth;
+        // Basara 4 PC: or a colour texture is requested, but cache only has a depth image.
+        recreate |= !requested_info.props.is_depth && cache_image.info.props.is_depth &&
+                    !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(requested_info.pixel_format) &&
+                    !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(requested_info.pixel_format);
         break;
     case BindingType::Storage:
         // If the guest is going to use previously created depth as storage, the image needs to be
@@ -1098,6 +1102,15 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (exact_fmt && info.pixel_format != cache_image.info.pixel_format) {
             continue;
         }
+        if (cache_image.info.props.is_depth != info.props.is_depth &&
+            !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(info.pixel_format) &&
+            !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(info.pixel_format)) {
+            continue;
+        }
+        if (cache_image.info.resources.levels < info.resources.levels ||
+            cache_image.info.resources.layers < info.resources.layers) {
+            continue;
+        }
         image_id = cache_id;
     }
 
@@ -1143,16 +1156,20 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     if (image_id) {
         Image& image_resolved = slot_images[image_id];
+        const bool depth_mismatch =
+            (image_resolved.info.props.is_depth != info.props.is_depth &&
+             !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(info.pixel_format) &&
+             !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(info.pixel_format));
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
             created.reason = "exact format";
-        } else if (image_resolved.info.resources < info.resources) {
+        } else if (image_resolved.info.resources < info.resources || depth_mismatch) {
             // The image was clearly picked up wrong.
             FreeImage(image_id);
             image_id = {};
             LOG_WARNING(Render_Vulkan, "Image overlap resolve failed");
-            created.reason = "fewer resources";
+            created.reason = depth_mismatch ? "depth mismatch" : "fewer resources";
         }
     }
     // Create and register a new image
@@ -1177,38 +1194,41 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
     }
 
-    Image& image = slot_images[image_id];
-    image.tick_accessed_last = scheduler.CurrentTick();
-    TouchImage(image);
+    Image* p_image = &slot_images[image_id];
+    p_image->tick_accessed_last = scheduler.CurrentTick();
+    TouchImage(*p_image);
 
     // Basara 4 PC: a colour texture (RGBA16F, 3 levels) came back as a depth image and was drawn as its depth, red.
     // List every image cached at this address and what the lookup decided, once per occurrence (16 at most).
-    if (image.info.props.is_depth && !info.props.is_depth && !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(info.pixel_format) &&
+    if (p_image->info.props.is_depth && !info.props.is_depth && !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(info.pixel_format) &&
         !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(info.pixel_format)) {
         static u32 logged = 0;
         if (logged++ < 16) {
             LOG_WARNING(Render_Vulkan,
                         "[{}] FindImage: wanted {} {}x{} levels {} layers {} size {:#x} at {:#x} binding {} exact {}: got the depth image "
-                        "{:#x} {} {}x{} levels {} size {:#x} (view mip {} slice {}, {} cached at this address)",
+                        "{:#x} {} {}x{} levels {} size {:#x} (view mip {} slice {}, {} cached at this address); creating fresh colour image",
                         Vulkan::GpuCheckpoint::WallClock(), vk::to_string(info.pixel_format), info.size.width, info.size.height, info.resources.levels,
                         info.resources.layers, info.guest_size, info.guest_address, static_cast<int>(desc.type),
-                        exact_fmt, image.info.guest_address, vk::to_string(image.info.pixel_format),
-                        image.info.size.width, image.info.size.height, image.info.resources.levels,
-                        image.info.guest_size, view_mip, view_slice, image_ids.size());
-            for (const auto& cache_id : image_ids) {
-                const auto& c = slot_images[cache_id];
-                LOG_WARNING(Render_Vulkan,
-                            "  cached {:#x} {} {}x{} levels {} layers {} size {:#x} bits {} depth {} target {} gpu-modified {} "
-                            "registered {} idle {} ticks{}",
-                            c.info.guest_address, vk::to_string(c.info.pixel_format), c.info.size.width,
-                            c.info.size.height, c.info.resources.levels, c.info.resources.layers, c.info.guest_size,
-                            c.info.num_bits, c.info.props.is_depth ? 1 : 0, c.binding.is_target ? 1 : 0,
-                            True(c.flags & ImageFlagBits::GpuModified) ? 1 : 0,
-                            True(c.flags & ImageFlagBits::Registered) ? 1 : 0,
-                            scheduler.CurrentTick() - c.tick_accessed_last, cache_id == image_id ? " (chosen)" : "");
-            }
+                        exact_fmt, p_image->info.guest_address, vk::to_string(p_image->info.pixel_format),
+                        p_image->info.size.width, p_image->info.size.height, p_image->info.resources.levels,
+                        p_image->info.guest_size, view_mip, view_slice, image_ids.size());
         }
+        image_id = slot_images.insert(instance, runtime, slot_image_views, info);
+        RegisterImage(image_id);
+        p_image = &slot_images[image_id];
+        p_image->tick_accessed_last = scheduler.CurrentTick();
+        TouchImage(*p_image);
+        view_mip = view_slice = -1;
+    } else if (p_image->info.resources.levels < info.resources.levels) {
+        // Cutscene bloom/DoF chain: if image has fewer mip levels than the descriptor requested,
+        // expand the image so downsample passes write to proper mip levels and never clamp to level 0.
+        image_id = ExpandImage(info, image_id);
+        p_image = &slot_images[image_id];
+        p_image->tick_accessed_last = scheduler.CurrentTick();
+        TouchImage(*p_image);
+        view_mip = view_slice = -1;
     }
+    Image& image = *p_image;
 
     // If the image requested is a subresource of the image from cache record its location.
     if (view_mip > 0) {

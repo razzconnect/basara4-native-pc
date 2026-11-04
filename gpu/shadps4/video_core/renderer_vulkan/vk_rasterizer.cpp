@@ -2459,7 +2459,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             // while no image was registered or unregistered.
             if (mip_fallback_mode == Shader::MipStorageFallbackMode::None &&
                 desc_entry.found_generation == texture_cache.RegistryGeneration() &&
-                !SpartanToggle::Disabled(SpartanToggle::TextureBindingMemo)) {
+                !SpartanToggle::Disabled(SpartanToggle::TextureBindingMemo) &&
+                image_serves_request(texture_cache.GetImage(desc_entry.found_id), desc_entry.found_desc)) {
                 desc_entry.pinned = bind_epoch;
                 auto& [image_id, _] =
                     image_bindings.emplace_back(desc_entry.found_id, &desc_entry.found_desc);
@@ -2498,14 +2499,6 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 
             const u64 generation = texture_cache.RegistryGeneration();
             image_id = texture_cache.FindImage(desc);
-            if (mip_fallback_mode == Shader::MipStorageFallbackMode::None &&
-                generation == texture_cache.RegistryGeneration() &&
-                desc_entry.pinned != bind_epoch) {
-                desc_entry.found_generation = generation;
-                desc_entry.found_id = image_id;
-                desc_entry.found_desc = desc;
-                desc_entry.view_memo = {};
-            }
             auto* image = &texture_cache.GetImage(image_id);
             const auto* found_image = image;
             bool redirected = false;
@@ -2543,6 +2536,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 // Do not remember this resolution for the next draw.
                 desc_entry.found_generation = ~0ull;
                 set_ok = false;
+            } else if (mip_fallback_mode == Shader::MipStorageFallbackMode::None &&
+                       generation == texture_cache.RegistryGeneration() &&
+                       desc_entry.pinned != bind_epoch) {
+                desc_entry.found_generation = generation;
+                desc_entry.found_id = image_id;
+                desc_entry.found_desc = desc;
+                desc_entry.view_memo = {};
             }
             debug_native(*image);
             if (image->binding.is_bound) {
