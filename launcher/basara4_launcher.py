@@ -44,11 +44,12 @@ GITHUB_REPO = "razzconnect/basara4-native-pc"
 FATAL_PATTERNS = [
     r"(STOP: .*)",
     r"(Fault: .*)",
+    r"(GPU \[Debug\] <Critical> .*)",
+    r"(Failed to create (?:graphics|compute|the squaring) pipeline.*)",
     r"(ASSERT_MSG.*)",
     r"(vk::Result=.*)",
     r"(VK_ERROR_\w+)",
     r"(GPU \[Render\.Vulkan\] <Error> .*)",
-    r"(GPU \[Render\.Vulkan\] <Warning> .*)",
     r"(GPU \[Lib\.\w+\] <Error> .*)",
     r"(Runtime: open\(.*?\) -> not found)",
     r"(guest raised debug exception .*)",
