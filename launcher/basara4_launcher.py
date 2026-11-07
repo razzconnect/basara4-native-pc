@@ -413,12 +413,12 @@ DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless
 FPS_LIMITS = [("60 (game default)", 60), ("90", 90), ("120", 120), ("144", 144), ("165", 165),
               ("240", 240), ("Unlimited", 0)]
 RESOLUTIONS = [
-    ("1920 x 1080  (1080p Native)", "native"),
-    ("1600 x 900  (900p)", "900p"),
-    ("1280 x 720  (720p HD)", "720p"),
-    ("960 x 540  (540p qHD - Spek Kentang)", "540p"),
-    ("854 x 480  (480p SD - Super Kentang)", "480p"),
     ("640 x 360  (360p nHD - Ultra Kentang)", "360p"),
+    ("854 x 480  (480p SD - Super Kentang)", "480p"),
+    ("960 x 540  (540p qHD - Spek Kentang)", "540p"),
+    ("1280 x 720  (720p HD)", "720p"),
+    ("1600 x 900  (900p)", "900p"),
+    ("1920 x 1080  (1080p Native)", "native"),
     ("2560 x 1440  (1440p 2K)", "1440p"),
     ("3200 x 1800  (1800p)", "1800p"),
     ("3840 x 2160  (4K UHD)", "4K"),
@@ -1618,6 +1618,18 @@ class Launcher(tk.Tk):
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            if getattr(event, "delta", 0):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", None) == 4:
+                canvas.yview_scroll(-1, "units")
+            elif getattr(event, "num", None) == 5:
+                canvas.yview_scroll(1, "units")
+
+        win.bind("<MouseWheel>", _on_mousewheel)
+        win.bind("<Button-4>", _on_mousewheel)
+        win.bind("<Button-5>", _on_mousewheel)
 
         btn_widgets = {}
         active_listening = [None]  # holds current button listening
