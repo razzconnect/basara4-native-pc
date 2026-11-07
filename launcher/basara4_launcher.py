@@ -58,7 +58,96 @@ FATAL_PATTERNS = [
     r"(ERROR_COMMITMENT_LIMIT.*)",
     r"(no rewrite table matches the image.*)",
     r"(missing MOVBE, BMI1, LZCNT.*)",
+    r"(Failed allocating (?:image|buffer|texture) with error .*)",
+    r"(Required Vulkan (?:extension|feature) unavailable: .*)",
+    r"(Vulkan \d+\.\d+ is required.*)",
+    r"(Failed to create (?:Vulkan logical )?device.*)",
 ]
+
+
+def explain_hardware_crash(exit_code, detected_errors, tail_context):
+    """Translates raw exit codes and log signatures into clear Indonesian hardware/memory diagnostics."""
+    joined = "\n".join(detected_errors) + "\n" + (tail_context or "")
+    low = joined.lower()
+    code_u32 = (exit_code & 0xFFFFFFFF) if isinstance(exit_code, int) else 0
+    hints = []
+
+    if "error_commitment_limit" in low or "error 1455" in low or "cannot create" in low and "guest memory" in low:
+        hints.append(
+            "💾 Memori Virtual Windows (RAM / Pagefile) Habis [Error 1455]:\n"
+            "Kapasitas RAM + Paging File Windows tidak cukup untuk mengalokasikan memori permainan.\n"
+            "👉 Solusi: Buka Windows Settings -> Advanced System Settings -> Performance -> Advanced -> Virtual Memory, "
+            "centang 'Automatically manage paging file size for all drives', tutup aplikasi berat (Chrome/Discord), lalu restart PC."
+        )
+
+    if ("erroroutofdevicememory" in low or "vk_error_out_of_device_memory" in low or
+            "erroroutofhostmemory" in low or "vk_error_out_of_host_memory" in low or
+            "failed allocating image" in low or "failed allocating buffer" in low or
+            "failed allocating texture" in low):
+        hints.append(
+            "🎮 Memori Kartu Grafis (VRAM / Shared GPU Memory) Tidak Cukup:\n"
+            "GPU kehabisan VRAM atau memori sistem saat memuat tekstur/buffer.\n"
+            "👉 Solusi: Turunkan pengaturan Resolution di Launcher ke 540p atau 720p, matikan Upscaler (pilih Off), "
+            "dan tutup aplikasi lain yang menggunakan akselerasi GPU."
+        )
+
+    if ("required vulkan extension unavailable" in low or
+            "required vulkan feature unavailable" in low or
+            "vulkan 1.3 is required" in low or
+            "failed to create device" in low or
+            "failed to create vulkan logical device" in low or
+            "unable to find a suitable physical device" in low):
+        hints.append(
+            "⚠️ Kartu Grafis (GPU) atau Driver Belum Mendukung Vulkan 1.3:\n"
+            "GPU yang dipilih tidak memiliki fitur Vulkan 1.3 yang wajib untuk merender grafis game.\n"
+            "👉 Solusi: Update driver kartu grafis (Intel / AMD Adrenalin / NVIDIA GeForce) ke versi terbaru. "
+            "Jika laptop/PC memiliki 2 GPU, pastikan memilih GPU diskrit (NVIDIA/AMD) pada menu GPU di Launcher."
+        )
+
+    if "device lost" in low or "eerrordevicelost" in low or "vk_error_device_lost" in low:
+        hints.append(
+            "🔌 Koneksi Kartu Grafis Terputus (GPU Device Lost / Driver Timeout):\n"
+            "Driver GPU berhenti merespons akibat beban render berlebih atau driver tidak stabil.\n"
+            "👉 Solusi: Turunkan Resolution ke 720p, matikan Upscaler, dan pastikan driver GPU sudah versi terbaru."
+        )
+
+    if "failed to create graphics pipeline" in low or "failed to create compute pipeline" in low:
+        hints.append(
+            "🛠️ Gagal Kompilasi Shader / Pipeline Vulkan:\n"
+            "Driver GPU gagal mengompilasi pipeline grafis.\n"
+            "👉 Solusi: Perbarui driver Vulkan GPU Anda atau matikan fitur Async Shaders di Launcher."
+        )
+
+    if "missing movbe, bmi1, lzcnt" in low or "no rewrite table matches" in low:
+        hints.append(
+            "🖥️ Instruksi CPU (x86-64-v3 / AVX2 / BMI1) Tidak Cocok:\n"
+            "Prosesor membutuhkan tabel translasi instruksi (isa-rewrite.bin).\n"
+            "👉 Solusi: Klik tombol 'Re-prepare' di bagian bawah Launcher agar file isa-rewrite.bin dibuat ulang."
+        )
+
+    if not hints:
+        if code_u32 == 0xC0000409:
+            hints.append(
+                "💥 Crash Driver Grafis / Batas Memori Sistem (Exit Code 0xC0000409):\n"
+                "Proses dihentikan paksa oleh Windows/Driver GPU (umum terjadi pada PC dengan RAM 8 GB atau iGPU seperti "
+                "Intel UHD / AMD Radeon Graphics ketika memori sistem/VRAM penuh atau fitur driver tidak didukung).\n"
+                "👉 Solusi: Gunakan Resolution 540p atau 720p, matikan Upscaler (Off), aktifkan Windows Paging File (Virtual Memory), "
+                "dan perbarui driver kartu grafis Anda."
+            )
+        elif code_u32 == 0xC0000005:
+            hints.append(
+                "💥 Pelanggaran Akses Memori (Access Violation 0xC0000005):\n"
+                "Terjadi konflik akses memori pada driver GPU atau data game.\n"
+                "👉 Solusi: Turunkan Resolution ke 720p, pastikan driver GPU terbaru, atau klik 'Re-prepare' jika file eboot baru diubah."
+            )
+        elif code_u32 == 0x17:
+            hints.append(
+                "⚠️ Kegagalan Inisialisasi / Assertion GPU (Exit Code 0x17):\n"
+                "Mesin grafis Vulkan menghentikan eksekusi karena batas resource GPU/VRAM atau fitur driver tidak terpenuhi.\n"
+                "👉 Solusi: Turunkan Resolution ke 540p/720p, matikan Upscaler, dan periksa driver Vulkan GPU Anda."
+            )
+
+    return hints
 
 
 def extract_crash_summary(log_path, max_context_lines=10):
@@ -1338,11 +1427,12 @@ class Launcher(tk.Tk):
 
     def _show_crash_dialog(self, code):
         data = extract_crash_summary(LOG)
+        hw_hints = explain_hardware_crash(code, data["detected_errors"], data["tail_context"])
         win = tk.Toplevel(self)
         win.title("Basara 4 PC — Crash Diagnostic")
         win.configure(bg=BG)
-        win.geometry("740x560")
-        win.minsize(680, 480)
+        win.geometry("760x620")
+        win.minsize(680, 520)
         win.grab_set()
 
         # Bottom Button Bar dipack DULUAN dengan side="bottom" agar TIDAK TERDORONG KELUAR LAYAR
@@ -1362,13 +1452,27 @@ class Launcher(tk.Tk):
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w")
 
+        if hw_hints:
+            hint_box = tk.Frame(header_frame, bg="#221915", highlightbackground=GOLD, highlightthickness=1, padx=10, pady=8)
+            hint_box.pack(fill="x", pady=(8, 6))
+            for hint in hw_hints:
+                tk.Label(
+                    hint_box,
+                    text=hint,
+                    bg="#221915",
+                    fg="#f5e6c8",
+                    font=("Segoe UI", 9, "bold"),
+                    wraplength=690,
+                    justify="left"
+                ).pack(anchor="w", pady=2)
+
         tk.Label(
             header_frame,
-            text="Terdeteksi indikasi error dari log permainan di bawah ini:",
+            text="Terdeteksi indikasi teknis dari log permainan:",
             bg=PANEL,
             fg=FG,
             font=("Segoe UI", 9)
-        ).pack(anchor="w", pady=(4, 6))
+        ).pack(anchor="w", pady=(4, 4))
 
         for err in data["detected_errors"]:
             tk.Label(
@@ -1425,6 +1529,7 @@ class Launcher(tk.Tk):
                 except Exception:
                     pass
 
+            hints_block = ("\nDiagnosis Hardware / Memori:\n" + "\n".join(f"  {h}" for h in hw_hints) + "\n") if hw_hints else ""
             clip_text = (
                 f"=== Sengoku Basara 4 PC — Crash Diagnostic Report ===\n"
                 f"Version       : v{VERSION}\n"
@@ -1433,6 +1538,7 @@ class Launcher(tk.Tk):
                 f"Architecture  : {platform.machine()} ({platform.processor()})\n"
                 f"RAM           : Total {ram_total} | Free {ram_avail} | Available Commit {commit_avail}\n"
                 f"Vulkan GPUs   :\n{gpu_list}\n"
+                f"{hints_block}"
                 f"Detected Fatal Signatures:\n" + "\n".join(f"  * {e}" for e in data["detected_errors"]) + "\n\n"
                 f"--- [Last 10 Log Lines (last_run.log)] ---\n"
                 f"{data['tail_context']}\n"

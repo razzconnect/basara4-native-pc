@@ -58,6 +58,11 @@ public:
         return vk13_props.maxBufferSize;
     }
 
+    /// Returns true if sparse buffer binding and residency are supported by the device and queue.
+    bool IsSparseBufferSupported() const {
+        return supports_sparse_buffer;
+    }
+
     vk::PhysicalDevice GetPhysicalDevice() const {
         return physical_device;
     }
@@ -596,6 +601,7 @@ private:
     bool mixed_float_dot_product{}; // spartanport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
+    bool supports_sparse_buffer{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;
 };

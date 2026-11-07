@@ -193,7 +193,7 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
                VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
 
-    CreateDevice();
+    ASSERT_MSG(CreateDevice(), "Failed to create Vulkan logical device");
     CollectPhysicalMemoryInfo();
     CollectImageFormatInfo();
     CollectToolingInfo();
@@ -485,15 +485,29 @@ bool Instance::CreateDevice() {
     }
 
     u32 sparse_queue_family_index = queue_family_index;
-    if (!(family_properties[queue_family_index].queueFlags & vk::QueueFlagBits::eSparseBinding)) {
+    bool has_sparse_queue =
+        bool(family_properties[queue_family_index].queueFlags & vk::QueueFlagBits::eSparseBinding);
+    if (!has_sparse_queue) {
         const auto sparse_family = std::find_if(
             family_properties.begin(), family_properties.end(), [](const auto& family) {
                 return family.queueCount && (family.queueFlags & vk::QueueFlagBits::eSparseBinding);
             });
-        if (sparse_family == family_properties.end()) {
-            return false;
+        if (sparse_family != family_properties.end()) {
+            sparse_queue_family_index = static_cast<u32>(sparse_family - family_properties.begin());
+            has_sparse_queue = true;
+        } else {
+            LOG_WARNING(Render_Vulkan,
+                        "Device has no sparse binding queue; using non-sparse buffer arenas.");
         }
-        sparse_queue_family_index = static_cast<u32>(sparse_family - family_properties.begin());
+    }
+    supports_sparse_buffer =
+        has_sparse_queue && features.sparseBinding && features.sparseResidencyBuffer;
+    if (!supports_sparse_buffer) {
+        LOG_WARNING(Render_Vulkan,
+                    "Sparse buffer residency unavailable (queue={}, sparseBinding={}, "
+                    "sparseResidencyBuffer={}); using non-sparse buffer arenas.",
+                    has_sparse_queue, bool(features.sparseBinding),
+                    bool(features.sparseResidencyBuffer));
     }
 
     static constexpr std::array queue_priorities = {1.0f};
@@ -888,10 +902,17 @@ void Instance::CollectPhysicalMemoryInfo() {
         total_memory_budget -= system_memory;
         return;
     }
-    // Leave at least 8 GB for the system on integrated GPUs.
+    // Leave at least 8 GB for the system on integrated GPUs; on <=8 GB RAM PCs, cap budget to half
+    // of available memory (min 512 MiB) so TextureCache garbage-collects before exhausting RAM.
     const s64 available_memory = static_cast<s64>(total_memory_budget - device_initial_usage);
-    total_memory_budget =
-        static_cast<u64>(std::max<s64>(available_memory - 8_GB, static_cast<s64>(local_memory)));
+    if (available_memory > 8_GB) {
+        total_memory_budget =
+            static_cast<u64>(std::max<s64>(available_memory - 8_GB, static_cast<s64>(local_memory)));
+    } else {
+        total_memory_budget = static_cast<u64>(
+            std::clamp<s64>(available_memory / 2, 512_MB,
+                            std::max<s64>(512_MB, static_cast<s64>(local_memory))));
+    }
 }
 
 void Instance::CollectImageFormatInfo() {
