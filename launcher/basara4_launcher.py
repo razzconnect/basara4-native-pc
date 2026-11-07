@@ -413,14 +413,14 @@ DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless
 FPS_LIMITS = [("60 (game default)", 60), ("90", 90), ("120", 120), ("144", 144), ("165", 165),
               ("240", 240), ("Unlimited", 0)]
 RESOLUTIONS = [
-    ("640 x 360  (360p nHD - Ultra Kentang)", "360p"),
-    ("854 x 480  (480p SD - Super Kentang)", "480p"),
-    ("960 x 540  (540p qHD - Spek Kentang)", "540p"),
+    ("640 x 360  (360p - Ultra Kentang)", "360p"),
+    ("854 x 480  (480p - Super Kentang)", "480p"),
+    ("960 x 540  (540p - Spek Kentang)", "540p"),
     ("1280 x 720  (720p HD)", "720p"),
-    ("1600 x 900  (900p)", "900p"),
+    ("1600 x 900  (900p HD+)", "900p"),
     ("1920 x 1080  (1080p Native)", "native"),
     ("2560 x 1440  (1440p 2K)", "1440p"),
-    ("3200 x 1800  (1800p)", "1800p"),
+    ("3200 x 1800  (1800p QHD+)", "1800p"),
     ("3840 x 2160  (4K UHD)", "4K"),
 ]
 UPSCALERS = [("Off  (plain scaling)", "off"), ("FSR 1  (sharper)", "fsr1")]
@@ -690,27 +690,27 @@ class Launcher(tk.Tk):
         ttk.Label(opts, text="Graphics card", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.gpu_var = tk.StringVar()
         gpu_display_names = [name for _, name, _ in SYSTEM_GPUS]
-        ttk.Combobox(opts, textvariable=self.gpu_var, state="readonly", width=46,
-                     values=gpu_display_names).grid(row=0, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 8))
+        ttk.Combobox(opts, textvariable=self.gpu_var, state="readonly", width=58,
+                     values=gpu_display_names).grid(row=0, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(0, 8))
 
         # Baris 1: Frame limit & Anisotropic
         ttk.Label(opts, text="Frame limit", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=4)
         self.fps_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.fps_var, state="readonly", width=18,
-                     values=[n for n, _ in FPS_LIMITS]).grid(row=1, column=1, sticky="w", padx=(8, 20), pady=4)
+        ttk.Combobox(opts, textvariable=self.fps_var, state="readonly", width=31,
+                     values=[n for n, _ in FPS_LIMITS]).grid(row=1, column=1, sticky="w", padx=(8, 16), pady=4)
         ttk.Label(opts, text="Anisotropic", style="Panel.TLabel").grid(row=1, column=2, sticky="w", pady=4)
         self.aniso_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.aniso_var, state="readonly", width=12,
+        ttk.Combobox(opts, textvariable=self.aniso_var, state="readonly", width=18,
                      values=[n for n, _ in ANISO]).grid(row=1, column=3, sticky="w", padx=(8, 0), pady=4)
 
-        # Baris 2: Window size & Upscaling
-        ttk.Label(opts, text="Window size", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=4)
+        # Baris 2: Resolution & Upscaling
+        ttk.Label(opts, text="Resolution", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=4)
         self.res_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.res_var, state="readonly", width=18,
-                     values=[n for n, _ in RESOLUTIONS]).grid(row=2, column=1, sticky="w", padx=(8, 20), pady=4)
+        ttk.Combobox(opts, textvariable=self.res_var, state="readonly", width=31,
+                     values=[n for n, _ in RESOLUTIONS]).grid(row=2, column=1, sticky="w", padx=(8, 16), pady=4)
         ttk.Label(opts, text="Upscaling", style="Panel.TLabel").grid(row=2, column=2, sticky="w", pady=4)
         self.up_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.up_var, state="readonly", width=12,
+        ttk.Combobox(opts, textvariable=self.up_var, state="readonly", width=18,
                      values=[n for n, _ in UPSCALERS]).grid(row=2, column=3, sticky="w", padx=(8, 0), pady=4)
 
         # Baris 3: Checkboxes (VSync, RCAS, Audio log, WAV)
