@@ -997,7 +997,7 @@ class Launcher(tk.Tk):
 
         env["SPARTAN_INPUT_MODE"] = str(self.cfg.get("input_mode", "controller"))
 
-        # True internal render resolution scaling for potato PCs (sub-1080p only)
+        # Internal render resolution for potato PCs (sub-1080p only)
         res = self.cfg.get("resolution", "native")
         sub_1080p_map = {
             "360p": "640x360",
@@ -1058,12 +1058,14 @@ class Launcher(tk.Tk):
             error = prepare_content_profile(game, dlc_dir)
         patch_args, notice = [], ""
         selected_cheats = self.cfg.get("cheats", [])
-        if not error and (self.cfg["fps_limit"] != 60 or selected_cheats):
+        chosen_res = self.cfg.get("resolution", "native")
+        needs_patching = (self.cfg["fps_limit"] != 60) or bool(selected_cheats) or (chosen_res != "native")
+        if not error and needs_patching:
             try:
                 version = basara4_cheats.game_version(game) if selected_cheats else None
                 writes, notes = basara4_patches.build(
                     OUT / "eboot.elf", OUT / "patches.bin", self.cfg["fps_limit"] != 60,
-                    cheats=selected_cheats, game_version=version)
+                    cheats=selected_cheats, game_version=version, resolution=chosen_res)
             except (OSError, ValueError) as patch_error:
                 error = f"Cannot prepare requested patches: {patch_error}"
                 writes, notes = [], []

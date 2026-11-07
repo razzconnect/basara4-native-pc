@@ -89,6 +89,67 @@ def unlimited_fps(image):
             (jbe, b'\xe9' + struct.pack('<i', disp + 1) + b'\x90')]
 
 
+# Render & UI resolution patch sites for Capcom MT Framework (Sengoku Basara 4 Sumeragi)
+RENDER_PAT_1 = "41 c7 85 b8 00 00 00 80 07 00 00 41 c7 85 bc 00 00 00 38 04 00 00"
+RENDER_PAT_2 = "48 b8 80 07 00 00 38 04 00 00 49 89 85 b8 00 00 00"
+RENDER_PAT_3 = "48 b8 80 07 00 00 38 04 00 00 4a 89 84 2b 80 ab 07 01"
+RENDER_PAT_4 = "c7 83 c0 00 00 00 80 07 00 00 c7 83 c4 00 00 00 38 04 00 00"
+RENDER_PAT_5 = "c7 83 b8 00 00 00 80 07 00 00 c7 83 bc 00 00 00 38 04 00 00"
+UI_PAT_1     = "c7 80 80 00 00 00 80 07 00 00 c7 80 84 00 00 00 38 04 00 00"
+
+RESOLUTION_SIZES = {
+    "360p": (640, 360),
+    "480p": (854, 480),
+    "540p": (960, 540),
+    "720p": (1280, 720),
+    "900p": (1600, 900),
+    "1440p": (2560, 1440),
+    "1800p": (3200, 1800),
+    "4K": (3840, 2160),
+}
+
+
+def resolution_patches(image, res_name):
+    """Patch MT Framework internal render resolution in eboot.bin code."""
+    if res_name not in RESOLUTION_SIZES:
+        return []
+    w, h = RESOLUTION_SIZES[res_name]
+    writes = []
+    wb = struct.pack('<I', w)
+    hb = struct.pack('<I', h)
+    pair = struct.pack('<II', w, h)
+
+    # 1. mov dword ptr [r13+0B8h], W; mov dword ptr [r13+0BCh], H
+    for off in find(image, RENDER_PAT_1):
+        writes.append((off + 7, wb))
+        writes.append((off + 18, hb))
+
+    # 2. mov rax, (H << 32) | W
+    for off in find(image, RENDER_PAT_2):
+        writes.append((off + 2, pair))
+
+    # 3. mov rax, (H << 32) | W
+    for off in find(image, RENDER_PAT_3):
+        writes.append((off + 2, pair))
+
+    # 4. mov dword ptr [rbx+0C0h], W; mov dword ptr [rbx+0C4h], H
+    for off in find(image, RENDER_PAT_4):
+        writes.append((off + 6, wb))
+        writes.append((off + 16, hb))
+
+    # 5. mov dword ptr [rbx+0B8h], W; mov dword ptr [rbx+0BCh], H
+    for off in find(image, RENDER_PAT_5):
+        writes.append((off + 6, wb))
+        writes.append((off + 16, hb))
+
+    # 6. UI size: mov dword ptr [rax+80h], W; mov dword ptr [rax+84h], H
+    for off in find(image, UI_PAT_1):
+        writes.append((off + 6, wb))
+        writes.append((off + 16, hb))
+
+    return writes
+
+
 def write_patches(path, writes):
     blob = struct.pack('<8sQQ', b'G3PATCH2', EBOOT_BASE, len(writes))
     for offset, data in writes:
@@ -96,7 +157,7 @@ def write_patches(path, writes):
     Path(path).write_bytes(blob)
 
 
-def build(elf_path, out_path, unlimited, cheats=(), game_version=None):
+def build(elf_path, out_path, unlimited, cheats=(), game_version=None, resolution=None):
     writes = []
     notes = []
     elf = Path(elf_path).read_bytes()
@@ -107,6 +168,11 @@ def build(elf_path, out_path, unlimited, cheats=(), game_version=None):
             notes.append('unlimited fps')
         except LookupError as error:
             notes.append(f'unlimited fps skipped: {error}')
+    if resolution and resolution != "native":
+        res_writes = resolution_patches(image, resolution)
+        if res_writes:
+            writes += res_writes
+            notes.append(f'resolution {resolution}')
     if cheats:
         writes += basara4_cheats.compile_cheats(
             cheats, game_version, image, eboot_load_segments(elf))

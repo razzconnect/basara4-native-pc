@@ -142,7 +142,8 @@ void WindowSDL::ApplyDisplayMode(int mode) {
     if (mode == SpartanGraphics::Windowed) {
         SDL_SetWindowFullscreen(window, false);
     } else {
-        const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window));
+        const SDL_DisplayID display_id = SDL_GetDisplayForWindow(window);
+        const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(display_id);
         const bool exclusive = mode == SpartanGraphics::Fullscreen && desktop;
         if (!SDL_SetWindowFullscreenMode(window, exclusive ? desktop : nullptr)) {
             LOG_WARNING(Frontend, "Fullscreen mode: {}", SDL_GetError());
@@ -150,7 +151,13 @@ void WindowSDL::ApplyDisplayMode(int mode) {
         SDL_SetWindowFullscreen(window, true);
     }
     SDL_SyncWindow(window);
-    std::printf("Window: %s\n", SpartanGraphics::DisplayModeNames[mode]);
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w > 0 && h > 0) {
+        width = w;
+        height = h;
+    }
+    std::printf("Window: %s (%dx%d)\n", SpartanGraphics::DisplayModeNames[mode], int(width.load()), int(height.load()));
 }
 
 WindowSDL::~WindowSDL() {
