@@ -1033,6 +1033,7 @@ class Launcher(tk.Tk):
             "fps_limit": self.cfg["fps_limit"], "rcas": int(self.cfg["rcas"]),
             "anisotropy": self.cfg["anisotropy"], "render_resolution": self.cfg["resolution"],
             "fsr1": int(self.cfg["upscale"] == "fsr1"),
+            "upscaler": "off", "jitter": 0, "object_motion": 0,
             "gpu_id": self.cfg.get("gpu_index", -1)})
 
     def _env(self):
@@ -1091,6 +1092,8 @@ class Launcher(tk.Tk):
             env["SPARTAN_MOUSE_AIM_SENSITIVITY"] = str(sens)
 
         env["SPARTAN_INPUT_MODE"] = str(self.cfg.get("input_mode", "controller"))
+        env["SPARTAN_UPSCALER"] = "off"
+        env["SPARTAN_OBJECT_MOTION"] = "0"
 
         # Internal 3D render resolution scaling for potato PCs (sub-1080p only)
         res = self.cfg.get("resolution", "native")

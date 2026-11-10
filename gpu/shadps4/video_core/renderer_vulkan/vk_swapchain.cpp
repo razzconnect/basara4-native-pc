@@ -10,6 +10,7 @@
 #include "spartanport_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
+#include "video_core/renderer_vulkan/vk_gpu_checkpoint.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 
@@ -134,19 +135,35 @@ bool Swapchain::AcquireNextImage() {
     }
 
     vk::Device device = instance.GetDevice();
+    // Use a 100ms timeout so Exclusive Fullscreen Alt-Tab never hangs PresentThread forever.
+    constexpr u64 acquire_timeout_ns = 100'000'000ULL;
     vk::Result result =
-        device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
+        device.acquireNextImageKHR(swapchain, acquire_timeout_ns,
                                    image_acquired[frame_index], VK_NULL_HANDLE, &image_index);
 
     switch (result) {
     case vk::Result::eSuccess:
-        break;
+        return true;
     case vk::Result::eSuboptimalKHR:
+        // eSuboptimalKHR still acquires image_index and signals image_acquired[frame_index];
+        // consume the semaphore via Present() and recreate afterwards instead of destroying it now.
+        needs_recreation = true;
+        return true;
+    case vk::Result::eTimeout:
+    case vk::Result::eNotReady:
+        return false;
     case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
+#ifdef VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT
+    case static_cast<vk::Result>(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT):
+#endif
     case vk::Result::eErrorUnknown:
         needs_recreation = true;
-        break;
+        return false;
+    case vk::Result::eErrorDeviceLost:
+        GpuCheckpoint::ReportLost(instance.GetGraphicsQueue(), "Swapchain::AcquireNextImage");
+        ASSERT_MSG(false, "Device lost during Swapchain::AcquireNextImage");
+        return false;
     default:
         LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned unknown result {}",
                      vk::to_string(result));
@@ -173,9 +190,16 @@ bool Swapchain::Present() {
 
     auto result = instance.GetPresentQueue().presentKHR(present_info);
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR ||
-        result == vk::Result::eErrorSurfaceLostKHR) {
+        result == vk::Result::eErrorSurfaceLostKHR
+#ifdef VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT
+        || result == static_cast<vk::Result>(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
+#endif
+    ) {
         needs_recreation = true;
     } else {
+        if (result == vk::Result::eErrorDeviceLost) {
+            GpuCheckpoint::ReportLost(instance.GetGraphicsQueue(), "Swapchain::Present");
+        }
         ASSERT_MSG(result == vk::Result::eSuccess, "Swapchain presentation failed: {}",
                    vk::to_string(result));
     }

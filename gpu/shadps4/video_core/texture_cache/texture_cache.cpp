@@ -690,10 +690,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         // The guest requires a depth sampled texture, but cache can offer only Rxf. Need to
         // recreate the image.
         recreate |= requested_info.props.is_depth && !cache_image.info.props.is_depth;
-        // Basara 4 PC: or a colour texture is requested, but cache only has a depth image.
-        recreate |= !requested_info.props.is_depth && cache_image.info.props.is_depth &&
-                    !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(requested_info.pixel_format) &&
-                    !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(requested_info.pixel_format);
         break;
     case BindingType::Storage:
         // If the guest is going to use previously created depth as storage, the image needs to be
@@ -805,6 +801,16 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {merged_image_id, -1, -1};
         }
 
+        if (!image_info.props.is_depth && cache_image.info.props.is_depth &&
+            binding == BindingType::Texture &&
+            !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(image_info.pixel_format) &&
+            !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(image_info.pixel_format)) {
+            if (safe_to_delete) {
+                FreeImage(cache_image_id);
+            }
+            return {merged_image_id, -1, -1};
+        }
+
         if (const auto depth_image_id = ResolveDepthOverlap(image_info, binding, cache_image_id)) {
             return {depth_image_id, -1, -1};
         }
@@ -818,6 +824,14 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             (image_info.type == AmdGpu::ImageType::Color3D ||
              cache_image.info.type == AmdGpu::ImageType::Color3D)) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};
+        }
+
+        if (!IsViewTypeCompatible(image_info.type, cache_image.info.type)) {
+            // Pool reuse at the same address with incompatible dimensionality (e.g. Color1D on Color2D).
+            if (safe_to_delete) {
+                FreeImage(cache_image_id);
+            }
+            return {merged_image_id, -1, -1};
         }
 
         const bool pow2_padding_only =
@@ -973,9 +987,11 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
     // Right overlap, the image requested is a possible subresource of the image from cache.
     if (image_info.guest_address > cache_image.info.guest_address) {
-        if (auto mip = image_info.MipOf(cache_image.info); mip >= 0) {
-            if (auto slice = image_info.SliceOf(cache_image.info, mip); slice >= 0) {
-                return {cache_image_id, mip, slice};
+        if (IsViewTypeCompatible(image_info.type, cache_image.info.type)) {
+            if (auto mip = image_info.MipOf(cache_image.info); mip >= 0) {
+                if (auto slice = image_info.SliceOf(cache_image.info, mip); slice >= 0) {
+                    return {cache_image_id, mip, slice};
+                }
             }
         }
 
@@ -1096,7 +1112,9 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             continue;
         }
         if (!IsVulkanFormatCompatible(cache_image.info.pixel_format, info.pixel_format) ||
-            (cache_image.info.type != info.type && info.size != Extent3D{1, 1, 1})) {
+            (cache_image.info.type != info.type &&
+             (info.size != Extent3D{1, 1, 1} ||
+              !IsViewTypeCompatible(desc.view_info.type, cache_image.info.type)))) {
             continue;
         }
         if (exact_fmt && info.pixel_format != cache_image.info.pixel_format) {
@@ -1169,6 +1187,13 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         } else if (depth_mismatch) {
             image_id = {};
             created.reason = "depth mismatch";
+        } else if (!IsViewTypeCompatible(desc.view_info.type, image_resolved.info.type)) {
+            if (scheduler.CurrentTick() - image_resolved.tick_accessed_last >
+                NumFramesBeforeRemoval) {
+                FreeImage(image_id);
+            }
+            image_id = {};
+            created.reason = "incompatible view type";
         }
     }
     // Create and register a new image

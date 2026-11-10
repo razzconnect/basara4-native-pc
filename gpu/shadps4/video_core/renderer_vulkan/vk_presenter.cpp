@@ -11,6 +11,7 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_gpu_checkpoint.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "spartanport_overlay.h"
 #include "spartanport_settings.h"
@@ -40,6 +41,7 @@
 #include <span>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <vector>
 #include <vk_mem_alloc.h>
 #ifdef MemoryBarrier
@@ -463,6 +465,9 @@ Frame* Presenter::PrepareLastFrame() {
         if (result == vk::Result::eTimeout) {
             continue;
         }
+        if (result == vk::Result::eErrorDeviceLost) {
+            GpuCheckpoint::ReportLost(instance.GetGraphicsQueue(), "Presenter::PrepareLastFrame");
+        }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
     }
@@ -790,15 +795,22 @@ void Presenter::PresentLoadingFrame() {
     if (window.IsMinimized() || window.GetWidth() <= 0 || window.GetHeight() <= 0) {
         return;
     }
-    swapchain.UpdateVsync();
-    if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
-    }
-    if (!swapchain.AcquireNextImage()) {
-        if (!window.IsMinimized() && window.GetWidth() > 0 && window.GetHeight() > 0) {
+    {
+        std::scoped_lock submit_lock{Scheduler::submit_mutex};
+        swapchain.UpdateVsync();
+        if (swapchain.NeedsRecreation() || window.GetWidth() != swapchain.GetWidth() ||
+            window.GetHeight() != swapchain.GetHeight()) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
-        if (!swapchain.AcquireNextImage()) {
+    }
+    if (!swapchain.AcquireNextImage()) {
+        const bool recreate = swapchain.NeedsRecreation();
+        if (recreate && !window.IsMinimized() && window.GetWidth() > 0 && window.GetHeight() > 0) {
+            std::scoped_lock submit_lock{Scheduler::submit_mutex};
+            swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
+        if (!recreate || swapchain.NeedsRecreation() || !swapchain.AcquireNextImage()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
             return;
         }
     }
@@ -868,19 +880,26 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         return;
     }
 
-    // Recreate the swapchain if the window was resized.
-    swapchain.UpdateVsync();
-    if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+    // Recreate the swapchain if the window was resized or VSync toggled.
+    {
+        std::scoped_lock submit_lock{Scheduler::submit_mutex};
+        swapchain.UpdateVsync();
+        if (swapchain.NeedsRecreation() || window.GetWidth() != swapchain.GetWidth() ||
+            window.GetHeight() != swapchain.GetHeight()) {
+            swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
     }
 
     if (!swapchain.AcquireNextImage()) {
-        if (!window.IsMinimized() && window.GetWidth() > 0 && window.GetHeight() > 0) {
+        const bool recreate = swapchain.NeedsRecreation();
+        if (recreate && !window.IsMinimized() && window.GetWidth() > 0 && window.GetHeight() > 0) {
+            std::scoped_lock submit_lock{Scheduler::submit_mutex};
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
-        if (!swapchain.AcquireNextImage()) {
-            // User resizes the window too fast and GPU can't keep up. Skip this frame.
+        if (!recreate || swapchain.NeedsRecreation() || !swapchain.AcquireNextImage()) {
+            // User resizes the window too fast or Alt-Tab is mid-transition. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
             free_frame();
             return;
         }
@@ -1052,6 +1071,9 @@ Frame* Presenter::GetRenderFrame() {
 
     // Wait for the presentation to be finished so all frame resources are free
     while (wait() != vk::Result::eSuccess) {
+        if (result == vk::Result::eErrorDeviceLost) {
+            GpuCheckpoint::ReportLost(instance.GetGraphicsQueue(), "Presenter::GetRenderFrame");
+        }
         ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
                    "Device lost during waiting for a frame");
         // Retry if the waiting times out

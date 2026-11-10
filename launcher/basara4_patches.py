@@ -100,6 +100,12 @@ GUI_SCALE_CLAMP_PAT = "c5 fa 10 1d d7 28 61 00 c5 62 5d c4 c5 e2 5f ec"
 HUD_PROJ_CLAMP_PAT  = "c5 fa 10 25 41 bd ed 00 c5 da 5d c9 c5 fa 10 25 39 bd ed 00 c5 da 5d db"
 ICON_SCALE_W_PAT    = "81 f9 81 07 00 00 7c 22 48 63 d1"
 ICON_SCALE_H_PAT    = "3d 39 04 00 00 7c 22 48 63 c8"
+RTX_MIP_LOOP_PAT    = (
+    "eb 3f 66 2e 0f 1f 84 00 00 00 00 00 "
+    "4c 89 d0 4c 0f a4 c0 3f " + "?? " * 45 +
+    "4c 89 c3 48 c1 eb 26 81 e3 ff 1f 00 00 39 cb 77 ba "
+    "4c 89 c3 48 c1 eb 33 39 d3 77 af"
+)
 
 # Proportional un-clamped scaling for all 10 cGUI resolution modes (replaces clamp at 0xeea909)
 GUI_SCALE_UNCLAMP = (
@@ -169,7 +175,16 @@ def resolution_patches(image, res_name):
         writes.append((off + 8, b'\xc5\xf8\x28\xcc'))
         writes.append((off + 20, b'\xc5\xf8\x28\xdc'))
 
-    # 8. For >1080p, bypass uGUIIcon's redundant integer scaling multiplier and expand Garlic heap
+    # 8. Below 960x540 (480p/360p), stop rRenderTexture (.rtx) mip-downscale before mip_count < 1;
+    #    1920x1080 mips=1 textures (movie\RenderTargetTexture) otherwise underflowed 1 -> 0 -> 63
+    #    and failed GPU allocation (white video screen).
+    if w < 960 or h < 540:
+        for off in find(image, RTX_MIP_LOOP_PAT):
+            writes.append((off + 2, b'\xf6\x45\xd8\x3e\x74\x55\x90\x90\x90\x90'))
+            writes.append((off + 0x50, b'\x77\xb0'))
+            writes.append((off + 0x5b, b'\x77\xa5'))
+
+    # 9. For >1080p, bypass uGUIIcon's redundant integer scaling multiplier and expand Garlic heap
     if w > 1920 or h > 1080:
         for off in find(image, ICON_SCALE_W_PAT):
             writes.append((off + 6, b'\xeb'))

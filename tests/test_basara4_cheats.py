@@ -162,6 +162,27 @@ class Basara4CheatTests(unittest.TestCase):
             self.assertEqual(len(writes), 3)
             self.assertEqual(notes, ["unlimited fps", "1 cheat(s)"])
 
+    def test_rtx_mip_loop_guard_applies_only_below_540p(self):
+        loop_bytes = bytes.fromhex(
+            "eb 3f 66 2e 0f 1f 84 00 00 00 00 00 "
+            "4c 89 d0 4c 0f a4 c0 3f " + "90 " * 45 +
+            "4c 89 c3 48 c1 eb 26 81 e3 ff 1f 00 00 39 cb 77 ba "
+            "4c 89 c3 48 c1 eb 33 39 d3 77 af"
+        )
+        image = b"\xCC" * 0x100 + loop_bytes + b"\xCC" * 0x40
+
+        writes_480 = dict(basara4_patches.resolution_patches(image, "480p"))
+        self.assertIn(0x102, writes_480)
+        self.assertEqual(writes_480[0x102], b"\xf6\x45\xd8\x3e\x74\x55\x90\x90\x90\x90")
+        self.assertEqual(writes_480[0x150], b"\x77\xb0")
+        self.assertEqual(writes_480[0x15b], b"\x77\xa5")
+
+        writes_360 = dict(basara4_patches.resolution_patches(image, "360p"))
+        self.assertIn(0x102, writes_360)
+
+        for res in ("540p", "720p", "900p", "1440p", "4K"):
+            self.assertNotIn(0x102, dict(basara4_patches.resolution_patches(image, res)))
+
 
 if __name__ == "__main__":
     unittest.main()

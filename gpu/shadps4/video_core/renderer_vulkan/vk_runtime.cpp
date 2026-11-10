@@ -326,10 +326,12 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
                   vk::to_string(src->info.pixel_format), vk::to_string(dst->info.pixel_format));
     }
 
-    const u32 base_width = src->info.size.width;
-    const u32 base_height = src->info.size.height;
+    const u32 base_width = std::min(src->info.size.width, dst->info.size.width);
+    const u32 base_height = std::min(src->info.size.height, dst->info.size.height);
     const u32 base_depth =
-        dst->info.type == AmdGpu::ImageType::Color3D ? dst->info.size.depth : src->info.size.depth;
+        dst->info.type == AmdGpu::ImageType::Color3D
+            ? dst->info.size.depth
+            : std::min(src->info.size.depth, dst->info.size.depth);
 
     // Match sample count before copying
     SetBackingSamples(dst, dst->info.num_samples, false);

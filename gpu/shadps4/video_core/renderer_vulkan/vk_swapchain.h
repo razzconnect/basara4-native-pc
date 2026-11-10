@@ -31,6 +31,11 @@ public:
     /// Acquires the next image in the swapchain.
     bool AcquireNextImage();
 
+    /// Returns true when the swapchain needs to be recreated.
+    bool NeedsRecreation() const {
+        return needs_recreation;
+    }
+
     /// Presents the current image and move to the next one
     bool Present();
 

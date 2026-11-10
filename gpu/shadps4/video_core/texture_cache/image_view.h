@@ -23,6 +23,8 @@ class Scheduler;
 
 namespace VideoCore {
 
+[[nodiscard]] bool IsViewTypeCompatible(AmdGpu::ImageType view_type, AmdGpu::ImageType image_type);
+
 struct ImageViewInfo {
     ImageViewInfo() = default;
     ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageResource& desc) noexcept;
