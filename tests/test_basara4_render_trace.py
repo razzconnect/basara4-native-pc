@@ -1,6 +1,7 @@
 """Render debug trace controls and env propagation in launcher/basara4_launcher.py."""
 import contextlib
 import json
+import subprocess
 import sys
 import tempfile
 import types
@@ -231,6 +232,107 @@ class Basara4RenderTraceSessionsTest(unittest.TestCase):
         with mock.patch.object(Path, "iterdir", side_effect=PermissionError(13, "Permission denied")):
             report = bl.render_trace_report()
         self.assertIn("user\\render_traces could not be listed: [Errno 13] Permission denied", report)
+
+
+CHILD_WINDOW = r"""
+import sys, tkinter as tk
+root = tk.Tk()
+root.title("basara4 close test")
+def closed():
+    open(sys.argv[1], "w").write("closed by WM_CLOSE")
+    root.destroy()
+root.protocol("WM_DELETE_WINDOW", closed)
+root.update()
+print("ready", flush=True)
+root.mainloop()
+"""
+
+
+class Basara4StopGameTest(unittest.TestCase):
+    """Stop game / closing the launcher ask the game to close first, so it writes the end of its
+    logs (render trace session.summary); a second click stops it by force."""
+
+    @unittest.skipUnless(tk and sys.platform == "win32", "requires Tk on Windows")
+    def test_wm_close_lets_a_process_exit_by_itself(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "closed.txt"
+            child = subprocess.Popen([sys.executable, "-c", CHILD_WINDOW, str(marker)],
+                                     stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(child.stdout.readline().strip(), "ready")
+                self.assertEqual(bl.request_window_close(child.pid), 1)
+                self.assertEqual(child.wait(timeout=30), 0)  # exited by itself, not killed
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+                child.stdout.close()
+            self.assertEqual(marker.read_text(), "closed by WM_CLOSE")
+
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows")
+    def test_no_window_is_reported(self):
+        child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                 stdin=subprocess.PIPE)
+        try:
+            self.assertEqual(bl.request_window_close(child.pid), 0)
+        finally:
+            child.stdin.close()
+            child.wait()
+
+    def make_launcher(self):
+        proc = mock.Mock()
+        proc.pid = 4242
+        proc.poll.return_value = None
+        launcher = types.SimpleNamespace(
+            proc=proc, user_stopped=False, close_requested=False, closing_launcher=False,
+            stop_note="", status=mock.Mock(), stop=mock.Mock(), trace_session=None)
+        launcher._request_game_close = lambda: bl.Launcher._request_game_close(launcher)
+        launcher._finish_trace_session = mock.Mock(return_value="")
+        launcher._close_launcher = mock.Mock()
+        return launcher
+
+    def test_stop_asks_first_then_forces(self):
+        launcher = self.make_launcher()
+        with mock.patch.object(bl, "request_window_close", return_value=1) as ask:
+            bl.Launcher.on_stop(launcher)
+            ask.assert_called_once_with(4242)
+            launcher.proc.kill.assert_not_called()
+            self.assertTrue(launcher.close_requested and launcher.user_stopped)
+            launcher.stop.config.assert_called_with(text="Force stop")
+            bl.Launcher.on_stop(launcher)  # the game did not close: second click
+            self.assertEqual(ask.call_count, 1)
+        launcher.proc.kill.assert_called_once()
+        self.assertIn("by force", launcher.stop_note)
+
+    def test_stop_without_window_forces_and_says_why(self):
+        launcher = self.make_launcher()
+        with mock.patch.object(bl, "request_window_close", return_value=0):
+            bl.Launcher.on_stop(launcher)
+        launcher.proc.kill.assert_called_once()
+        self.assertIn("no window", launcher.stop_note)
+
+    def test_stop_when_the_request_fails_forces_and_says_why(self):
+        launcher = self.make_launcher()
+        with mock.patch.object(bl, "request_window_close",
+                               side_effect=PermissionError(5, "Access is denied")):
+            bl.Launcher.on_stop(launcher)
+        launcher.proc.kill.assert_called_once()
+        self.assertIn("Close request failed", launcher.stop_note)
+        self.assertIn("Access is denied", launcher.stop_note)
+
+    def test_closing_the_launcher_waits_for_the_game(self):
+        launcher = self.make_launcher()
+        with mock.patch.object(bl, "request_window_close", return_value=1), \
+                mock.patch.object(bl.messagebox, "askyesno", return_value=True):
+            bl.Launcher._close(launcher)
+            launcher.proc.kill.assert_not_called()
+            launcher._close_launcher.assert_not_called()  # _poll closes it after the game exits
+            self.assertTrue(launcher.closing_launcher)
+            bl.Launcher._close(launcher)  # closed again while waiting: force
+        launcher.proc.kill.assert_called_once()
+        launcher.proc.wait.assert_called_once()
+        launcher._finish_trace_session.assert_called_once()
+        launcher._close_launcher.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -105,9 +105,23 @@ int main() {
         RT::RecordAnomaly(RT::Anomaly::TexFormatRetry, "id=" + std::to_string(i), false);
     }
 
-    RT::OnFlip(RT::kStartupCaptureFlip);
-    assert(RT::ConsumeAutoCapture(reason));
-    assert(reason == "auto_startup");
+    // Startup capture by time since the first flip, not by flip count: 480 Hz flips (unlocked
+    // frame rate) for 2.9 s do not trigger it, the first flip at 3 s does, once.
+    {
+        auto& state = RT::detail::GetState();
+        constexpr u64 kFirstFlipMs = 950;
+        u64 flips = 0;
+        for (u64 t = kFirstFlipMs; t < kFirstFlipMs + RT::kStartupCaptureDelayMs; t += 2, ++flips) {
+            RT::detail::OnFlipAt(state, t);
+        }
+        assert(flips > 1000); // far past the old trigger (flip 180)
+        assert(!RT::ConsumeAutoCapture(reason));
+        RT::detail::OnFlipAt(state, kFirstFlipMs + RT::kStartupCaptureDelayMs);
+        assert(RT::ConsumeAutoCapture(reason));
+        assert(reason == "auto_startup");
+        RT::detail::OnFlipAt(state, kFirstFlipMs + 2 * RT::kStartupCaptureDelayMs);
+        assert(!RT::ConsumeAutoCapture(reason));
+    }
 
     for (u32 i = 0; i < RT::kMovieCaptureFrame; ++i) {
         RT::OnMovieFrame();

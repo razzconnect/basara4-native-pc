@@ -318,6 +318,42 @@ def copy_into_trace_session(session, files):
     return f"Not saved in render_traces\\{session.name}: {', '.join(failed)}.  " if failed else ""
 
 
+WM_CLOSE = 0x0010
+
+
+def request_window_close(pid):
+    """Post WM_CLOSE to the visible top-level windows of process `pid`, as clicking their X does.
+
+    The game handles it like a closed window: it writes the end of its logs (render trace
+    session.summary) and exits by itself. Returns how many windows were asked (0: none found).
+    Raises OSError when the windows cannot be listed or none of them accepts the message.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    windows = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            windows.append(hwnd)
+        return True
+
+    if not user32.EnumWindows(visit, 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    asked = sum(1 for hwnd in windows if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+    if windows and not asked:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return asked
+
+
 def render_trace_report():
     """Crash-report section: the newest render trace log tail and captures, or why they are missing."""
     text = ""
@@ -737,6 +773,9 @@ class Launcher(tk.Tk):
         self.play = ttk.Button(left, text="PLAY", style="Play.TButton", command=self.on_play)
         self.play.pack(fill="x", pady=(2, 6))
         self.user_stopped = False
+        self.close_requested = False  # the game was asked to close (Stop game / closing the launcher)
+        self.closing_launcher = False  # the launcher closes once the game has exited
+        self.stop_note = ""  # how the game was stopped, for the status line
         self.trace_session = None  # user\render_traces\<stamp> of the running traced game
         self.stop = ttk.Button(left, text="Stop game", command=self.on_stop, state="disabled")
         self.stop.pack(fill="x")
@@ -1231,6 +1270,8 @@ class Launcher(tk.Tk):
         if self.busy or self.proc:
             return
         self.user_stopped = False
+        self.close_requested = False
+        self.stop_note = ""
         self._collect()
         game = Path(self.cfg["game"]) if self.cfg["game"] else None
         exe = CORE
@@ -1564,9 +1605,34 @@ class Launcher(tk.Tk):
     def _deiconify(self):
         self.deiconify()
 
+    def _request_game_close(self):
+        """Ask the running game to close as from its window (WM_CLOSE): it then writes the end of
+        its logs (render trace session.summary) and exits by itself. Returns False, with the
+        reason in stop_note, when it could not be asked (the caller then stops it by force)."""
+        try:
+            asked = request_window_close(self.proc.pid)
+        except OSError as exc:
+            self.stop_note = f"Close request failed ({exc}): game stopped by force."
+            return False
+        if not asked:
+            self.stop_note = "The game has no window to close: game stopped by force."
+            return False
+        self.close_requested = True
+        self.stop.config(text="Force stop")
+        return True
+
     def on_stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.user_stopped = True
+        if not (self.proc and self.proc.poll() is None):
+            return
+        self.user_stopped = True
+        if self.close_requested:  # second click: the game did not close by itself
+            self.stop_note = "Game stopped by force (its logs end without session.summary)."
+            self.proc.kill()
+            return
+        if self._request_game_close():
+            self.status.config(text="Closing the game (it writes its logs)... "
+                                    "Click \"Force stop\" if it does not close.")
+        else:
             self.proc.kill()
 
     def _show_crash_dialog(self, code):
@@ -1921,7 +1987,13 @@ class Launcher(tk.Tk):
             self.proc = None
             trace_notice = self._finish_trace_session()
             self.play.config(state="normal")
-            self.stop.config(state="disabled")
+            self.stop.config(state="disabled", text="Stop game")
+            self.close_requested = False
+            if self.closing_launcher:  # the game was asked to close because the launcher closes
+                if trace_notice:
+                    messagebox.showwarning("Render trace", trace_notice)
+                self._close_launcher()
+                return
             if code not in (0, None) and not self.user_stopped:
                 self._deiconify()
                 self._show_crash_dialog(code)
@@ -1932,7 +2004,8 @@ class Launcher(tk.Tk):
                     self.destroy()
                 return
             err_msg = f"Game exited with code {code & 0xFFFFFFFF:#x}. See the log." if (code not in (0, None) and not self.user_stopped) else None
-            self.status.config(text=trace_notice + (err_msg if err_msg else "Game closed."))
+            self.status.config(text=trace_notice + (err_msg or self.stop_note or "Game closed."))
+            self.stop_note = ""
             self._load_ini_into_ui()
         self.after(500, self._poll)
 
@@ -1994,13 +2067,25 @@ class Launcher(tk.Tk):
 
     def _close(self):
         if self.proc and self.proc.poll() is None:
-            if not messagebox.askyesno("Game running", "Stop the game and close the launcher?"):
-                return
+            if not self.closing_launcher:
+                if not messagebox.askyesno("Game running", "Stop the game and close the launcher?"):
+                    return
+                self.user_stopped = True
+                if self._request_game_close():
+                    # _poll closes the launcher once the game has exited by itself.
+                    self.closing_launcher = True
+                    self.status.config(text="Closing the game (it writes its logs), then the "
+                                            "launcher... Close again to force.")
+                    return
+            # Closed again while waiting, or the game could not be asked: stop it by force.
             self.proc.kill()
             self.proc.wait()  # the process has ended, so its last_run.log is complete
             trace_notice = self._finish_trace_session()
             if trace_notice:
                 messagebox.showwarning("Render trace", trace_notice)
+        self._close_launcher()
+
+    def _close_launcher(self):
         try:
             self._collect()
         except Exception:

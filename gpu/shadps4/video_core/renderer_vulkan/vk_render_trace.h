@@ -187,9 +187,13 @@ inline constexpr u64 kMaxLogBytes = 16ULL * 1024 * 1024;
 // Each auto trigger (startup, movie, first anomaly) fires at most once, so at most 3 captures are
 // queued; this cap is a backstop so a future trigger cannot fill user\captures.
 inline constexpr u32 kMaxAutoCaptures = 4;
-// Startup auto capture at this flip: about 3 s at 60 fps after the first present, so the capture
-// records the first seconds of rendering on this GPU instead of the very first frame.
-inline constexpr u64 kStartupCaptureFlip = 180;
+// Startup auto capture: the first flip at least this long after the first flip, so the capture
+// records the first seconds of rendering on this GPU instead of the black boot screen. Measured in
+// time, not flips: it was flip 180 (3 s at 60 fps), but with an unlocked frame rate the launcher
+// runs vblank at 480 Hz (SPARTAN_VBLANK_HZ=0) and flip 180 came 0.4-0.9 s after the first one,
+// still on the black boot screen (13 of 13 such sessions; at 60 fps it came at 3.7 s and showed
+// the game, 1 of 1). Ticket B4-20261114-texcache-regresi.
+inline constexpr u64 kStartupCaptureDelayMs = 3000;
 // Movie auto capture at this decoded movie picture: about 0.5 s into the first movie at 30 fps, so
 // playback and the movie compositing path (bars, scaling) are running when the frame is captured.
 inline constexpr u32 kMovieCaptureFrame = 15;
@@ -207,6 +211,7 @@ struct State {
     std::atomic<bool> auto_capture_pending{false};
     std::atomic<u32> auto_captures_taken{0};
     std::atomic<u32> movie_frames{0};
+    std::atomic<u64> first_flip_ms{0}; ///< ElapsedMs of the first flip + 1 (0: no flip yet)
     std::atomic<bool> startup_auto_done{false};
     std::atomic<bool> movie_auto_done{false};
     std::atomic<bool> anomaly_auto_done{false};
@@ -569,16 +574,31 @@ inline void RecordAnomaly(Anomaly tag, Detail&& detail_text, bool trigger_auto_c
     }
 }
 
-inline void OnFlip(u64 flip_count) {
+namespace detail {
+/// A flip at now_ms (ElapsedMs): queues the startup capture on the first flip at least
+/// kStartupCaptureDelayMs after the first one, whatever the flip rate.
+inline void OnFlipAt(State& s, u64 now_ms) {
+    if (s.startup_auto_done.load(std::memory_order_relaxed)) {
+        return;
+    }
+    u64 first = 0;
+    if (s.first_flip_ms.compare_exchange_strong(first, now_ms + 1, std::memory_order_relaxed)) {
+        return;
+    }
+    if (now_ms + 1 - first >= kStartupCaptureDelayMs &&
+        !s.startup_auto_done.exchange(true, std::memory_order_relaxed)) {
+        std::scoped_lock lk{s.mutex};
+        QueueAutoCaptureLocked(s, "auto_startup");
+    }
+}
+} // namespace detail
+
+inline void OnFlip() {
     if (!Enabled()) {
         return;
     }
     auto& s = detail::GetState();
-    if (flip_count == kStartupCaptureFlip &&
-        !s.startup_auto_done.exchange(true, std::memory_order_relaxed)) {
-        std::scoped_lock lk{s.mutex};
-        detail::QueueAutoCaptureLocked(s, "auto_startup");
-    }
+    detail::OnFlipAt(s, detail::ElapsedMs(s));
 }
 
 inline void OnMovieFrame() {

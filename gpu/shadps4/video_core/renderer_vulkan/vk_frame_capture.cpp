@@ -330,7 +330,7 @@ void ResetCaptureBuffersLocked() {
 void FrameCapture::OnFlip(VAddr presented_address) {
     last_presented.store(presented_address, std::memory_order_relaxed);
     const u64 flip_num = flips.fetch_add(1, std::memory_order_release) + 1;
-    RenderTrace::OnFlip(flip_num);
+    RenderTrace::OnFlip();
 
     static const char* trigger = std::getenv("SPARTAN_CAPTURE_TRIGGER");
     const u32 cur = state.load(std::memory_order_acquire);
