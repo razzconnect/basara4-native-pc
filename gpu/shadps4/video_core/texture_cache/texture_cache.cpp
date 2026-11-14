@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 #include "video_core/texture_cache/aliasing.h"
 #include "video_core/texture_cache/host_compatibility.h"
+#include "video_core/texture_cache/overlap_resolution.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include <vulkan/vulkan_format_traits.hpp>
 #include "video_core/texture_cache/tile_manager.h"
@@ -1199,18 +1200,46 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     int view_mip{-1};
     int view_slice{-1};
     if (!image_id) {
-        for (const auto& cache_id : image_ids) {
-            view_mip = -1;
-            view_slice = -1;
-
-            const auto& merged_info = image_id ? slot_images[image_id].info : info;
-            auto [overlap_image_id, overlap_view_mip, overlap_view_slice] =
-                ResolveOverlap(merged_info, desc.type, cache_id, image_id, desc.needs_native);
-            if (overlap_image_id) {
-                image_id = overlap_image_id;
-                view_mip = overlap_view_mip;
-                view_slice = overlap_view_slice;
-            }
+        // Basara 4 PC: the loop itself is in overlap_resolution.h (unchanged), so the location it
+        // ends with can be checked against what its iterations found.
+        const OverlapLoopResult overlap = RunOverlapLoop(
+            std::span<const ImageId>{image_ids.data(), image_ids.size()},
+            [&](ImageId cache_id, ImageId merged_id) {
+                const auto& merged_info = merged_id ? slot_images[merged_id].info : info;
+                return ResolveOverlap(merged_info, desc.type, cache_id, merged_id,
+                                      desc.needs_native);
+            });
+        image_id = overlap.image_id;
+        view_mip = overlap.view_mip;
+        view_slice = overlap.view_slice;
+        if (overlap.LostView()) {
+            // Ticket B4-20261114-texcache-regresi (cutscene double picture, m018): a request found
+            // at mip/slice > 0 of a cached image ends at level/layer 0, so it is drawn or sampled
+            // into level 0. Observation only; the behavior is unchanged.
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::OverlapViewLost);
+            Vulkan::RenderTrace::RecordAnomaly(
+                Vulkan::RenderTrace::Anomaly::TexOverlapViewLost,
+                [&] {
+                    const auto describe = [&](ImageId id) -> std::string {
+                        if (!id) {
+                            return "none";
+                        }
+                        const ImageInfo& i = slot_images[id].info;
+                        return fmt::format("{:#x} {} {}x{} lv={} ly={}", i.guest_address,
+                                           vk::to_string(i.pixel_format), i.size.width,
+                                           i.size.height, i.resources.levels,
+                                           i.resources.layers);
+                    };
+                    return fmt::format(
+                        "req={:#x} {} {}x{} size={:#x} binding={} lost=(m{} s{}) in=({}) "
+                        "replaced_by=({}) final=({}) view=(m{} s{}) cached={}",
+                        info.guest_address, vk::to_string(info.pixel_format), info.size.width,
+                        info.size.height, info.guest_size, static_cast<int>(desc.type),
+                        overlap.found_mip, overlap.found_slice, describe(overlap.found_in),
+                        describe(overlap.replaced_by), describe(overlap.image_id),
+                        overlap.view_mip, overlap.view_slice, image_ids.size());
+                },
+                true);
         }
     }
 

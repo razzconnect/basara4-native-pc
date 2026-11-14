@@ -50,6 +50,7 @@ enum class Counter : std::size_t {
     TextureStillNotFit,
     PoolTypeMismatches,
     OverlapResolveFails,
+    OverlapViewLost,
     VmaBudgetFallbacks,
     AvPlayerErrors,
     Count
@@ -71,9 +72,11 @@ inline constexpr std::array<const char*, std::size_t(Counter::Count)> CounterNam
     "still_not_fit",
     "pool_mismatch",
     "overlap_fail",
+    "overlap_view_lost",
     "vma_fallback",
     "avplayer_err",
 }};
+static_assert(CounterNames.back() != nullptr, "every Counter needs a name");
 
 // Every RecordAnomaly tag. Each tag has its own budgets (below), so one tag that fires often can
 // never stop a different tag from being recorded or from queuing its auto capture.
@@ -106,6 +109,7 @@ enum class Anomaly : std::size_t {
     TexFormatRetry,
     TexFormatUnsupported,
     TexOverlapFail,
+    TexOverlapViewLost,
     TexFindDepthSubstitute,
     Count
 };
@@ -146,8 +150,10 @@ inline constexpr std::array<AnomalyInfo, std::size_t(Anomaly::Count)> AnomalyInf
     {"tex.format_retry", false},
     {"tex.format_unsupported", false},
     {"tex.overlap_fail", false},
+    {"tex.overlap_view_lost", false},
     {"tex.find_depth_sub", false},
 }};
+static_assert(AnomalyInfos.back().name != nullptr, "every Anomaly needs a name");
 
 inline constexpr const char* AnomalyName(Anomaly tag) {
     return AnomalyInfos[std::size_t(tag)].name;

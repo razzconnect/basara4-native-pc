@@ -52,7 +52,13 @@ struct Entry {
     std::vector<std::string> viewports; ///< first few distinct viewport/scissor states
     std::string note;
     std::vector<std::string> buffers; ///< dumped constants, per draw
+    std::vector<FrameCapture::ColorView> last_views; ///< color views of the last BeginPass
+    std::vector<std::string> target_draws;          ///< "cbN draw K" lines (RecordViewsLocked)
 };
+
+// A pass that changes its target view on every draw keeps its first lines; a mip chain pass
+// (one draw per level) needs a handful.
+constexpr size_t kMaxTargetDrawLines = 32;
 
 std::mutex capture_mutex;
 // Guarded by capture_mutex.
@@ -72,6 +78,32 @@ void AddBuffersLocked(Entry& entry) {
         }
     }
     pending_buffers.clear();
+}
+
+// Basara 4 PC: one line per color attachment whose CB address or view (base level/layer) leaves
+// the image base on the pass's first draw, or changes from the previous draw of the pass. The
+// pass groups its draws by image, so without these a mip target drawn into level 0 looks the same
+// as one drawn into its own level.
+void RecordViewsLocked(Entry& entry, const std::vector<Target>& colors,
+                       const FrameCapture::ColorView* views) {
+    if (!views) {
+        return;
+    }
+    const bool first = entry.last_views.empty();
+    for (size_t i = 0; i < colors.size(); ++i) {
+        if (!colors[i].address) {
+            continue;
+        }
+        const auto& v = views[i];
+        const bool off_base = v.cb_address != colors[i].address || v.base_level || v.base_layer;
+        const bool changed = !first && (i >= entry.last_views.size() || entry.last_views[i] != v);
+        if ((first ? off_base : changed) && entry.target_draws.size() < kMaxTargetDrawLines) {
+            entry.target_draws.push_back(std::format(
+                "cb{} draw {}: addr={:#x} image={:#x} level={} layer={}", i, entry.draws + 1,
+                v.cb_address, colors[i].address, v.base_level, v.base_layer));
+        }
+    }
+    entry.last_views.assign(views, views + colors.size());
 }
 
 std::mutex display_mutex;
@@ -232,6 +264,9 @@ void WriteLocked(VAddr presented, bool timeout_flush, u64 flip_num) {
         std::fprintf(f, "\n");
         for (size_t i = 0; i < e.colors.size(); ++i) {
             std::fprintf(f, "  color%zu %s\n", i, Describe(e.colors[i]).c_str());
+        }
+        for (const auto& line : e.target_draws) {
+            std::fprintf(f, "  %s\n", line.c_str());
         }
         if (!e.compute) {
             std::fprintf(f, "  depth  %s\n", Describe(e.depth).c_str());
@@ -410,7 +445,7 @@ void FrameCapture::AddDisplayBuffer(VAddr address) {
 
 void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_colors,
                              const VideoCore::ImageInfo* depth, std::string census,
-                             std::string scene_note) {
+                             std::string scene_note, const ColorView* views) {
     std::vector<Target> targets;
     bool display = false;
     {
@@ -453,6 +488,7 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
     const Target d = depth ? ToTarget(*depth) : Target{};
     if (pass_open && !entries.empty() && !entries.back().compute &&
         SameTargets(entries.back().colors, targets) && entries.back().depth.SameTarget(d)) {
+        RecordViewsLocked(entries.back(), targets, views);
         return;
     }
     entries.push_back({.compute = false,
@@ -460,6 +496,7 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
                        .depth = d,
                        .state = std::move(census),
                        .scene_note = std::move(scene_note)});
+    RecordViewsLocked(entries.back(), entries.back().colors, views);
     pass_open = true;
 }
 

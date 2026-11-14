@@ -101,6 +101,25 @@ int main() {
     Vulkan::FrameCapture::Draw(0x1111, 0x2222, 6, 1);
     Vulkan::FrameCapture::Skip("NullGraphicsPipeline", 0x3333, 0x4444);
 
+    // A mip chain pass (one draw per level, all on the same image): each draw's CB address and
+    // view level is recorded when it leaves the image base or changes. Draw 2 binds the mip 1
+    // address but level 0 (the double picture), draw 3 the mip 2 address at level 2.
+    VideoCore::ImageInfo chain = sampled_tex;
+    chain.guest_address = 0x105f8c0000;
+    const VideoCore::ImageInfo* chain_colors[] = {&chain};
+    using View = Vulkan::FrameCapture::ColorView;
+    const View level0[] = {{.cb_address = 0x105f8c0000, .base_level = 0, .base_layer = 0}};
+    const View mip1_at_level0[] = {{.cb_address = 0x105f9c0000, .base_level = 0, .base_layer = 0}};
+    const View mip2[] = {{.cb_address = 0x105fa00000, .base_level = 2, .base_layer = 0}};
+    Vulkan::FrameCapture::BeginPass(chain_colors, 1, nullptr, "state chain", {}, level0);
+    Vulkan::FrameCapture::Draw(0x5555, 0xa222fde5, 3, 1);
+    Vulkan::FrameCapture::BeginPass(chain_colors, 1, nullptr, "state chain", {}, mip1_at_level0);
+    Vulkan::FrameCapture::Draw(0x5555, 0xa222fde5, 3, 1);
+    Vulkan::FrameCapture::BeginPass(chain_colors, 1, nullptr, "state chain", {}, mip1_at_level0);
+    Vulkan::FrameCapture::Draw(0x5555, 0xa222fde5, 3, 1); // same view as the draw before: no line
+    Vulkan::FrameCapture::BeginPass(chain_colors, 1, nullptr, "state chain", {}, mip2);
+    Vulkan::FrameCapture::Draw(0x5555, 0xa222fde5, 3, 1);
+
     // Next frame's display pass closes the capture.
     VideoCore::ImageInfo other_display = display_target;
     other_display.guest_address = 0xABC1000;
@@ -133,6 +152,17 @@ int main() {
     assert(cap1.find("skipped_total: 1") != std::string::npos);
     assert(cap1.find("skip NullGraphicsPipeline count=1 vs=0000000000003333 ps=0000000000004444") !=
            std::string::npos);
+    // Per draw target views: the first draw at the image base adds no line; later changes do.
+    assert(cap1.find("PASS draws 4") != std::string::npos);
+    assert(cap1.find("cb0 draw 1:") == std::string::npos);
+    assert(cap1.find("  cb0 draw 2: addr=0x105f9c0000 image=0x105f8c0000 level=0 layer=0\n") !=
+           std::string::npos);
+    assert(cap1.find("cb0 draw 3:") == std::string::npos);
+    assert(cap1.find("  cb0 draw 4: addr=0x105fa00000 image=0x105f8c0000 level=2 layer=0\n") !=
+           std::string::npos);
+    // Passes without views (Pass #0 here) add no lines.
+    assert(cap1.find("cb0 draw", cap1.find("capture_reason")) ==
+           cap1.find("  cb0 draw 2:") + 2);
 
     // 3. 4-flip timeout flush when no display pass ever triggers or closes capture.
     Vulkan::FrameCapture::Request("timeout_test");

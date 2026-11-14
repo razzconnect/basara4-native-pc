@@ -41,11 +41,23 @@ public:
     /// GPU thread, at every draw/dispatch: starts or ends a recording at frame boundaries.
     static void Poll();
 
+    /// Where a color attachment of a draw points: the guest CB address and the view's base
+    /// level/layer in the image the texture cache found for it (Basara 4 PC, ticket
+    /// B4-20261114-texcache-regresi: a mip target drawn into level 0).
+    struct ColorView {
+        VAddr cb_address{};
+        u32 base_level{};
+        u32 base_layer{};
+        bool operator==(const ColorView&) const = default;
+    };
+
     /// `state`: the pass's census line (vk_pass_census.h), kept with the first pipeline that
     /// opened the pass. `scene_note`: optional SceneTargets / upscaler info for the new pass.
+    /// `views` (num_colors entries, optional): recorded per draw as "cbN draw K" lines whenever
+    /// they leave the image base or change within the pass.
     static void BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_colors,
                           const VideoCore::ImageInfo* depth, std::string census,
-                          std::string scene_note = {});
+                          std::string scene_note = {}, const ColorView* views = nullptr);
     static void Draw(u64 vs_hash, u64 ps_hash, u32 num_indices, u32 num_instances);
     static void Dispatch(u64 cs_hash, u32 x, u32 y, u32 z);
     static void Sampled(const VideoCore::ImageInfo& info, bool storage, u32 base_mip = 0,

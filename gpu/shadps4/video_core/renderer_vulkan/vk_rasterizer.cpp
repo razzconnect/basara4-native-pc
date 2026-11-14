@@ -3285,10 +3285,17 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     }
     if (census_on) {
         std::array<const VideoCore::ImageInfo*, AmdGpu::NUM_COLOR_BUFFERS> colors{};
+        // Basara 4 PC: the CB address and the view level/layer of each draw (frame capture
+        // "cbN draw K" lines), not only the image (B4-20261114-texcache-regresi).
+        std::array<FrameCapture::ColorView, AmdGpu::NUM_COLOR_BUFFERS> color_views{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
             if (cb_descs[cb].first) {
                 colors[cb] = &texture_cache.GetImage(cb_descs[cb].first).info;
                 census.color_samples.push_back(u8(regs.color_buffers[cb].NumSamples()));
+                const auto& base = cb_descs[cb].second.view_info.range.base;
+                color_views[cb] = {.cb_address = regs.color_buffers[cb].Address(),
+                                   .base_level = base.level,
+                                   .base_layer = base.layer};
             }
         }
         const auto* depth =
@@ -3315,7 +3322,8 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             }
         }
         FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth,
-                                PassCensus::Format(census), std::move(scene_note));
+                                PassCensus::Format(census), std::move(scene_note),
+                                color_views.data());
         diag_targets.clear();
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
             if (cb_descs[cb].first) {

@@ -304,6 +304,15 @@ target_include_directories(motion-history-test PRIVATE ..)
 add_executable(motion-shader-test EXCLUDE_FROM_ALL ../tests/test_motion_shaders.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(motion-shader-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(motion-shader-test PRIVATE spartanportgpu)
+# Basara 4 PC: FindImage's overlap loop (B4-20261114-texcache-regresi). "--expect-fixed" is
+# expected to fail until the loop keeps the subresource location (see the test's header).
+add_executable(overlap-loop-test EXCLUDE_FROM_ALL ../tests/test_overlap_loop.cpp ../tests/test_overlap_loop_stubs.cpp
+    shadps4/video_core/texture_cache/image_info.cpp shadps4/video_core/texture_cache/host_compatibility.cpp
+    shadps4/video_core/amdgpu/tiling.cpp shadps4/video_core/amdgpu/pixel_format.cpp
+    shim/common/assert.cpp shim/common/logging/log.cpp $<$<BOOL:${WIN32}>:../src/crash_dump_win.c>)
+target_compile_options(overlap-loop-test PRIVATE -UNDEBUG)
+target_include_directories(overlap-loop-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(overlap-loop-test PRIVATE Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum)
 add_executable(png-decode-test EXCLUDE_FROM_ALL ../tests/test_png_decode.cpp shim/spartanport_png.cpp)
 target_compile_options(png-decode-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_link_libraries(png-decode-test PRIVATE PkgConfig::FFMPEG)
