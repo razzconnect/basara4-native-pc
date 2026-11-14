@@ -60,6 +60,56 @@ int main() {
         dst.resources.levels = 2;
         assert(!GetAliasCopyExtent(src, dst));
     }
+    // A Color1D texture read over a one-row Color2D render target (Basara 4 ulti LUT, 256x1):
+    // the row is the whole image, so the GPU-written texels must reach the 1D image.
+    {
+        const ImageInfo target = Make({256, 1, 1});
+        ImageInfo lut = Make({256, 1, 1});
+        lut.type = AmdGpu::ImageType::Color1D;
+        const Extent3D row{256, 1, 1};
+        assert(GetAliasCopyExtent(target, lut) == row);
+        assert(GetAliasCopyExtent(lut, target) == row);
+        // Fields that only place rows after the first do not matter for one row.
+        lut.pitch = 512;
+        lut.props.is_pow2 = !target.props.is_pow2;
+        lut.bank_swizzle = 3;
+        assert(GetAliasCopyExtent(target, lut) == row);
+        assert(GetAliasCopyExtent(lut, target) == row);
+        // A compatible view format of the same texel size.
+        ImageInfo lut_uint = lut;
+        lut_uint.pixel_format = vk::Format::eR8G8B8A8Uint;
+        assert(GetAliasCopyExtent(target, lut_uint) == row);
+        assert(GetAliasCopyExtent(lut_uint, target) == row);
+    }
+    // The 1D/2D pair needs the same texels in the same memory order: anything else stays separate.
+    {
+        const ImageInfo target = Make({256, 1, 1});
+        ImageInfo lut = Make({256, 1, 1});
+        lut.type = AmdGpu::ImageType::Color1D;
+        ImageInfo other = lut;
+        other.tile_mode = AmdGpu::TileMode::Thin1DThin; // other texel order within the row
+        assert(!GetAliasCopyExtent(target, other) && !GetAliasCopyExtent(other, target));
+        other = lut;
+        other.size.width = 128;
+        assert(!GetAliasCopyExtent(target, other) && !GetAliasCopyExtent(other, target));
+        other = lut;
+        other.pixel_format = vk::Format::eR16G16B16A16Sfloat;
+        assert(!GetAliasCopyExtent(target, other) && !GetAliasCopyExtent(other, target));
+        other = lut;
+        other.guest_address += 0x100;
+        assert(!GetAliasCopyExtent(target, other) && !GetAliasCopyExtent(other, target));
+        other = lut;
+        other.alt_tile = true;
+        assert(!GetAliasCopyExtent(target, other) && !GetAliasCopyExtent(other, target));
+        const ImageInfo tall = Make({256, 2, 1}); // more than one row
+        assert(!GetAliasCopyExtent(tall, lut) && !GetAliasCopyExtent(lut, tall));
+        ImageInfo levels = lut;
+        levels.resources.levels = 2;
+        assert(!GetAliasCopyExtent(target, levels) && !GetAliasCopyExtent(levels, target));
+        ImageInfo volume = target;
+        volume.type = AmdGpu::ImageType::Color3D; // only the 1D/2D pair
+        assert(!GetAliasCopyExtent(volume, lut) && !GetAliasCopyExtent(lut, volume));
+    }
     std::puts("aliasing-test: OK");
     return 0;
 }

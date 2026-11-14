@@ -260,6 +260,19 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
 
 void Runtime::CopyAliasImage(VideoCore::Image* src, VideoCore::Image* dst,
                              const vk::Extent3D& extent) {
+    if (ConvertImageType(src->info.type) != ConvertImageType(dst->info.type)) {
+        // Basara 4 PC: vkCmdCopyImage copies between different image types only for 2D<->3D.
+        // The one-row Color1D/Color2D aliases (texture_cache/aliasing.cpp) are the whole image on
+        // both sides, so they go through a buffer, as in CopyImage's buffer path.
+        ASSERT_MSG(extent.width == src->info.size.width && extent.height == src->info.size.height &&
+                       extent.depth == src->info.size.depth,
+                   "Cross-type alias copy must cover the whole source image");
+        const u64 size =
+            u64{extent.width} * extent.height * extent.depth * (src->info.num_bits / 8);
+        const auto copy_ref = staging_pool.Request(size, VideoCore::MemoryType::DeviceLocal);
+        CopyImageWithBuffer(src, dst, copy_ref.buffer, copy_ref.offset);
+        return;
+    }
     SetBackingSamples(src, src->info.num_samples);
     SetBackingSamples(dst, dst->info.num_samples);
     scheduler.EndRendering();

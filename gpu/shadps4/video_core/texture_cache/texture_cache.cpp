@@ -827,21 +827,54 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
+        if (image_info.size != cache_image.info.size) {
+            // Pool reuse at the same base address with different 2D dimensions (e.g. a 512x512
+            // character texture or half-res target reusing a freed 3840x2160 4K render target).
+            // Basara 4 PC: from v1.0.7 (13284dd), dropped in v1.0.8 (90bdc0b) without a stated
+            // reason. Without it a smaller target here fell to "use image view" below and drew
+            // into the corner of level 0 of the larger image: the cutscene double picture that
+            // v1.0.6/v1.0.7 had fixed. A separate image still shares the memory through the
+            // alias copies (texture_cache/aliasing.cpp).
+            if (safe_to_delete) {
+                FreeImage(cache_image_id);
+            }
+            return {merged_image_id, -1, -1};
+        }
+
         if (!IsViewTypeCompatible(image_info.type, cache_image.info.type)) {
             // Pool reuse at the same address with incompatible dimensionality (e.g. Color1D on Color2D).
+            // Basara 4 PC: a Color1D texture over a one-row Color2D target (the ulti LUT) holds
+            // the same texels. Its own 1D image is created as before (a 1D view of a 2D image is
+            // invalid, the v1.0.8 4K crash), and the cached image is kept even when old: it
+            // becomes the alias source, so the GPU-written row is copied into the 1D image
+            // (SynchronizeAlias) instead of the new image reading stale guest memory.
+            const bool shares_texels = GetAliasCopyExtent(cache_image.info, image_info) ||
+                                       GetAliasCopyExtent(image_info, cache_image.info);
             Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::PoolTypeMismatches);
             Vulkan::RenderTrace::LogOnce(
                 [&] {
-                    return fmt::format("pool_type_{}_{}", u32(image_info.type),
-                                       u32(cache_image.info.type));
+                    return fmt::format("pool_type_{}_{}_{}", u32(image_info.type),
+                                       u32(cache_image.info.type), int(shares_texels));
                 },
                 "tex.pool_type_mismatch",
                 [&] {
-                    return fmt::format("addr={:#x} new_type={} old_type={} safe={}",
+                    const auto layout = [](const ImageInfo& i) {
+                        return fmt::format("{}x{}x{} {} pitch={} tile={} array={} swz={} pow2={} "
+                                           "lv={} ly={}",
+                                           i.size.width, i.size.height, i.size.depth,
+                                           vk::to_string(i.pixel_format), i.pitch,
+                                           u32(i.tile_mode), u32(i.array_mode),
+                                           u32(i.bank_swizzle), u32(i.props.is_pow2),
+                                           i.resources.levels, i.resources.layers);
+                    };
+                    return fmt::format("addr={:#x} new_type={} old_type={} safe={} alias={} "
+                                       "new=({}) old=({})",
                                        image_info.guest_address, u32(image_info.type),
-                                       u32(cache_image.info.type), int(safe_to_delete));
+                                       u32(cache_image.info.type), int(safe_to_delete),
+                                       int(shares_texels), layout(image_info),
+                                       layout(cache_image.info));
                 });
-            if (safe_to_delete) {
+            if (safe_to_delete && !shares_texels) {
                 FreeImage(cache_image_id);
             }
             return {merged_image_id, -1, -1};
@@ -1209,8 +1242,12 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             image_id = {};
             created.reason = "depth mismatch";
         } else if (!IsViewTypeCompatible(desc.view_info.type, image_resolved.info.type)) {
-            if (scheduler.CurrentTick() - image_resolved.tick_accessed_last >
-                NumFramesBeforeRemoval) {
+            // Basara 4 PC: kept when it shares its texels with the new image (see ResolveOverlap):
+            // the alias copy brings its GPU-written content over.
+            const bool shares_texels = GetAliasCopyExtent(image_resolved.info, info) ||
+                                       GetAliasCopyExtent(info, image_resolved.info);
+            if (!shares_texels && scheduler.CurrentTick() - image_resolved.tick_accessed_last >
+                                      NumFramesBeforeRemoval) {
                 FreeImage(image_id);
             }
             image_id = {};
