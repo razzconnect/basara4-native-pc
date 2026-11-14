@@ -10,6 +10,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #include <vk_mem_alloc.h>
@@ -132,6 +133,10 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
         VkResult result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &alloc_ci, &unsafe_buffer,
                                           &allocation, out_alloc_info);
         if (result != VK_SUCCESS) {
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::VmaBudgetFallbacks);
+            Vulkan::RenderTrace::RecordAnomaly(
+                "vma.buffer_fallback",
+                fmt::format("size={} {}", buffer_ci.size, vk::to_string(vk::Result{result})));
             VmaAllocationCreateInfo fallback_ci = alloc_ci;
             fallback_ci.flags &= ~(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT |
                                    VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);

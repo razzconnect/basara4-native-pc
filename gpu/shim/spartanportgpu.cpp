@@ -31,6 +31,7 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/movie_bars.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 
 extern "C" {
 // runtime_memory.c
@@ -221,6 +222,7 @@ static void StartProfileWriter() {
 
 extern "C" int spartanportgpu_init(const SpartanGpuConfig* config) {
     SpartanSettings::Load();
+    std::atexit(&Vulkan::RenderTrace::WriteSessionSummary);
 #ifdef SPARTAN_PGO_GENERATE
     StartProfileWriter();
 #endif
@@ -248,6 +250,7 @@ extern "C" int spartanportgpu_init(const SpartanGpuConfig* config) {
             SDL_Delay(2);
         }
         LOG_INFO(Frontend, "Window closed by user");
+        Vulkan::RenderTrace::WriteSessionSummary();
         runtime_report();
         std::fflush(stdout);
         std::_Exit(0);
@@ -364,6 +367,7 @@ extern "C" int spartanportgpu_vibration_percent(void) {
 
 extern "C" void spartanportgpu_movie_picture(void) {
     Vulkan::MovieBars::Cutscenes().NotePicture(Vulkan::MovieBars::NowMs());
+    Vulkan::RenderTrace::OnMovieFrame();
 }
 
 extern "C" int spartanportgpu_mouse_prompt_distance(void) {

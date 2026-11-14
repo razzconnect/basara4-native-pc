@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_gpu_checkpoint.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
@@ -828,6 +829,13 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         if (!IsViewTypeCompatible(image_info.type, cache_image.info.type)) {
             // Pool reuse at the same address with incompatible dimensionality (e.g. Color1D on Color2D).
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::PoolTypeMismatches);
+            Vulkan::RenderTrace::LogOnce(
+                fmt::format("pool_type_{}_{}", u32(image_info.type), u32(cache_image.info.type)),
+                "tex.pool_type_mismatch",
+                fmt::format("addr={:#x} new_type={} old_type={} safe={}",
+                            image_info.guest_address, u32(image_info.type),
+                            u32(cache_image.info.type), int(safe_to_delete)));
             if (safe_to_delete) {
                 FreeImage(cache_image_id);
             }
@@ -1180,6 +1188,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             created.reason = "exact format";
         } else if (image_resolved.info.resources < info.resources) {
             // The image was clearly picked up wrong.
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::OverlapResolveFails);
+            Vulkan::RenderTrace::RecordAnomaly(
+                "tex.overlap_fail",
+                fmt::format("addr={:#x} {} {}x{} res=({},{}) vs cached=({},{})",
+                            info.guest_address, vk::to_string(info.pixel_format), info.size.width,
+                            info.size.height, info.resources.levels, info.resources.layers,
+                            image_resolved.info.resources.levels,
+                            image_resolved.info.resources.layers));
             FreeImage(image_id);
             image_id = {};
             LOG_WARNING(Render_Vulkan, "Image overlap resolve failed");
@@ -1226,6 +1242,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     // List every image cached at this address and what the lookup decided, once per occurrence (16 at most).
     if (p_image->info.props.is_depth && !info.props.is_depth && !Vulkan::LiverpoolToVK::IsFormatDepthCompatible(info.pixel_format) &&
         !Vulkan::LiverpoolToVK::IsFormatStencilCompatible(info.pixel_format)) {
+        Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::DepthColorSubstitutions);
+        Vulkan::RenderTrace::RecordAnomaly(
+            "tex.find_depth_sub",
+            fmt::format("addr={:#x} want={} {}x{} got={} {}x{}", info.guest_address,
+                        vk::to_string(info.pixel_format), info.size.width, info.size.height,
+                        vk::to_string(p_image->info.pixel_format), p_image->info.size.width,
+                        p_image->info.size.height),
+            true);
         static u32 logged = 0;
         if (logged++ < 16) {
             LOG_WARNING(Render_Vulkan,

@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_gpu_checkpoint.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 
 #include <vk_mem_alloc.h>
 
@@ -863,6 +864,12 @@ void Instance::CollectDeviceParameters() {
     LOG_INFO(Render_Vulkan, "GPU_Vulkan_Driver: {}", driver_name);
     LOG_INFO(Render_Vulkan, "GPU_Vulkan_Version: {}", api_version);
     LOG_INFO(Render_Vulkan, "GPU_Vulkan_Extensions: {}", extensions);
+
+    const std::string gpu_summary =
+        fmt::format("{} | {} ({}) | Vulkan {} | {} | no_msaa={}", vendor_name, model_name,
+                    IsIntegrated() ? "iGPU" : "dGPU", api_version, driver_version, int(no_msaa));
+    std::printf("GPU driver: %s\n", gpu_summary.c_str());
+    RenderTrace::SetGpuInfo(gpu_summary, "");
 }
 
 void Instance::CollectPhysicalMemoryInfo() {
@@ -933,24 +940,49 @@ void Instance::CollectImageFormatInfo() {
     // Check and log format support details.
     for (const auto& format : LiverpoolToVK::SurfaceFormats()) {
         if (!IsFormatSupported(format.vk_format, format.flags)) {
+            const auto missing = format.flags & ~GetFormatFeatureFlags(format.vk_format);
             LOG_WARNING(Render_Vulkan,
                         "Surface format data_format={}, number_format={} is not fully supported "
                         "(vk_format={}, missing features={})",
                         static_cast<u32>(format.data_format),
                         static_cast<u32>(format.number_format), vk::to_string(format.vk_format),
-                        vk::to_string(format.flags & ~GetFormatFeatureFlags(format.vk_format)));
+                        vk::to_string(missing));
+            RenderTrace::AddUnsupportedFormat(
+                fmt::format("surface dfmt={} nfmt={} vk={} missing={}", u32(format.data_format),
+                            u32(format.number_format), vk::to_string(format.vk_format),
+                            vk::to_string(missing)));
         }
     }
     for (const auto& format : LiverpoolToVK::DepthFormats()) {
         if (!IsFormatSupported(format.vk_format, format.flags)) {
+            const auto missing = format.flags & ~GetFormatFeatureFlags(format.vk_format);
             LOG_WARNING(Render_Vulkan,
                         "Depth format z_format={}, stencil_format={} is not fully supported "
                         "(vk_format={}, missing features={})",
                         static_cast<u32>(format.z_format), static_cast<u32>(format.stencil_format),
                         vk::to_string(format.vk_format),
-                        vk::to_string(format.flags & ~GetFormatFeatureFlags(format.vk_format)));
+                        vk::to_string(missing));
+            RenderTrace::AddUnsupportedFormat(
+                fmt::format("depth z={} st={} vk={} missing={}", u32(format.z_format),
+                            u32(format.stencil_format), vk::to_string(format.vk_format),
+                            vk::to_string(missing)));
         }
     }
+
+    const std::string caps = fmt::format(
+        "mixed_depth={} mixed_any={} stencil_export={} depth_clip={} depth_unrestricted={} "
+        "dyn_state3={} dyn_cwrite={} vtx_dyn={} feedback_loop={} sparse={} block_texel={} "
+        "img2d_of_3d={} min_lod={} pipeline_bin={} maint8={} budget_mb={}",
+        int(IsMixedDepthSamplesSupported()), int(IsMixedAnySamplesSupported()),
+        int(IsShaderStencilExportSupported()), int(IsDepthClipControlSupported()),
+        int(IsDepthRangeUnrestrictedSupported()), int(IsExtendedDynamicState3Supported()),
+        int(IsDynamicColorWriteMaskSupported()), int(IsVertexInputDynamicState()),
+        int(IsAttachmentFeedbackLoopLayoutSupported()), int(supports_sparse_buffer),
+        int(supports_block_texel_view), int(Is2dViewOf3dSupported()),
+        int(IsImageViewMinLodSupported()), int(pipeline_binaries), int(IsMaintenance8Supported()),
+        static_cast<unsigned long long>(total_memory_budget / (1024ULL * 1024ULL)));
+    std::printf("GPU caps: %s\n", caps.c_str());
+    RenderTrace::SetGpuInfo("", caps);
 }
 
 void Instance::CollectToolingInfo() const {

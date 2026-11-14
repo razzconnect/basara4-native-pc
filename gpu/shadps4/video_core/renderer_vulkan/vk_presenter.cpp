@@ -11,8 +11,10 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "video_core/renderer_vulkan/vk_gpu_checkpoint.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "spartanport_overlay.h"
 #include "spartanport_settings.h"
 #include "spartanport_graphics.h"
@@ -230,9 +232,50 @@ std::filesystem::path ScreenshotPath() {
     return dir / name;
 }
 
+void UpdateRenderTraceConfig() {
+    const auto& s = SpartanSettings::Get();
+    const int mode = s.display_mode.load(std::memory_order_relaxed);
+    const bool vsync = s.vsync.load(std::memory_order_relaxed);
+    const int fps = s.fps_limit.load(std::memory_order_relaxed);
+    const int res = s.render_resolution.load(std::memory_order_relaxed);
+    const bool fsr1 = s.fsr1.load(std::memory_order_relaxed);
+    const bool rcas = s.rcas.load(std::memory_order_relaxed);
+    const int aniso = s.anisotropy.load(std::memory_order_relaxed);
+    const bool async = s.async_shaders.load(std::memory_order_relaxed);
+    const int queued = s.frames_queued.load(std::memory_order_relaxed);
+    const bool stale = s.stale_readback.load(std::memory_order_relaxed);
+    const bool deferred = s.deferred_readback.load(std::memory_order_relaxed);
+
+    static int p_mode = -1, p_vsync = -1, p_fps = -1, p_res = -1, p_fsr1 = -1, p_rcas = -1,
+               p_aniso = -1, p_async = -1, p_queued = -1, p_stale = -1, p_deferred = -1;
+    if (mode == p_mode && int(vsync) == p_vsync && fps == p_fps && res == p_res &&
+        int(fsr1) == p_fsr1 && int(rcas) == p_rcas && aniso == p_aniso && int(async) == p_async &&
+        queued == p_queued && int(stale) == p_stale && int(deferred) == p_deferred) {
+        return;
+    }
+    p_mode = mode;
+    p_vsync = int(vsync);
+    p_fps = fps;
+    p_res = res;
+    p_fsr1 = int(fsr1);
+    p_rcas = int(rcas);
+    p_aniso = aniso;
+    p_async = int(async);
+    p_queued = queued;
+    p_stale = int(stale);
+    p_deferred = int(deferred);
+
+    const char* render_res_env = std::getenv("SPARTAN_RENDER_RES");
+    RenderTrace::SetConfigSummary(fmt::format(
+        "mode={} vsync={} fps={} res={} render_res={} fsr1={} rcas={} aniso={} async={} "
+        "queued={} stale_rb={} deferred_rb={}",
+        mode, int(vsync), fps, res, (render_res_env && render_res_env[0]) ? render_res_env : "1080p",
+        int(fsr1), int(rcas), aniso, int(async), queued, int(stale), int(deferred)));
+}
+
 /// Records the copy of `image` (layout TransferSrcOptimal) and saves it once the GPU is done.
 void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
-                       const Frame& frame) {
+                       const Frame& frame, const std::filesystem::path& path, bool notify_overlay) {
     const VkBufferCreateInfo buffer_ci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                        .size = VkDeviceSize(frame.width) * frame.height * 4,
                                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
@@ -245,6 +288,8 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
     if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation, &info) !=
         VK_SUCCESS) {
         LOG_ERROR(Render_Vulkan, "Screenshot: no memory for the readback");
+        RenderTrace::RecordAnomaly("capture.png_nomem",
+                                   fmt::format("{}x{}", frame.width, frame.height));
         return;
     }
     cmdbuf.copyImageToBuffer(frame.image, vk::ImageLayout::eTransferSrcOptimal, buffer,
@@ -258,7 +303,7 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
                            vk::DependencyFlags{}, to_host, {}, {});
     scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info,
                                       width = frame.width, height = frame.height, format = frame.format,
-                                      hdr = frame.is_hdr, path = ScreenshotPath()] {
+                                      hdr = frame.is_hdr, path, notify_overlay] {
         vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
         std::vector<u8> rgba;
         const bool converted =
@@ -266,8 +311,15 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
         vmaDestroyBuffer(allocator, buffer, allocation);
         if (!converted) {
             LOG_ERROR(Render_Vulkan, "Screenshot: unsupported format {}", vk::to_string(format));
-            SpartanOverlay::ShowNotice("Screenshot failed: unsupported image format");
+            RenderTrace::RecordAnomaly("screenshot.unsupported_fmt", vk::to_string(format));
+            if (notify_overlay) {
+                SpartanOverlay::ShowNotice("Screenshot failed: unsupported image format");
+            }
             return;
+        }
+        std::error_code ec;
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path(), ec);
         }
         size_t png_size = 0;
         void* png = tdefl_write_image_to_png_file_in_memory_ex(rgba.data(), int(width), int(height), 4,
@@ -286,11 +338,22 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
             mz_free(png);
         }
         if (saved) {
-            std::printf("Screenshot: %s (%ux%u)\n", Common::FS::PathToUTF8String(path).c_str(), width, height);
-            SpartanOverlay::ShowNotice("Screenshot saved: " + Common::FS::PathToUTF8String(path.filename()));
+            if (notify_overlay) {
+                std::printf("Screenshot: %s (%ux%u)\n", Common::FS::PathToUTF8String(path).c_str(),
+                            width, height);
+                SpartanOverlay::ShowNotice("Screenshot saved: " +
+                                           Common::FS::PathToUTF8String(path.filename()));
+            } else {
+                std::printf("Render trace screenshot: %s (%ux%u)\n",
+                            Common::FS::PathToUTF8String(path).c_str(), width, height);
+                RenderTrace::Log("capture.png_written", Common::FS::PathToUTF8String(path));
+            }
         } else {
             LOG_ERROR(Render_Vulkan, "Screenshot: cannot write {}", Common::FS::PathToUTF8String(path));
-            SpartanOverlay::ShowNotice("Screenshot failed: cannot write the file");
+            RenderTrace::RecordAnomaly("capture.png_write_fail", Common::FS::PathToUTF8String(path));
+            if (notify_overlay) {
+                SpartanOverlay::ShowNotice("Screenshot failed: cannot write the file");
+            }
         }
     });
 }
@@ -322,6 +385,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     SpartanOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
+    UpdateRenderTraceConfig();
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("SPARTAN_PIPELINE_BINARIES", true) &&
                               EmulatorSettings.IsPipelineCacheEnabled();
@@ -358,6 +422,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 }
 
 Presenter::~Presenter() {
+    RenderTrace::WriteSessionSummary();
 
     draw_scheduler.Finish();
     present_scheduler.Finish();
@@ -415,6 +480,10 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     VkResult result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &alloc_info,
                                      &unsafe_image, &frame->allocation, nullptr);
     if (result != VK_SUCCESS) {
+        RenderTrace::Count(RenderTrace::Counter::VmaBudgetFallbacks);
+        RenderTrace::RecordAnomaly("vma.presenter_fallback",
+                                   fmt::format("{}x{} {}", width, height,
+                                               vk::to_string(vk::Result{result})));
         VmaAllocationCreateInfo fallback_info = alloc_info;
         fallback_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &fallback_info,
@@ -677,6 +746,33 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // spartanport: black bars around a cutscene when the render resolution is not 16:9 (movie_bars.h).
     pp_settings.picture = MovieBars::Cutscenes().Bars(image_size.width, image_size.height,
                                                       MovieBars::NowMs());
+    {
+        static u32 p_gw = 0, p_gh = 0, p_fw = 0, p_fh = 0;
+        static bool p_fsr = false, p_rcas = false, p_srgb = false;
+        static float p_x0 = -1.f, p_y0 = -1.f, p_x1 = -1.f, p_y1 = -1.f;
+        const bool changed = p_gw != image_size.width || p_gh != image_size.height ||
+                             p_fw != frame->width || p_fh != frame->height ||
+                             p_fsr != fsr_settings.enable || p_rcas != fsr_settings.use_rcas ||
+                             p_srgb != (pp_settings.srgb_input != 0) ||
+                             p_x0 != pp_settings.picture.x0 || p_y0 != pp_settings.picture.y0 ||
+                             p_x1 != pp_settings.picture.x1 || p_y1 != pp_settings.picture.y1;
+        if (changed) {
+            p_gw = image_size.width;
+            p_gh = image_size.height;
+            p_fw = frame->width;
+            p_fh = frame->height;
+            p_fsr = fsr_settings.enable;
+            p_rcas = fsr_settings.use_rcas;
+            p_srgb = pp_settings.srgb_input != 0;
+            p_x0 = pp_settings.picture.x0;
+            p_y0 = pp_settings.picture.y0;
+            p_x1 = pp_settings.picture.x1;
+            p_y1 = pp_settings.picture.y1;
+            RenderTrace::SetDisplayInfo(p_gw, p_gh, p_fw, p_fh, p_fsr, p_rcas, p_srgb, p_x0, p_y0,
+                                        p_x1, p_y1);
+        }
+        UpdateRenderTraceConfig();
+    }
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
     if (frame_dump) {
         // The presented image as the swapchain blit reads it (General after the pass).
@@ -899,6 +995,8 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         if (!recreate || swapchain.NeedsRecreation() || !swapchain.AcquireNextImage()) {
             // User resizes the window too fast or Alt-Tab is mid-transition. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");
+            RenderTrace::Count(RenderTrace::Counter::PresentSkips);
+            RenderTrace::RecordAnomaly("present.skip", "acquireNextImageKHR failed", false);
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             free_frame();
             return;
@@ -971,7 +1069,16 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                          MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
                          vk::Filter::eLinear);
         if (VideoCore::ConsumeGameOnlyScreenshotRequests() != 0) {
-            CaptureScreenshot(instance, scheduler, cmdbuf, *frame);
+            CaptureScreenshot(instance, scheduler, cmdbuf, *frame, ScreenshotPath(), true);
+        }
+        if (const std::string trace_png = FrameCapture::ConsumeTraceScreenshotPath();
+            !trace_png.empty()) {
+            const std::filesystem::path png_path(
+                reinterpret_cast<const char8_t*>(trace_png.c_str()));
+            CaptureScreenshot(instance, scheduler, cmdbuf, *frame, png_path, false);
+        }
+        if (std::string notice; FrameCapture::ConsumeCompletedNotice(notice)) {
+            SpartanOverlay::ShowNotice(notice);
         }
         // spartanport: the settings menu / FPS counter over the frame, at display resolution.
         const bool overlay = SpartanOverlay::Visible();
@@ -1041,6 +1148,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
     }
+    RenderTrace::Count(RenderTrace::Counter::FramesPresented);
 
     free_frame();
     if (!is_reusing_frame && is_game_frame) {

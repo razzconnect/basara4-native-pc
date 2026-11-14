@@ -221,6 +221,8 @@ PREPARE_LOG = USER / "prepare.log"
 MAPPING = USER / "gamepad_mapping.txt"
 AUDIO_LOG = USER / "audio_debug.log"
 AUDIO_WAV = USER / "audio_wav"  # SPARTAN_AUDIO_WAV_DIR: float WAV capture of the mix and of long voices
+RENDER_TRACE_LOG = USER / "render_trace.log"
+CAPTURES_DIR = USER / "captures"
 STAMP = OUT / "prepared.json"
 DEFAULT_DLC_DIR = ROOT.parent / "DLC"
 if not DEFAULT_DLC_DIR.is_dir():
@@ -308,6 +310,7 @@ import basara4_cheats  # noqa: E402
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
             "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
             "anisotropy": 0, "resolution": "native", "upscale": "off", "audio_log": False, "audio_wav": False,
+            "render_trace": False,
             "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100, "cheats": [],
             "input_mode": "controller"}
 
@@ -546,8 +549,8 @@ class Launcher(tk.Tk):
         self.play_now = play_now
         self.title(f"Sengoku Basara 4 Sumeragi  \u00b7  {BRAND} by {AUTHOR}")
         self.configure(bg=BG)
-        self.geometry("1060x650")
-        self.minsize(1020, 620)
+        self.geometry("1060x685")
+        self.minsize(1020, 650)
         icon = Path(__file__).resolve().parent / "basara4.ico"
         if icon.is_file():
             try:
@@ -718,18 +721,27 @@ class Launcher(tk.Tk):
         self.rcas_var = tk.BooleanVar(value=self.cfg["rcas"])
         self.audio_var = tk.BooleanVar(value=self.cfg.get("audio_log", False))
         self.wav_var = tk.BooleanVar(value=False)
+        self.render_trace_var = tk.BooleanVar(value=self.cfg.get("render_trace", False))
 
         chk_frame = ttk.Frame(opts, style="Panel.TFrame")
-        chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 4))
+        chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 2))
         ttk.Checkbutton(chk_frame, text="VSync", variable=self.vsync_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="Sharpening (RCAS)", variable=self.rcas_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="Audio debug log", variable=self.audio_var, command=self._audio_toggled).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="+ WAV capture (up to 3 GB)", variable=self.wav_var, command=self._wav_toggled).pack(side="left")
 
-        # Baris 4: Keterangan / Tips
+        # Baris 4: Render debug trace toggle
+        trace_frame = ttk.Frame(opts, style="Panel.TFrame")
+        trace_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 4))
+        ttk.Checkbutton(trace_frame, text="Render debug trace", variable=self.render_trace_var).pack(side="left", padx=(0, 10))
+        ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
+        ttk.Label(trace_frame, text="Logs GPU anomalies, auto-captures & enables F11 -> user\\captures",
+                  style="Muted.TLabel").pack(side="left")
+
+        # Baris 5: Keterangan / Tips
         ttk.Label(opts, text="The game draws at 1080p. Window size sets windowed mode. FSR 1 sharpens if screen > 1080p.\n"
                              "Above 60 turns off internal frame limiter. VSync caps rate at monitor refresh.",
-                  style="Muted.TLabel", wraplength=600).grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+                  style="Muted.TLabel", wraplength=600).grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
         r += 1
         ttk.Label(right, text="In-game menu: Insert, or R3 + L2 on the pad (it changes these too).",
                   style="Muted.TLabel").grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 0))
@@ -764,11 +776,12 @@ class Launcher(tk.Tk):
         # Row 2 of tools
         tools2 = ttk.Frame(right, style="Panel.TFrame")
         tools2.grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Manage extracted DLC…", command=self.open_dlc_manager).pack(side="left")
+        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open captures", command=self.open_captures).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
         r += 1
         r += 1
         self.pad_label = ttk.Label(right, text="", style="Muted.TLabel")
@@ -1025,6 +1038,7 @@ class Launcher(tk.Tk):
             resolution=dict(RESOLUTIONS)[self.res_var.get()], upscale=dict(UPSCALERS)[self.up_var.get()],
             anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.audio_var.get(),
             audio_wav=self.audio_var.get() and self.wav_var.get(),
+            render_trace=self.render_trace_var.get(),
             gpu_index=selected_gpu_idx,
             input_mode=self.input_mode_var.get())
         save_config(self.cfg)
@@ -1073,6 +1087,12 @@ class Launcher(tk.Tk):
             env["SPARTAN_AUDIO_DEBUG"] = str(AUDIO_LOG)
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # needs about 70 MB per minute
             env["SPARTAN_AUDIO_WAV_DIR"] = str(AUDIO_WAV)
+        if self.cfg.get("render_trace"):
+            env["SPARTAN_RENDER_TRACE"] = str(RENDER_TRACE_LOG)
+            env["SPARTAN_FRAME_CAPTURE_KEY"] = "1"
+        else:
+            env.pop("SPARTAN_RENDER_TRACE", None)
+            env.pop("SPARTAN_FRAME_CAPTURE_KEY", None)
         if self.cfg["fps_limit"] != 60:  # uncapped: 480 Hz vblank, the present thread paces to the limit
             env["SPARTAN_VBLANK_HZ"] = "0"
             env["SPARTAN_FPS_LIMIT"] = str(self.cfg["fps_limit"])
@@ -1200,6 +1220,11 @@ class Launcher(tk.Tk):
                 os.replace(AUDIO_LOG, AUDIO_LOG.with_name("audio_debug.previous.log"))
             except OSError:
                 pass
+        if self.cfg.get("render_trace") and RENDER_TRACE_LOG.exists():
+            try:
+                os.replace(RENDER_TRACE_LOG, RENDER_TRACE_LOG.with_name("render_trace.previous.log"))
+            except OSError:
+                pass
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # only this run's captures stay
             AUDIO_WAV.mkdir(parents=True, exist_ok=True)
             for old in AUDIO_WAV.glob("*.wav"):
@@ -1223,8 +1248,13 @@ class Launcher(tk.Tk):
             save_config(self.cfg)
             self.wav_var.set(False)
         self.stop.config(state="normal")
-        self.status.config(text=notice + ("Running, writing user\\audio_debug.log…" if self.cfg.get("audio_log")
-                                          else "Running…  (Insert opens the in-game menu)"))
+        if self.cfg.get("render_trace"):
+            run_msg = "Running, writing user\\render_trace.log (F11 = capture trace)…"
+        elif self.cfg.get("audio_log"):
+            run_msg = "Running, writing user\\audio_debug.log…"
+        else:
+            run_msg = "Running…  (Insert opens the in-game menu)"
+        self.status.config(text=notice + run_msg)
         self._refresh_image_label()
 
     def _make_window_icon(self, game):
@@ -1541,6 +1571,23 @@ class Launcher(tk.Tk):
                 except Exception:
                     pass
 
+            render_tail = ""
+            if RENDER_TRACE_LOG.is_file():
+                try:
+                    r_lines = RENDER_TRACE_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if r_lines:
+                        render_tail = "\n".join(r_lines[-12:])
+                except Exception:
+                    pass
+            capture_files = []
+            if CAPTURES_DIR.is_dir():
+                try:
+                    capture_files = sorted(
+                        CAPTURES_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
+                    )[:6]
+                except Exception:
+                    pass
+
             hints_block = ("\nDiagnosis Hardware / Memori:\n" + "\n".join(f"  {h}" for h in hw_hints) + "\n") if hw_hints else ""
             clip_text = (
                 f"=== Sengoku Basara 4 PC — Crash Diagnostic Report ===\n"
@@ -1557,6 +1604,12 @@ class Launcher(tk.Tk):
             )
             if audio_tail:
                 clip_text += f"\n--- [Recent Audio Log (audio_debug.log)] ---\n{audio_tail}\n"
+            if render_tail:
+                clip_text += f"\n--- [Recent Render Trace (render_trace.log)] ---\n{render_tail}\n"
+            if capture_files:
+                clip_text += "\n--- [Recent Captures (user/captures)] ---\n" + "\n".join(
+                    f"  - {p.name}" for p in capture_files
+                ) + "\n"
 
             clip_text += "\n=== End of Report ==="
             self.clipboard_clear()
@@ -1574,6 +1627,7 @@ class Launcher(tk.Tk):
 
         ttk.Button(btn_bar, text="📋 Copy Error ke Clipboard", command=copy_details).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="📁 Buka File Log", command=self.open_log).pack(side="left", padx=4)
+        ttk.Button(btn_bar, text="📸 Buka Captures", command=self.open_captures).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="🌐 Lapor ke Discord", command=open_discord).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="Tutup", command=win.destroy).pack(side="right", padx=4)
 
@@ -1828,6 +1882,16 @@ class Launcher(tk.Tk):
             os.startfile(AUDIO_LOG)
         else:
             messagebox.showinfo("Audio log", "No audio log yet. Tick \"Audio debug log\", then start the game.")
+
+    def open_render_log(self):
+        if RENDER_TRACE_LOG.exists():
+            os.startfile(RENDER_TRACE_LOG)
+        else:
+            messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Render debug trace\", then start the game.")
+
+    def open_captures(self):
+        CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        os.startfile(CAPTURES_DIR)
 
     def open_saves(self):
         path = USER / "savedata"

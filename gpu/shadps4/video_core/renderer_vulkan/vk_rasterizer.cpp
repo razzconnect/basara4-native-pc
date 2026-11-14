@@ -7,6 +7,7 @@
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "video_core/renderer_vulkan/vk_lighting_test.h"
 #include "video_core/renderer_vulkan/vk_pass_census.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "common/debug.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -123,6 +124,9 @@ bool Rasterizer::FilterDraw() {
     const auto& regs = Regs();
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::EliminateFastClear) {
         // Clears the render target if FCE is launched before any draws
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("EliminateFastClear");
+        }
         EliminateFastClear();
         return false;
     }
@@ -130,16 +134,25 @@ bool Rasterizer::FilterDraw() {
         // TODO: check for a valid MRT1 to promote the draw to the resolve pass.
         LOG_TRACE(Render_Vulkan, "FMask decompression pass skipped");
         ScopedMarkerInsert("FmaskDecompress");
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("FmaskDecompress");
+        }
         return false;
     }
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::Resolve) {
         LOG_TRACE(Render_Vulkan, "Resolve pass");
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("Resolve");
+        }
         Resolve();
         return false;
     }
     if (regs.primitive_type == AmdGpu::PrimitiveType::None) {
         LOG_TRACE(Render_Vulkan, "Primitive type 'None' skipped");
         ScopedMarkerInsert("PrimitiveTypeNone");
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("PrimitiveTypeNone");
+        }
         return false;
     }
 
@@ -159,6 +172,9 @@ bool Rasterizer::FilterDraw() {
         // do a copy from one depth-stencil surface to another, without a pixel shader.
         // We need to detect this case and perform the copy, otherwise it will have no effect.
         LOG_TRACE(Render_Vulkan, "Performing depth-stencil override copy");
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("DepthStencilCopy");
+        }
         DepthStencilCopy(depth_copy, stencil_copy);
         return false;
     }
@@ -941,6 +957,11 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
                          prepared->reg_checksum == liverpool->gfx_reg_checksum);
     }
     if (!pipeline) {
+        if (FrameCapture::Active()) {
+            const auto& r = Regs();
+            FrameCapture::Skip("NullGraphicsPipeline", AmdGpu::GetParams(r.vs_program).hash,
+                               AmdGpu::GetParams(r.ps_program).hash);
+        }
         return;
     }
     if (pipelined && FilterDrawPasses()) {
@@ -1033,6 +1054,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const bool inputs_resolved = draw_inputs.resolved;
     draw_inputs.pending = false;
     if (!bound) {
+        RenderTrace::Count(RenderTrace::Counter::BindFalseDrops);
+        if (FrameCapture::Active()) {
+            const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+            FrameCapture::Skip("BindResourcesFalse",
+                               pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                               ps ? ps->pgm_hash : 0);
+        }
         return;
     }
     const auto state = BeginRendering(pipeline);
@@ -1239,6 +1267,11 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     };
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
     if (!pipeline) {
+        if (FrameCapture::Active()) {
+            const auto& r = Regs();
+            FrameCapture::Skip("NullIndirectPipeline", AmdGpu::GetParams(r.vs_program).hash,
+                               AmdGpu::GetParams(r.ps_program).hash);
+        }
         return;
     }
     const IndirectDraw indirect = {arg_address + offset, count_address, stride, max_count};
@@ -1270,6 +1303,13 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
                          UiComposition::NativeViewport(viewport.xscale * 2, viewport.yscale * 2));
     }
     if (!BindResources(pipeline)) {
+        RenderTrace::Count(RenderTrace::Counter::BindFalseDrops);
+        if (FrameCapture::Active()) {
+            const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+            FrameCapture::Skip("IndirectBindFalse",
+                               pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                               ps ? ps->pgm_hash : 0);
+        }
         return;
     }
     const auto state = BeginRendering(pipeline);
@@ -1343,6 +1383,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
             }
         }
     });
+    if (FrameCapture::Active()) {
+        const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        FrameCapture::Draw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                           ps ? ps->pgm_hash : 0, max_count, 1);
+        FrameCapture::Note(" indirect");
+    }
     DebugState.IncDrawCall();
 
     ResetBindings(false);
@@ -1359,6 +1405,9 @@ void Rasterizer::DispatchDirect() {
     }
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
     if (!pipeline) {
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("NullComputePipeline", AmdGpu::GetParams(CsRegs()).hash, 0);
+        }
         return;
     }
     if (pipelined) {
@@ -1391,10 +1440,16 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         upscaler->OnDispatch(cs.pgm_hash);
     }
     if (ExecuteShaderHLE(cs, Regs(), cs_program, *this)) {
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("ComputeShaderHLE", cs.pgm_hash, 0);
+        }
         return;
     }
 
     if (!BindResources(pipeline)) {
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("ComputeImageHLE", cs.pgm_hash, 0);
+        }
         return;
     }
 
@@ -1456,6 +1511,9 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     }
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
     if (!pipeline) {
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("NullIndirectCompute", AmdGpu::GetParams(CsRegs()).hash, 0);
+        }
         return;
     }
     if (pipelined) {
@@ -1472,6 +1530,10 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     const u32 offset = 0;
 
     if (!BindResources(pipeline)) {
+        if (FrameCapture::Active()) {
+            FrameCapture::Skip("IndirectComputeImageHLE",
+                               pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, 0);
+        }
         return;
     }
 
@@ -1488,6 +1550,10 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     const vk::Pipeline handle = pipeline->Handle();
     const vk::Buffer args = buffer->Handle();
     const u64 args_offset = base;
+    if (FrameCapture::Active()) {
+        FrameCapture::Dispatch(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, 0, 0, 0);
+        FrameCapture::Note(" indirect");
+    }
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         if (Scheduler::FullBarriers()) {
             Scheduler::RecordFullBarrier(cmdbuf);
@@ -2385,6 +2451,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                         "data_format={}, num_format={}",
                         tsharp.Address(), tsharp.pitch, tsharp.width, static_cast<u32>(data_fmt),
                         static_cast<u32>(num_fmt));
+            RenderTrace::Count(RenderTrace::Counter::InvalidTSharps);
+            RenderTrace::RecordAnomaly("tex.invalid_tsharp",
+                                       fmt::format("addr={:#x} w={} pitch={} dfmt={} nfmt={}",
+                                                   tsharp.Address(), tsharp.width, tsharp.pitch,
+                                                   u32(data_fmt), u32(num_fmt)));
             image_bindings.emplace_back(VideoCore::ImageId{}, &image_desc_storage.emplace_back());
             image_binding_entries.push_back(nullptr);
             binding_proxy_ok.push_back(false);
@@ -2426,6 +2497,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 Vulkan::LiverpoolToVK::IsFormatStencilCompatible(wanted.view_info.format)) {
                 return;
             }
+            RenderTrace::Count(RenderTrace::Counter::DepthColorSubstitutions);
+            RenderTrace::RecordAnomaly(
+                "tex.depth_as_color",
+                fmt::format("want {} {}x{} at {:#x} got {} {}x{} at {:#x} redir={}",
+                            vk::to_string(wanted.view_info.format), wanted.info.size.width,
+                            wanted.info.size.height, wanted.info.guest_address,
+                            vk::to_string(used.info.pixel_format), used.info.size.width,
+                            used.info.size.height, used.info.guest_address, int(redirected)),
+                true);
             static u32 logged = 0;
             if (logged++ >= 16) {
                 return;
@@ -2519,6 +2599,19 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 const VideoCore::Image& wrong = *image;
                 const auto retry_id = texture_cache.FindImage(desc, true);
                 auto& retry = texture_cache.GetImage(retry_id);
+                const bool still_bad = !image_serves_request(retry, desc);
+                RenderTrace::Count(RenderTrace::Counter::TextureFormatRetries);
+                if (still_bad) {
+                    RenderTrace::Count(RenderTrace::Counter::TextureStillNotFit);
+                }
+                RenderTrace::RecordAnomaly(
+                    "tex.format_retry",
+                    fmt::format("want {} {}x{} at {:#x} -> {} {}x{} still_bad={}",
+                                vk::to_string(desc.view_info.format), desc.info.size.width,
+                                desc.info.size.height, desc.info.guest_address,
+                                vk::to_string(retry.info.pixel_format), retry.info.size.width,
+                                retry.info.size.height, int(still_bad)),
+                    still_bad);
                 static u32 logged = 0;
                 if (logged++ < 16) {
                     LOG_WARNING(Render_Vulkan,
@@ -2624,7 +2717,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
             if (FrameCapture::Active()) {
-                FrameCapture::Sampled(image.info, is_storage);
+                FrameCapture::Sampled(image.info, is_storage, desc.view_info.range.base.level,
+                                      desc.view_info.range.extent.levels,
+                                      desc.view_info.range.base.layer,
+                                      desc.view_info.range.extent.layers);
             }
 
             vk::ImageView view = *image_view.image_view;
@@ -3197,8 +3293,21 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             regs.ps_input_addr.persp_sample_ena || regs.ps_input_addr.linear_sample_ena;
         census.feedback_loop = attachment_feedback_loop;
         census.area = {state.width, state.height};
+        const auto sz = scene_targets->Size();
+        std::string scene_note = fmt::format(
+            "started={} reduced={} scene={}x{} out={}x{} scale=({:.3f},{:.3f}) redir=c{}/d{} fb={}",
+            int(scene_started), int(reduced), sz.width, sz.height, state.width, state.height,
+            target_scale[0], target_scale[1], int(color_redirected), int(depth_redirected),
+            int(attachment_feedback_loop));
+        if (cb_descs[0].first) {
+            const auto& r0 = cb_descs[0].second.view_info.range;
+            if (r0.base.level || r0.base.layer || r0.extent.layers > 1) {
+                scene_note += fmt::format(" cb0[m{} l{}+{}]", r0.base.level, r0.base.layer,
+                                          r0.extent.layers);
+            }
+        }
         FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth,
-                                PassCensus::Format(census));
+                                PassCensus::Format(census), std::move(scene_note));
         diag_targets.clear();
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
             if (cb_descs[cb].first) {
@@ -3550,6 +3659,13 @@ void Rasterizer::UpdateViewportScissorState() const {
     auto& dynamic_state = scheduler.GetDynamicState();
     dynamic_state.SetViewports(viewports);
     dynamic_state.SetScissors(scissors);
+    if (FrameCapture::Active() && !viewports.empty() && !scissors.empty()) {
+        const auto& vp = viewports[0];
+        const auto& sc = scissors[0];
+        FrameCapture::Viewport(vp.x, vp.y, vp.width, vp.height, vp.minDepth, vp.maxDepth,
+                               sc.offset.x, sc.offset.y, sc.extent.width, sc.extent.height,
+                               target_scale[0], target_scale[1], regs.IsClipDisabled());
+    }
 }
 
 vk::Pipeline Rasterizer::SquarePass(const GraphicsPipeline& pipeline) const {
