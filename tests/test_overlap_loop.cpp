@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // FindImage's overlap loop (texture_cache/overlap_resolution.h, the code FindImage runs) with
-// ImageInfo's own MipOf/SliceOf. Ticket B4-20261114-texcache-regresi, cutscene double picture:
-// a render target for mip 1 of a 3-level RGBA16F chain, with a stale image left at the mip 1
-// address. No game or Vulkan device required.
+// ImageInfo's own MipOf/SliceOf. Ticket B4-20261114-texcache-regresi, cutscene double picture.
 //
-//   overlap-loop-test                 the loop as it is today, and the tex.overlap_view_lost
-//                                     observation of it: passes.
-//   overlap-loop-test --expect-fixed  what the loop should do (mip 1 kept in every order):
-//                                     EXPECTED TO FAIL until the loop is fixed.
+// Rule: the view FindImage returns is the request's location in the returned image, whatever
+// order the page table lists the overlapping images in. Checked for every order of every set of
+// stale images around a 3-level RGBA16F chain (requests for mip 1 and mip 2), for an array slice,
+// and for an iteration that replaces the image (ExpandImage). The loop before the fix
+// (legacy_view_*) is counted alongside: the orders it got wrong are the ones the render trace
+// reports as tex.overlap_view_kept.
+//
+// No game or Vulkan device required. "--expect-fixed" (the command from before the fix) runs the
+// same checks.
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
-#include <cstring>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "video_core/amdgpu/resource.h"
@@ -25,7 +29,7 @@ namespace {
 constexpr VAddr kChainAddress = 0x105f8c0000;
 
 ImageInfo Make(VAddr address, u32 width, u32 height, u32 levels, vk::Format format, u32 bits,
-               u32 pitch = 0) {
+               u32 pitch = 0, u32 layers = 1) {
     ImageInfo info{};
     info.guest_address = address;
     info.size = {width, height, 1};
@@ -34,23 +38,25 @@ ImageInfo Make(VAddr address, u32 width, u32 height, u32 levels, vk::Format form
     info.num_bits = bits;
     info.type = AmdGpu::ImageType::Color2D;
     info.resources.levels = levels;
-    info.resources.layers = 1;
+    info.resources.layers = layers;
     info.UpdateSize();
     return info;
 }
 
-// The branches of TextureCache::ResolveOverlap (texture_cache.cpp) that this layout reaches, with
-// their return values; the address geometry is ImageInfo's own MipOf/SliceOf.
-//  - equal address, other texel size: "allocation from a pool" -> {merged, -1, -1}
-//  - right overlap, request inside the cached image: {cached, mip, slice}; else {none, -1, -1}
-//  - left overlap, cached image inside the request: always ends {merged, -1, -1}
+// The branches of TextureCache::ResolveOverlap (texture_cache.cpp) these layouts reach, with their
+// return values; the address geometry is ImageInfo's own MipOf/SliceOf. All images are Color2D,
+// so its view type checks pass.
+//  - equal address: other texel size ("allocation from a pool") or other 2D size (v1.0.7 size
+//    check) -> {merged, -1, -1}; otherwise "use image view" -> {merged ? merged : cached, -1, -1}
+//  - right overlap: {cached, mip, slice} when merged_info is inside it, else {none, -1, -1}
+//  - left overlap: always ends {merged, -1, -1}
 std::tuple<ImageId, int, int> ResolveLikeTextureCache(const std::vector<ImageInfo>& images,
                                                       const ImageInfo& request, ImageId cache_id,
                                                       ImageId merged_id) {
     const ImageInfo& merged_info = merged_id ? images[merged_id.index] : request;
     const ImageInfo& cached = images[cache_id.index];
     if (merged_info.guest_address == cached.guest_address) {
-        if (merged_info.num_bits != cached.num_bits) {
+        if (merged_info.num_bits != cached.num_bits || merged_info.size != cached.size) {
             return {merged_id, -1, -1};
         }
         return {merged_id ? merged_id : cache_id, -1, -1};
@@ -66,64 +72,151 @@ std::tuple<ImageId, int, int> ResolveLikeTextureCache(const std::vector<ImageInf
     return {merged_id, -1, -1};
 }
 
-OverlapLoopResult Run(const std::vector<ImageInfo>& images, const ImageInfo& request,
-                      std::vector<ImageId> order) {
-    return RunOverlapLoop(std::span<const ImageId>{order.data(), order.size()},
-                          [&](ImageId cache_id, ImageId merged_id) {
-                              return ResolveLikeTextureCache(images, request, cache_id, merged_id);
-                          });
+// FindImage's locate: the request's own location in an image.
+std::pair<s32, s32> Locate(const std::vector<ImageInfo>& images, const ImageInfo& request,
+                           ImageId id) {
+    const s32 mip = request.MipOf(images[id.index]);
+    return {mip, mip >= 0 ? request.SliceOf(images[id.index], mip) : -1};
 }
 
-void Print(const char* name, const OverlapLoopResult& r) {
-    std::printf("%-26s image=%u view=(m%d s%d) found=(m%d s%d in %u) replaced_by=%u lost=%d\n",
-                name, r.image_id.index, r.view_mip, r.view_slice, r.found_mip, r.found_slice,
-                r.found_in.index, r.replaced_by.index, int(r.LostView()));
+OverlapLoopResult Run(const std::vector<ImageInfo>& images, const ImageInfo& request,
+                      const std::vector<ImageId>& order) {
+    return RunOverlapLoop(
+        std::span<const ImageId>{order.data(), order.size()},
+        [&](ImageId cache_id, ImageId merged_id) {
+            return ResolveLikeTextureCache(images, request, cache_id, merged_id);
+        },
+        [&](ImageId id) { return Locate(images, request, id); });
+}
+
+struct Tally {
+    u32 orders = 0;
+    u32 legacy_wrong = 0;
+};
+
+// Every order of every subset of `stale` together with `target`: the request must end at
+// (target, mip, slice) every time, and tex.overlap_view_kept must fire exactly where the old
+// loop ended elsewhere.
+Tally CheckAllOrders(const std::vector<ImageInfo>& images, const ImageInfo& request,
+                     ImageId target, const std::vector<ImageId>& stale, s32 mip, s32 slice) {
+    Tally tally;
+    const u32 subsets = 1u << stale.size();
+    for (u32 mask = 0; mask < subsets; ++mask) {
+        std::vector<ImageId> order{target};
+        for (size_t i = 0; i < stale.size(); ++i) {
+            if (mask & (1u << i)) {
+                order.push_back(stale[i]);
+            }
+        }
+        std::sort(order.begin(), order.end());
+        do {
+            const OverlapLoopResult r = Run(images, request, order);
+            ++tally.orders;
+            if (r.image_id != target || r.view_mip != mip || r.view_slice != slice) {
+                std::fprintf(stderr, "order");
+                for (const ImageId id : order) {
+                    std::fprintf(stderr, " %u", id.index);
+                }
+                std::fprintf(stderr, ": image %u view (m%d s%d), want image %u view (m%d s%d)\n",
+                             r.image_id.index, r.view_mip, r.view_slice, target.index, mip,
+                             slice);
+                assert(!"the view depends on the order of the overlapping images");
+            }
+            const bool legacy_right =
+                r.legacy_view_mip == mip && r.legacy_view_slice == slice;
+            tally.legacy_wrong += !legacy_right;
+            assert(!r.LostView());
+            assert(r.KeptView() == (!legacy_right && (mip > 0 || slice > 0)));
+        } while (std::next_permutation(order.begin(), order.end()));
+    }
+    return tally;
+}
+
+void Report(const char* name, const Tally& t) {
+    std::printf("%-44s %3u orders: all keep the location; the old loop lost it in %u\n", name,
+                t.orders, t.legacy_wrong);
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
-    const bool expect_fixed = argc == 2 && !std::strcmp(argv[1], "--expect-fixed");
-
-    // id 0: the bloom/DoF chain, RGBA16F 960x540, 3 levels (PASS ps a222fde5 at 1080p).
-    // id 1: a stale 1-level image left at the mip 1 address by pool reuse (other texel size, so
-    //       FindImage's perfect match skips it and the overlap loop runs).
+int main() {
+    // The bloom/DoF chain (PASS ps a222fde5 at 1080p) and stale images left by pool reuse in its
+    // address range. None is identical to a request, so FindImage's perfect match skips them and
+    // the overlap loop runs.
     std::vector<ImageInfo> images;
     images.push_back(Make(kChainAddress, 960, 540, 3, vk::Format::eR16G16B16A16Sfloat, 64));
-    const VAddr mip1_address = kChainAddress + images[0].mips_layout[1].offset;
-    images.push_back(Make(mip1_address, 480, 270, 1, vk::Format::eR8G8B8A8Unorm, 32));
-    // The render target the second draw binds: mip 1 of the chain.
-    const ImageInfo request = Make(mip1_address, 480, 270, 1, vk::Format::eR16G16B16A16Sfloat, 64,
-                                   images[0].mips_layout[1].pitch);
-    assert(request.MipOf(images[0]) == 1);
+    const ImageInfo chain_info = images[0]; // a copy: images grows below
+    const VAddr mip1 = kChainAddress + chain_info.mips_layout[1].offset;
+    const VAddr mip2 = kChainAddress + chain_info.mips_layout[2].offset;
+    images.push_back(Make(kChainAddress, 1920, 1080, 1, vk::Format::eR8G8B8A8Unorm, 32)); // 1
+    images.push_back(Make(mip1, 480, 270, 1, vk::Format::eR8G8B8A8Unorm, 32));            // 2
+    images.push_back(Make(mip1, 240, 135, 1, vk::Format::eR16G16B16A16Sfloat, 64));       // 3
+    images.push_back(Make(mip2, 240, 135, 1, vk::Format::eR8G8B8A8Unorm, 32));            // 4
+    const ImageId chain{0};
+    const std::vector<ImageId> stale{ImageId{1}, ImageId{2}, ImageId{3}, ImageId{4}};
 
-    const ImageId chain{0}, stale{1};
-    const auto only_chain = Run(images, request, {chain});
-    const auto stale_first = Run(images, request, {stale, chain});
-    const auto chain_first = Run(images, request, {chain, stale});
-    Print("only chain", only_chain);
-    Print("stale image, then chain", stale_first);
-    Print("chain, then stale image", chain_first);
+    // Render targets of the chain pass: mip 1 and mip 2.
+    const ImageInfo request_mip1 = Make(mip1, 480, 270, 1, vk::Format::eR16G16B16A16Sfloat, 64,
+                                        chain_info.mips_layout[1].pitch);
+    const ImageInfo request_mip2 = Make(mip2, 240, 135, 1, vk::Format::eR16G16B16A16Sfloat, 64,
+                                        chain_info.mips_layout[2].pitch);
+    assert(request_mip1.MipOf(chain_info) == 1 && request_mip2.MipOf(chain_info) == 2);
 
-    if (expect_fixed) {
-        // The request is mip 1 of the chain whatever order the page table lists the images in.
-        assert(only_chain.image_id == chain && only_chain.view_mip == 1);
-        assert(stale_first.image_id == chain && stale_first.view_mip == 1);
-        assert(chain_first.image_id == chain && chain_first.view_mip == 1 &&
-               "mip 1 lost: the target is drawn into level 0 (the double picture)");
-        std::puts("overlap-loop-test --expect-fixed ok");
-        return 0;
+    const Tally t1 = CheckAllOrders(images, request_mip1, chain, stale, 1, 0);
+    Report("mip 1 target, chain + 0-4 stale images", t1);
+    const Tally t2 = CheckAllOrders(images, request_mip2, chain, stale, 2, 0);
+    Report("mip 2 target, chain + 0-4 stale images", t2);
+    // The defect this fixes: the old loop got some orders wrong for both targets.
+    assert(t1.legacy_wrong > 0 && t2.legacy_wrong > 0);
+
+    // A level-0 request at the chain address keeps level 0 (nothing to keep).
+    const ImageInfo request_level0 = Make(kChainAddress, 960, 540, 1,
+                                          vk::Format::eR16G16B16A16Sfloat, 64,
+                                          chain_info.mips_layout[0].pitch);
+    {
+        const auto r = Run(images, request_level0, {chain, ImageId{2}, ImageId{4}});
+        assert(r.image_id == chain && r.view_mip <= 0 && r.view_slice <= 0 && !r.KeptView());
     }
 
-    // Today's loop: correct with the chain alone or listed last ...
-    assert(only_chain.image_id == chain && only_chain.view_mip == 1 && !only_chain.LostView());
-    assert(stale_first.image_id == chain && stale_first.view_mip == 1 &&
-           !stale_first.LostView());
-    // ... but the chain listed first ends at level 0 of the chain, and the observation names it.
-    assert(chain_first.image_id == chain && chain_first.view_mip == -1);
-    assert(chain_first.LostView());
-    assert(chain_first.found_mip == 1 && chain_first.found_slice == 0);
-    assert(chain_first.found_in == chain && chain_first.replaced_by == stale);
-    std::puts("overlap-loop-test ok (defect reproduced: chain then stale image loses mip 1)");
+    // Array slices: layer 2 of a 4-layer RGBA8 array, with a stale RGBA16F image at that layer.
+    {
+        std::vector<ImageInfo> arr;
+        arr.push_back(Make(0x2000000000, 256, 256, 1, vk::Format::eR8G8B8A8Unorm, 32, 0, 4));
+        const VAddr layer2 = 0x2000000000 + 2 * (arr[0].mips_layout[0].size / 4);
+        arr.push_back(Make(layer2, 128, 128, 1, vk::Format::eR16G16B16A16Sfloat, 64));
+        const ImageInfo request_layer2 = Make(layer2, 256, 256, 1, vk::Format::eR8G8B8A8Unorm, 32);
+        const Tally t = CheckAllOrders(arr, request_layer2, ImageId{0}, {ImageId{1}}, 0, 2);
+        Report("layer 2 target, array + stale image", t);
+    }
+
+    // An iteration that replaces the image (ExpandImage: a new image with the same layout as the
+    // merged one, returned with no location): the request is located in the new image.
+    {
+        std::vector<ImageInfo> with_expand = images;
+        with_expand.push_back(chain_info); // 5: the expanded copy of the chain
+        const std::vector<ImageId> order{chain, ImageId{1}};
+        const auto r = RunOverlapLoop(
+            std::span<const ImageId>{order.data(), order.size()},
+            [&](ImageId cache_id, ImageId merged_id) -> std::tuple<ImageId, int, int> {
+                if (merged_id == chain && cache_id == ImageId{1}) {
+                    return {ImageId{5}, -1, -1};
+                }
+                return ResolveLikeTextureCache(with_expand, request_mip1, cache_id, merged_id);
+            },
+            [&](ImageId id) { return Locate(with_expand, request_mip1, id); });
+        assert(r.image_id == ImageId{5} && r.view_mip == 1 && r.view_slice == 0);
+        assert(r.legacy_view_mip == -1 && r.KeptView() && !r.LostView());
+        std::printf("%-44s image replaced (ExpandImage): mip 1 located in the new image\n",
+                    "mip 1 target, chain expanded");
+    }
+
+    // A request that is not inside the image the loop ends with keeps what the loop returned.
+    {
+        const std::vector<ImageId> order{ImageId{2}};
+        const auto r = Run(images, request_mip2, order);
+        assert(!r.image_id && r.view_mip == -1 && !r.KeptView() && !r.LostView());
+    }
+
+    std::puts("overlap-loop-test ok");
     return 0;
 }

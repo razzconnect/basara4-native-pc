@@ -1200,44 +1200,66 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     int view_mip{-1};
     int view_slice{-1};
     if (!image_id) {
-        // Basara 4 PC: the loop itself is in overlap_resolution.h (unchanged), so the location it
-        // ends with can be checked against what its iterations found.
+        // Basara 4 PC (B4-20261114-texcache-regresi, cutscene double picture): the loop is in
+        // overlap_resolution.h. The returned view is the request's location in the returned image,
+        // whatever order image_ids lists the overlapping images in.
         const OverlapLoopResult overlap = RunOverlapLoop(
             std::span<const ImageId>{image_ids.data(), image_ids.size()},
             [&](ImageId cache_id, ImageId merged_id) {
                 const auto& merged_info = merged_id ? slot_images[merged_id].info : info;
                 return ResolveOverlap(merged_info, desc.type, cache_id, merged_id,
                                       desc.needs_native);
+            },
+            [&](ImageId candidate_id) -> std::pair<s32, s32> {
+                // As ResolveOverlap's right overlap, for the request itself.
+                const ImageInfo& candidate = slot_images[candidate_id].info;
+                if (!IsViewTypeCompatible(info.type, candidate.type)) {
+                    return {-1, -1};
+                }
+                const s32 mip = info.MipOf(candidate);
+                return {mip, mip >= 0 ? info.SliceOf(candidate, mip) : -1};
             });
         image_id = overlap.image_id;
         view_mip = overlap.view_mip;
         view_slice = overlap.view_slice;
+        const auto describe = [&](ImageId id) -> std::string {
+            if (!id) {
+                return "none";
+            }
+            const ImageInfo& i = slot_images[id].info;
+            return fmt::format("{:#x} {} {}x{} lv={} ly={}", i.guest_address,
+                               vk::to_string(i.pixel_format), i.size.width, i.size.height,
+                               i.resources.levels, i.resources.layers);
+        };
+        if (overlap.KeptView()) {
+            // The old loop ended this request at level/layer 0 (drawn into the corner of level 0).
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::OverlapViewKept);
+            Vulkan::RenderTrace::RecordAnomaly(Vulkan::RenderTrace::Anomaly::TexOverlapViewKept, [&] {
+                return fmt::format(
+                    "req={:#x} {} {}x{} size={:#x} binding={} view=(m{} s{}) image=({}) "
+                    "old_view=(m{} s{}) dropped_by=({}) cached={}",
+                    info.guest_address, vk::to_string(info.pixel_format), info.size.width,
+                    info.size.height, info.guest_size, static_cast<int>(desc.type),
+                    overlap.view_mip, overlap.view_slice, describe(overlap.image_id),
+                    overlap.legacy_view_mip, overlap.legacy_view_slice,
+                    describe(overlap.legacy_dropped_by), image_ids.size());
+            });
+        }
         if (overlap.LostView()) {
-            // Ticket B4-20261114-texcache-regresi (cutscene double picture, m018): a request found
-            // at mip/slice > 0 of a cached image ends at level/layer 0, so it is drawn or sampled
-            // into level 0. Observation only; the behavior is unchanged.
+            // A location at mip/slice > 0 still ends at level/layer 0: the image changed to one
+            // that does not contain the request. Not expected after the rule above.
             Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::OverlapViewLost);
             Vulkan::RenderTrace::RecordAnomaly(
                 Vulkan::RenderTrace::Anomaly::TexOverlapViewLost,
                 [&] {
-                    const auto describe = [&](ImageId id) -> std::string {
-                        if (!id) {
-                            return "none";
-                        }
-                        const ImageInfo& i = slot_images[id].info;
-                        return fmt::format("{:#x} {} {}x{} lv={} ly={}", i.guest_address,
-                                           vk::to_string(i.pixel_format), i.size.width,
-                                           i.size.height, i.resources.levels,
-                                           i.resources.layers);
-                    };
                     return fmt::format(
                         "req={:#x} {} {}x{} size={:#x} binding={} lost=(m{} s{}) in=({}) "
-                        "replaced_by=({}) final=({}) view=(m{} s{}) cached={}",
+                        "final=({}) view=(m{} s{}) cached={}",
                         info.guest_address, vk::to_string(info.pixel_format), info.size.width,
                         info.size.height, info.guest_size, static_cast<int>(desc.type),
                         overlap.found_mip, overlap.found_slice, describe(overlap.found_in),
-                        describe(overlap.replaced_by), describe(overlap.image_id),
-                        overlap.view_mip, overlap.view_slice, image_ids.size());
+                        describe(overlap.image_id), overlap.view_mip, overlap.view_slice,
+                        image_ids.size());
                 },
                 true);
         }

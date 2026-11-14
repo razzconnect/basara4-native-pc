@@ -51,6 +51,7 @@ enum class Counter : std::size_t {
     PoolTypeMismatches,
     OverlapResolveFails,
     OverlapViewLost,
+    OverlapViewKept,
     VmaBudgetFallbacks,
     AvPlayerErrors,
     Count
@@ -73,6 +74,7 @@ inline constexpr std::array<const char*, std::size_t(Counter::Count)> CounterNam
     "pool_mismatch",
     "overlap_fail",
     "overlap_view_lost",
+    "overlap_view_kept",
     "vma_fallback",
     "avplayer_err",
 }};
@@ -110,6 +112,7 @@ enum class Anomaly : std::size_t {
     TexFormatUnsupported,
     TexOverlapFail,
     TexOverlapViewLost,
+    TexOverlapViewKept,
     TexFindDepthSubstitute,
     Count
 };
@@ -151,6 +154,7 @@ inline constexpr std::array<AnomalyInfo, std::size_t(Anomaly::Count)> AnomalyInf
     {"tex.format_unsupported", false},
     {"tex.overlap_fail", false},
     {"tex.overlap_view_lost", false},
+    {"tex.overlap_view_kept", false},
     {"tex.find_depth_sub", false},
 }};
 static_assert(AnomalyInfos.back().name != nullptr, "every Anomaly needs a name");
