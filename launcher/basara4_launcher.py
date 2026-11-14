@@ -9,12 +9,15 @@ Everything lives next to this program:
   out\\   the prepared game image, made automatically from eboot.bin
   user\\  saves, shader cache, settings, the log
 """
+import datetime
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import re
 import runpy
+import shutil
 import ssl
 import subprocess
 import sys
@@ -221,7 +224,8 @@ PREPARE_LOG = USER / "prepare.log"
 MAPPING = USER / "gamepad_mapping.txt"
 AUDIO_LOG = USER / "audio_debug.log"
 AUDIO_WAV = USER / "audio_wav"  # SPARTAN_AUDIO_WAV_DIR: float WAV capture of the mix and of long voices
-RENDER_TRACE_LOG = USER / "render_trace.log"
+RENDER_TRACE_LOG = USER / "render_trace.log"  # only when a session folder cannot be created
+RENDER_TRACES = USER / "render_traces"  # one <YYYYMMDD-HHMMSS> folder per traced run
 CAPTURES_DIR = USER / "captures"
 STAMP = OUT / "prepared.json"
 DEFAULT_DLC_DIR = ROOT.parent / "DLC"
@@ -268,16 +272,69 @@ def keep_previous_render_trace():
     return ""
 
 
-def render_trace_report():
-    """Crash-report section: the render_trace.log tail and the newest captures, or why they are missing."""
-    text = ""
-    if RENDER_TRACE_LOG.is_file():
+TRACE_SESSION_NAME = re.compile(r"^(\d{8}-\d{6})(?:-(\d+))?$")
+
+
+def new_trace_session(now=None):
+    """Create user\\render_traces\\<YYYYMMDD-HHMMSS>\\ for one traced run, so no run overwrites another.
+
+    The game writes render_trace.log there; the launcher adds the settings the run started with and,
+    when the game ends, its last_run.log. A second run in the same second gets a -2, -3, ... suffix.
+    Raises OSError when the folder cannot be created.
+    """
+    stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    RENDER_TRACES.mkdir(parents=True, exist_ok=True)
+    for n in itertools.count(1):
+        folder = RENDER_TRACES / (stamp if n == 1 else f"{stamp}-{n}")
         try:
-            lines = RENDER_TRACE_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+            folder.mkdir()
+        except FileExistsError:
+            continue
+        return folder
+
+
+def latest_trace_session():
+    """The newest user\\render_traces\\<stamp> folder, or None. Raises OSError when it cannot be listed."""
+    if not RENDER_TRACES.is_dir():
+        return None
+    sessions = []
+    for path in RENDER_TRACES.iterdir():
+        match = TRACE_SESSION_NAME.match(path.name)
+        if match and path.is_dir():
+            sessions.append(((match.group(1), int(match.group(2) or 1)), path))
+    return max(sessions)[1] if sessions else None
+
+
+def copy_into_trace_session(session, files):
+    """Copy the existing files into a trace session folder; return a status notice naming any failure."""
+    failed = []
+    for path in files:
+        if not path.is_file():
+            continue
+        try:
+            shutil.copy2(path, session / path.name)
         except OSError as exc:
-            lines = [f"render_trace.log could not be read: {exc}"]
+            failed.append(f"{path.name} ({exc.strerror or exc})")
+    return f"Not saved in render_traces\\{session.name}: {', '.join(failed)}.  " if failed else ""
+
+
+def render_trace_report():
+    """Crash-report section: the newest render trace log tail and captures, or why they are missing."""
+    text = ""
+    try:
+        session = latest_trace_session()
+    except OSError as exc:
+        session = None
+        text += f"\n--- [Recent Render Trace] ---\nuser\\render_traces could not be listed: {exc}\n"
+    log = session / "render_trace.log" if session else RENDER_TRACE_LOG
+    label = f"render_traces\\{session.name}\\render_trace.log" if session else "render_trace.log"
+    if log.is_file():
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            lines = [f"{label} could not be read: {exc}"]
         if lines:
-            text += "\n--- [Recent Render Trace (render_trace.log)] ---\n" + "\n".join(lines[-12:]) + "\n"
+            text += f"\n--- [Recent Render Trace ({label})] ---\n" + "\n".join(lines[-12:]) + "\n"
     if CAPTURES_DIR.is_dir():
         try:
             entries = [f"  - {p.name}" for p in sorted(
@@ -680,6 +737,7 @@ class Launcher(tk.Tk):
         self.play = ttk.Button(left, text="PLAY", style="Play.TButton", command=self.on_play)
         self.play.pack(fill="x", pady=(2, 6))
         self.user_stopped = False
+        self.trace_session = None  # user\render_traces\<stamp> of the running traced game
         self.stop = ttk.Button(left, text="Stop game", command=self.on_stop, state="disabled")
         self.stop.pack(fill="x")
         mark = ttk.Frame(left, style="Panel.TFrame")
@@ -1124,7 +1182,8 @@ class Launcher(tk.Tk):
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # needs about 70 MB per minute
             env["SPARTAN_AUDIO_WAV_DIR"] = str(AUDIO_WAV)
         if self.cfg.get("render_trace"):
-            env["SPARTAN_RENDER_TRACE"] = str(RENDER_TRACE_LOG)
+            session = getattr(self, "trace_session", None)
+            env["SPARTAN_RENDER_TRACE"] = str(session / "render_trace.log" if session else RENDER_TRACE_LOG)
             env["SPARTAN_FRAME_CAPTURE_KEY"] = "1"
         else:
             env.pop("SPARTAN_RENDER_TRACE", None)
@@ -1256,8 +1315,16 @@ class Launcher(tk.Tk):
                 os.replace(AUDIO_LOG, AUDIO_LOG.with_name("audio_debug.previous.log"))
             except OSError:
                 pass
+        self.trace_session = None
         if self.cfg.get("render_trace"):
-            notice += keep_previous_render_trace()
+            try:
+                self.trace_session = new_trace_session()
+            except OSError as exc:
+                notice += (f"Render trace folder not created ({exc.strerror or exc}): "
+                           "writing user\\render_trace.log.  ")
+                notice += keep_previous_render_trace()
+            else:
+                notice += copy_into_trace_session(self.trace_session, [CONFIG, self._ini()])
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # only this run's captures stay
             AUDIO_WAV.mkdir(parents=True, exist_ok=True)
             for old in AUDIO_WAV.glob("*.wav"):
@@ -1281,7 +1348,9 @@ class Launcher(tk.Tk):
             save_config(self.cfg)
             self.wav_var.set(False)
         self.stop.config(state="normal")
-        if self.cfg.get("render_trace"):
+        if self.trace_session:
+            run_msg = f"Running, writing user\\render_traces\\{self.trace_session.name} (F11 = capture trace)…"
+        elif self.cfg.get("render_trace"):
             run_msg = "Running, writing user\\render_trace.log (F11 = capture trace)…"
         elif self.cfg.get("audio_log"):
             run_msg = "Running, writing user\\audio_debug.log…"
@@ -1850,17 +1919,20 @@ class Launcher(tk.Tk):
         if self.proc and self.proc.poll() is not None:
             code = self.proc.returncode
             self.proc = None
+            trace_notice = self._finish_trace_session()
             self.play.config(state="normal")
             self.stop.config(state="disabled")
             if code not in (0, None) and not self.user_stopped:
                 self._deiconify()
                 self._show_crash_dialog(code)
             if self.play_now:
+                if trace_notice:
+                    messagebox.showwarning("Render trace", trace_notice)
                 if code in (0, None) or self.user_stopped:
                     self.destroy()
                 return
             err_msg = f"Game exited with code {code & 0xFFFFFFFF:#x}. See the log." if (code not in (0, None) and not self.user_stopped) else None
-            self.status.config(text=err_msg if err_msg else "Game closed.")
+            self.status.config(text=trace_notice + (err_msg if err_msg else "Game closed."))
             self._load_ini_into_ui()
         self.after(500, self._poll)
 
@@ -1894,9 +1966,20 @@ class Launcher(tk.Tk):
         else:
             messagebox.showinfo("Audio log", "No audio log yet. Tick \"Audio debug log\", then start the game.")
 
+    def _finish_trace_session(self):
+        """After a traced game ends, keep its last_run.log next to its render trace; return a notice on failure."""
+        session, self.trace_session = self.trace_session, None
+        return copy_into_trace_session(session, [LOG]) if session else ""
+
     def open_render_log(self):
-        if RENDER_TRACE_LOG.exists():
-            os.startfile(RENDER_TRACE_LOG)
+        try:
+            session = latest_trace_session()
+        except OSError as exc:
+            messagebox.showerror("Render trace log", f"user\\render_traces could not be listed: {exc}")
+            return
+        log = session / "render_trace.log" if session else RENDER_TRACE_LOG
+        if log.exists():
+            os.startfile(log)
         else:
             messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Render debug trace\", then start the game.")
 
@@ -1914,6 +1997,10 @@ class Launcher(tk.Tk):
             if not messagebox.askyesno("Game running", "Stop the game and close the launcher?"):
                 return
             self.proc.kill()
+            self.proc.wait()  # the process has ended, so its last_run.log is complete
+            trace_notice = self._finish_trace_session()
+            if trace_notice:
+                messagebox.showwarning("Render trace", trace_notice)
         try:
             self._collect()
         except Exception:
