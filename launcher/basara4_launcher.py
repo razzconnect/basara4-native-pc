@@ -9,12 +9,15 @@ Everything lives next to this program:
   out\\   the prepared game image, made automatically from eboot.bin
   user\\  saves, shader cache, settings, the log
 """
+import datetime
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import re
 import runpy
+import shutil
 import ssl
 import subprocess
 import sys
@@ -221,6 +224,9 @@ PREPARE_LOG = USER / "prepare.log"
 MAPPING = USER / "gamepad_mapping.txt"
 AUDIO_LOG = USER / "audio_debug.log"
 AUDIO_WAV = USER / "audio_wav"  # SPARTAN_AUDIO_WAV_DIR: float WAV capture of the mix and of long voices
+RENDER_TRACE_LOG = USER / "render_trace.log"  # only when a session folder cannot be created
+RENDER_TRACES = USER / "render_traces"  # one <YYYYMMDD-HHMMSS> folder per traced run
+CAPTURES_DIR = USER / "captures"
 STAMP = OUT / "prepared.json"
 DEFAULT_DLC_DIR = ROOT.parent / "DLC"
 if not DEFAULT_DLC_DIR.is_dir():
@@ -249,6 +255,131 @@ def wav_captures():
 
 def format_size(n):
     return f"{n / 2**30:.1f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
+
+
+def keep_previous_render_trace():
+    """Before a traced start, rename the last render_trace.log to render_trace.previous.log.
+
+    The game opens render_trace.log for writing, so a failed rename means the last log is lost:
+    return a status notice saying so (empty when there was nothing to keep or the rename worked).
+    """
+    if not RENDER_TRACE_LOG.exists():
+        return ""
+    try:
+        os.replace(RENDER_TRACE_LOG, RENDER_TRACE_LOG.with_name("render_trace.previous.log"))
+    except OSError as exc:
+        return f"Previous render_trace.log not kept ({exc.strerror or exc}): this run overwrites it.  "
+    return ""
+
+
+TRACE_SESSION_NAME = re.compile(r"^(\d{8}-\d{6})(?:-(\d+))?$")
+
+
+def new_trace_session(now=None):
+    """Create user\\render_traces\\<YYYYMMDD-HHMMSS>\\ for one traced run, so no run overwrites another.
+
+    The game writes render_trace.log there; the launcher adds the settings the run started with and,
+    when the game ends, its last_run.log. A second run in the same second gets a -2, -3, ... suffix.
+    Raises OSError when the folder cannot be created.
+    """
+    stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    RENDER_TRACES.mkdir(parents=True, exist_ok=True)
+    for n in itertools.count(1):
+        folder = RENDER_TRACES / (stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            folder.mkdir()
+        except FileExistsError:
+            continue
+        return folder
+
+
+def latest_trace_session():
+    """The newest user\\render_traces\\<stamp> folder, or None. Raises OSError when it cannot be listed."""
+    if not RENDER_TRACES.is_dir():
+        return None
+    sessions = []
+    for path in RENDER_TRACES.iterdir():
+        match = TRACE_SESSION_NAME.match(path.name)
+        if match and path.is_dir():
+            sessions.append(((match.group(1), int(match.group(2) or 1)), path))
+    return max(sessions)[1] if sessions else None
+
+
+def copy_into_trace_session(session, files):
+    """Copy the existing files into a trace session folder; return a status notice naming any failure."""
+    failed = []
+    for path in files:
+        if not path.is_file():
+            continue
+        try:
+            shutil.copy2(path, session / path.name)
+        except OSError as exc:
+            failed.append(f"{path.name} ({exc.strerror or exc})")
+    return f"Not saved in render_traces\\{session.name}: {', '.join(failed)}.  " if failed else ""
+
+
+WM_CLOSE = 0x0010
+
+
+def request_window_close(pid):
+    """Post WM_CLOSE to the visible top-level windows of process `pid`, as clicking their X does.
+
+    The game handles it like a closed window: it writes the end of its logs (render trace
+    session.summary) and exits by itself. Returns how many windows were asked (0: none found).
+    Raises OSError when the windows cannot be listed or none of them accepts the message.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    windows = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            windows.append(hwnd)
+        return True
+
+    if not user32.EnumWindows(visit, 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    asked = sum(1 for hwnd in windows if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+    if windows and not asked:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return asked
+
+
+def render_trace_report():
+    """Crash-report section: the newest render trace log tail and captures, or why they are missing."""
+    text = ""
+    try:
+        session = latest_trace_session()
+    except OSError as exc:
+        session = None
+        text += f"\n--- [Recent Render Trace] ---\nuser\\render_traces could not be listed: {exc}\n"
+    log = session / "render_trace.log" if session else RENDER_TRACE_LOG
+    label = f"render_traces\\{session.name}\\render_trace.log" if session else "render_trace.log"
+    if log.is_file():
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            lines = [f"{label} could not be read: {exc}"]
+        if lines:
+            text += f"\n--- [Recent Render Trace ({label})] ---\n" + "\n".join(lines[-12:]) + "\n"
+    if CAPTURES_DIR.is_dir():
+        try:
+            entries = [f"  - {p.name}" for p in sorted(
+                CAPTURES_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:6]]
+        except OSError as exc:
+            entries = [f"  user\\captures could not be listed: {exc}"]
+        if entries:
+            text += "\n--- [Recent Captures (user/captures)] ---\n" + "\n".join(entries) + "\n"
+    return text
 
 
 def check_commit_limit_mb():
@@ -308,6 +439,7 @@ import basara4_cheats  # noqa: E402
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
             "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
             "anisotropy": 0, "resolution": "native", "upscale": "off", "audio_log": False, "audio_wav": False,
+            "render_trace": False,
             "gpu_index": -1, "keymap": {}, "mouse_camera": True, "mouse_sens": 100, "cheats": [],
             "input_mode": "controller"}
 
@@ -546,8 +678,8 @@ class Launcher(tk.Tk):
         self.play_now = play_now
         self.title(f"Sengoku Basara 4 Sumeragi  \u00b7  {BRAND} by {AUTHOR}")
         self.configure(bg=BG)
-        self.geometry("1060x650")
-        self.minsize(1020, 620)
+        self.geometry("1060x685")
+        self.minsize(1020, 650)
         icon = Path(__file__).resolve().parent / "basara4.ico"
         if icon.is_file():
             try:
@@ -641,6 +773,10 @@ class Launcher(tk.Tk):
         self.play = ttk.Button(left, text="PLAY", style="Play.TButton", command=self.on_play)
         self.play.pack(fill="x", pady=(2, 6))
         self.user_stopped = False
+        self.close_requested = False  # the game was asked to close (Stop game / closing the launcher)
+        self.closing_launcher = False  # the launcher closes once the game has exited
+        self.stop_note = ""  # how the game was stopped, for the status line
+        self.trace_session = None  # user\render_traces\<stamp> of the running traced game
         self.stop = ttk.Button(left, text="Stop game", command=self.on_stop, state="disabled")
         self.stop.pack(fill="x")
         mark = ttk.Frame(left, style="Panel.TFrame")
@@ -718,18 +854,27 @@ class Launcher(tk.Tk):
         self.rcas_var = tk.BooleanVar(value=self.cfg["rcas"])
         self.audio_var = tk.BooleanVar(value=self.cfg.get("audio_log", False))
         self.wav_var = tk.BooleanVar(value=False)
+        self.render_trace_var = tk.BooleanVar(value=self.cfg.get("render_trace", False))
 
         chk_frame = ttk.Frame(opts, style="Panel.TFrame")
-        chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 4))
+        chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 2))
         ttk.Checkbutton(chk_frame, text="VSync", variable=self.vsync_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="Sharpening (RCAS)", variable=self.rcas_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="Audio debug log", variable=self.audio_var, command=self._audio_toggled).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="+ WAV capture (up to 3 GB)", variable=self.wav_var, command=self._wav_toggled).pack(side="left")
 
-        # Baris 4: Keterangan / Tips
+        # Baris 4: Render debug trace toggle
+        trace_frame = ttk.Frame(opts, style="Panel.TFrame")
+        trace_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 4))
+        ttk.Checkbutton(trace_frame, text="Render debug trace", variable=self.render_trace_var).pack(side="left", padx=(0, 10))
+        ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
+        ttk.Label(trace_frame, text="Logs GPU anomalies, auto-captures & enables F11 -> user\\captures",
+                  style="Muted.TLabel").pack(side="left")
+
+        # Baris 5: Keterangan / Tips
         ttk.Label(opts, text="The game draws at 1080p. Window size sets windowed mode. FSR 1 sharpens if screen > 1080p.\n"
                              "Above 60 turns off internal frame limiter. VSync caps rate at monitor refresh.",
-                  style="Muted.TLabel", wraplength=600).grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+                  style="Muted.TLabel", wraplength=600).grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
         r += 1
         ttk.Label(right, text="In-game menu: Insert, or R3 + L2 on the pad (it changes these too).",
                   style="Muted.TLabel").grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 0))
@@ -764,11 +909,12 @@ class Launcher(tk.Tk):
         # Row 2 of tools
         tools2 = ttk.Frame(right, style="Panel.TFrame")
         tools2.grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 8))
-        ttk.Button(tools2, text="Manage extracted DLC…", command=self.open_dlc_manager).pack(side="left")
+        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open captures", command=self.open_captures).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 6))
+        ttk.Button(tools2, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
         r += 1
         r += 1
         self.pad_label = ttk.Label(right, text="", style="Muted.TLabel")
@@ -1025,6 +1171,7 @@ class Launcher(tk.Tk):
             resolution=dict(RESOLUTIONS)[self.res_var.get()], upscale=dict(UPSCALERS)[self.up_var.get()],
             anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.audio_var.get(),
             audio_wav=self.audio_var.get() and self.wav_var.get(),
+            render_trace=self.render_trace_var.get(),
             gpu_index=selected_gpu_idx,
             input_mode=self.input_mode_var.get())
         save_config(self.cfg)
@@ -1073,6 +1220,13 @@ class Launcher(tk.Tk):
             env["SPARTAN_AUDIO_DEBUG"] = str(AUDIO_LOG)
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # needs about 70 MB per minute
             env["SPARTAN_AUDIO_WAV_DIR"] = str(AUDIO_WAV)
+        if self.cfg.get("render_trace"):
+            session = getattr(self, "trace_session", None)
+            env["SPARTAN_RENDER_TRACE"] = str(session / "render_trace.log" if session else RENDER_TRACE_LOG)
+            env["SPARTAN_FRAME_CAPTURE_KEY"] = "1"
+        else:
+            env.pop("SPARTAN_RENDER_TRACE", None)
+            env.pop("SPARTAN_FRAME_CAPTURE_KEY", None)
         if self.cfg["fps_limit"] != 60:  # uncapped: 480 Hz vblank, the present thread paces to the limit
             env["SPARTAN_VBLANK_HZ"] = "0"
             env["SPARTAN_FPS_LIMIT"] = str(self.cfg["fps_limit"])
@@ -1116,6 +1270,8 @@ class Launcher(tk.Tk):
         if self.busy or self.proc:
             return
         self.user_stopped = False
+        self.close_requested = False
+        self.stop_note = ""
         self._collect()
         game = Path(self.cfg["game"]) if self.cfg["game"] else None
         exe = CORE
@@ -1200,6 +1356,16 @@ class Launcher(tk.Tk):
                 os.replace(AUDIO_LOG, AUDIO_LOG.with_name("audio_debug.previous.log"))
             except OSError:
                 pass
+        self.trace_session = None
+        if self.cfg.get("render_trace"):
+            try:
+                self.trace_session = new_trace_session()
+            except OSError as exc:
+                notice += (f"Render trace folder not created ({exc.strerror or exc}): "
+                           "writing user\\render_trace.log.  ")
+                notice += keep_previous_render_trace()
+            else:
+                notice += copy_into_trace_session(self.trace_session, [CONFIG, self._ini()])
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # only this run's captures stay
             AUDIO_WAV.mkdir(parents=True, exist_ok=True)
             for old in AUDIO_WAV.glob("*.wav"):
@@ -1223,8 +1389,15 @@ class Launcher(tk.Tk):
             save_config(self.cfg)
             self.wav_var.set(False)
         self.stop.config(state="normal")
-        self.status.config(text=notice + ("Running, writing user\\audio_debug.log…" if self.cfg.get("audio_log")
-                                          else "Running…  (Insert opens the in-game menu)"))
+        if self.trace_session:
+            run_msg = f"Running, writing user\\render_traces\\{self.trace_session.name} (F11 = capture trace)…"
+        elif self.cfg.get("render_trace"):
+            run_msg = "Running, writing user\\render_trace.log (F11 = capture trace)…"
+        elif self.cfg.get("audio_log"):
+            run_msg = "Running, writing user\\audio_debug.log…"
+        else:
+            run_msg = "Running…  (Insert opens the in-game menu)"
+        self.status.config(text=notice + run_msg)
         self._refresh_image_label()
 
     def _make_window_icon(self, game):
@@ -1432,9 +1605,34 @@ class Launcher(tk.Tk):
     def _deiconify(self):
         self.deiconify()
 
+    def _request_game_close(self):
+        """Ask the running game to close as from its window (WM_CLOSE): it then writes the end of
+        its logs (render trace session.summary) and exits by itself. Returns False, with the
+        reason in stop_note, when it could not be asked (the caller then stops it by force)."""
+        try:
+            asked = request_window_close(self.proc.pid)
+        except OSError as exc:
+            self.stop_note = f"Close request failed ({exc}): game stopped by force."
+            return False
+        if not asked:
+            self.stop_note = "The game has no window to close: game stopped by force."
+            return False
+        self.close_requested = True
+        self.stop.config(text="Force stop")
+        return True
+
     def on_stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.user_stopped = True
+        if not (self.proc and self.proc.poll() is None):
+            return
+        self.user_stopped = True
+        if self.close_requested:  # second click: the game did not close by itself
+            self.stop_note = "Game stopped by force (its logs end without session.summary)."
+            self.proc.kill()
+            return
+        if self._request_game_close():
+            self.status.config(text="Closing the game (it writes its logs)... "
+                                    "Click \"Force stop\" if it does not close.")
+        else:
             self.proc.kill()
 
     def _show_crash_dialog(self, code):
@@ -1557,6 +1755,7 @@ class Launcher(tk.Tk):
             )
             if audio_tail:
                 clip_text += f"\n--- [Recent Audio Log (audio_debug.log)] ---\n{audio_tail}\n"
+            clip_text += render_trace_report()
 
             clip_text += "\n=== End of Report ==="
             self.clipboard_clear()
@@ -1574,6 +1773,7 @@ class Launcher(tk.Tk):
 
         ttk.Button(btn_bar, text="📋 Copy Error ke Clipboard", command=copy_details).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="📁 Buka File Log", command=self.open_log).pack(side="left", padx=4)
+        ttk.Button(btn_bar, text="📸 Buka Captures", command=self.open_captures).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="🌐 Lapor ke Discord", command=open_discord).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="Tutup", command=win.destroy).pack(side="right", padx=4)
 
@@ -1785,17 +1985,27 @@ class Launcher(tk.Tk):
         if self.proc and self.proc.poll() is not None:
             code = self.proc.returncode
             self.proc = None
+            trace_notice = self._finish_trace_session()
             self.play.config(state="normal")
-            self.stop.config(state="disabled")
+            self.stop.config(state="disabled", text="Stop game")
+            self.close_requested = False
+            if self.closing_launcher:  # the game was asked to close because the launcher closes
+                if trace_notice:
+                    messagebox.showwarning("Render trace", trace_notice)
+                self._close_launcher()
+                return
             if code not in (0, None) and not self.user_stopped:
                 self._deiconify()
                 self._show_crash_dialog(code)
             if self.play_now:
+                if trace_notice:
+                    messagebox.showwarning("Render trace", trace_notice)
                 if code in (0, None) or self.user_stopped:
                     self.destroy()
                 return
             err_msg = f"Game exited with code {code & 0xFFFFFFFF:#x}. See the log." if (code not in (0, None) and not self.user_stopped) else None
-            self.status.config(text=err_msg if err_msg else "Game closed.")
+            self.status.config(text=trace_notice + (err_msg or self.stop_note or "Game closed."))
+            self.stop_note = ""
             self._load_ini_into_ui()
         self.after(500, self._poll)
 
@@ -1829,6 +2039,27 @@ class Launcher(tk.Tk):
         else:
             messagebox.showinfo("Audio log", "No audio log yet. Tick \"Audio debug log\", then start the game.")
 
+    def _finish_trace_session(self):
+        """After a traced game ends, keep its last_run.log next to its render trace; return a notice on failure."""
+        session, self.trace_session = self.trace_session, None
+        return copy_into_trace_session(session, [LOG]) if session else ""
+
+    def open_render_log(self):
+        try:
+            session = latest_trace_session()
+        except OSError as exc:
+            messagebox.showerror("Render trace log", f"user\\render_traces could not be listed: {exc}")
+            return
+        log = session / "render_trace.log" if session else RENDER_TRACE_LOG
+        if log.exists():
+            os.startfile(log)
+        else:
+            messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Render debug trace\", then start the game.")
+
+    def open_captures(self):
+        CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        os.startfile(CAPTURES_DIR)
+
     def open_saves(self):
         path = USER / "savedata"
         path.mkdir(parents=True, exist_ok=True)
@@ -1836,9 +2067,25 @@ class Launcher(tk.Tk):
 
     def _close(self):
         if self.proc and self.proc.poll() is None:
-            if not messagebox.askyesno("Game running", "Stop the game and close the launcher?"):
-                return
+            if not self.closing_launcher:
+                if not messagebox.askyesno("Game running", "Stop the game and close the launcher?"):
+                    return
+                self.user_stopped = True
+                if self._request_game_close():
+                    # _poll closes the launcher once the game has exited by itself.
+                    self.closing_launcher = True
+                    self.status.config(text="Closing the game (it writes its logs), then the "
+                                            "launcher... Close again to force.")
+                    return
+            # Closed again while waiting, or the game could not be asked: stop it by force.
             self.proc.kill()
+            self.proc.wait()  # the process has ended, so its last_run.log is complete
+            trace_notice = self._finish_trace_session()
+            if trace_notice:
+                messagebox.showwarning("Render trace", trace_notice)
+        self._close_launcher()
+
+    def _close_launcher(self):
         try:
             self._collect()
         except Exception:

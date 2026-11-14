@@ -32,6 +32,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_lighting_test.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -515,6 +516,13 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
         }
         LOG_ERROR(Render_Vulkan, "spartanport: shader {:#x}/{} capture failed: {}", params.hash,
                   permutation, capture_job.Error());
+        RenderTrace::Count(RenderTrace::Counter::ShaderCaptureFails);
+        RenderTrace::RecordAnomaly(
+            RenderTrace::Anomaly::ShaderCaptureFail,
+            [&] {
+                return fmt::format("{:#x}/{} {}", params.hash, permutation, capture_job.Error());
+            },
+            true);
         return false;
     }
     const bool queued = build->job.Start(*compiler, [this, build] {
@@ -564,6 +572,14 @@ void PipelineCache::PublishShaders(bool wait) {
                 program->pending.reset();
                 LOG_ERROR(Render_Vulkan, "spartanport: shader {:#x}/{} compilation failed: {}", hash,
                           build->permutation, build->job.Error());
+                RenderTrace::Count(RenderTrace::Counter::ShaderCompileFails);
+                RenderTrace::RecordAnomaly(
+                    RenderTrace::Anomaly::ShaderCompileFail,
+                    [&] {
+                        return fmt::format("{:#x}/{} {}", hash, build->permutation,
+                                           build->job.Error());
+                    },
+                    true);
                 retire();
             } else {
                 ++i;
@@ -604,6 +620,14 @@ void PipelineCache::PublishGraphics(bool wait) {
             if (build->job.Failed() && !build->failure_logged) {
                 LOG_ERROR(Render_Vulkan, "spartanport: pipeline {:#x} compilation failed: {}",
                           std::hash<GraphicsPipelineKey>{}(it.key()), build->job.Error());
+                RenderTrace::Count(RenderTrace::Counter::GraphicsPipelineFails);
+                RenderTrace::RecordAnomaly(
+                    RenderTrace::Anomaly::GraphicsPipelineAsyncFail,
+                    [&] {
+                        return fmt::format("{:#x} {}", std::hash<GraphicsPipelineKey>{}(it.key()),
+                                           build->job.Error());
+                    },
+                    true);
                 build->failure_logged = true;
             }
             ++it;
@@ -723,6 +747,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (!RefreshGraphicsKey(sel)) {
         if (sel.compilation_pending) {
             ++g_spartanport_pending_draws;
+            RenderTrace::Count(RenderTrace::Counter::PipelinePendingDrops);
         }
         return nullptr;
     }
@@ -762,6 +787,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
         }
         ++g_spartanport_pending_draws;
+        RenderTrace::Count(RenderTrace::Counter::PipelinePendingDrops);
         return nullptr;
     }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
@@ -1055,10 +1081,14 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     case AmdGpu::ShaderStageEnable::VgtStages::EsGs:
         if (!instance.IsGeometryStageSupported()) {
             LOG_WARNING(Render_Vulkan, "Geometry shader stage unsupported, skipping");
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::UnsupportedShaderStage,
+                                       "EsGs geometry unsupported", true);
             return false;
         }
         if (regs.vgt_gs_mode.onchip || regs.vgt_strmout_config.raw) {
             LOG_WARNING(Render_Vulkan, "Geometry shader features unsupported, skipping");
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::UnsupportedShaderStage,
+                                       "EsGs onchip/strmout unsupported");
             return false;
         }
         if (!bind_stage(HwStage::Export, SwStage::Vertex)) {
@@ -1115,6 +1145,9 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
         break;
     default:
         LOG_WARNING(Render_Vulkan, "unimplemented shader stage {}", (u32)regs.stage_enable.raw);
+        RenderTrace::RecordAnomaly(RenderTrace::Anomaly::UnsupportedShaderStage, [&] {
+            return fmt::format("stage_enable={:#x}", u32(regs.stage_enable.raw));
+        });
         return false;
     }
 

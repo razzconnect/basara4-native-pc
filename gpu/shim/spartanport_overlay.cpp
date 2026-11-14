@@ -397,6 +397,18 @@ void ImageTab() {
         ImGui::EndTable();
     }
     DisabledText("F12 saves a screenshot to the user\\screenshots folder.");
+    Separator("Diagnostics");
+    if (Button("Capture render trace")) {
+        Vulkan::FrameCapture::Request("overlay");
+        ShowNotice(Tr("Capturing render trace..."));
+    }
+    Help("Saves a frame pass trace and clean screenshot to user\\captures for bug reports.");
+    if (const std::string cap = Vulkan::FrameCapture::LastResult(); !cap.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", cap.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    DisabledText("F11 captures a trace when Render debug trace is enabled in the launcher.");
     Separator("Information");
     if (BeginRows("##image_info")) {
         char text[96];
@@ -1430,7 +1442,8 @@ bool HandleEvent(const SDL_Event& event) {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
         static const bool capture_key = [] {
             const char* env = std::getenv("SPARTAN_FRAME_CAPTURE_KEY");
-            return env && *env == '1';
+            const char* trace = std::getenv("SPARTAN_RENDER_TRACE");
+            return (env && *env == '1') || (trace && *trace && std::strcmp(trace, "0") != 0);
         }();
         if (event.key.key == SDLK_F9) {
             if (down && !event.key.repeat) {
@@ -1445,7 +1458,8 @@ bool HandleEvent(const SDL_Event& event) {
             return true;
         }
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {
-            Vulkan::FrameCapture::Request();
+            Vulkan::FrameCapture::Request("hotkey_f11");
+            ShowNotice(Tr("Capturing render trace..."));
             return true;
         }
         if (down && !event.key.repeat && event.key.key == SDLK_F8 && !is_open && !text_entry_active && trophy_ready) {

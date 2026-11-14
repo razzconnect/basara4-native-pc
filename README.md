@@ -103,7 +103,7 @@ Place your decrypted PS4 game dump folder (which contains `eboot.bin`, `sce_modu
 
 ### Extracted DLC
 
-The launcher detects extracted DLC under the `DLC` folder beside the installation, or `user\dlc` when that folder does not exist. Use **Manage extracted DLC…** to select a parent folder. Each add-on must be in a subfolder named with its 16-character entitlement label and contain `sce_sys\param.sfo`. Raw PKG files are not opened or decrypted.
+The launcher detects extracted DLC under the `DLC` folder beside the installation, or `user\dlc` when that folder does not exist. Use **Manage DLC…** to select a parent folder. Each add-on must be in a subfolder named with its 16-character entitlement label and contain `sce_sys\param.sfo`. Raw PKG files are not opened or decrypted.
 
 ---
 

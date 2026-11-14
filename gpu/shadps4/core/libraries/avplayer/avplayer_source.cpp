@@ -10,7 +10,9 @@
 #include "core/libraries/videodec/video_utils.h"
 #include "core/memory.h"
 
+#include <fmt/format.h>
 #include <magic_enum/magic_enum.hpp>
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -257,8 +259,17 @@ bool AvPlayerSource::Start() {
         if (avcodec_open2(m_video_codec_context.get(), decoder, nullptr) < 0) {
             LOG_ERROR(Lib_AvPlayer, "Could not open avcodec for video stream {}.",
                       m_video_stream_index.value());
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::AvPlayerErrors);
+            Vulkan::RenderTrace::RecordAnomaly(
+                Vulkan::RenderTrace::Anomaly::AvPlayerVideoOpenFail,
+                [&] { return fmt::format("stream={}", *m_video_stream_index); }, true);
             return false;
         }
+        Vulkan::RenderTrace::Log("avplayer.video_start", [&] {
+            return fmt::format("{}x{} codec={}", m_video_codec_context->width,
+                               m_video_codec_context->height,
+                               avcodec_get_name(stream->codecpar->codec_id));
+        });
         const auto pitch = Common::AlignUp<u32>(m_video_codec_context->width, 64);
         const auto height = Common::AlignUp<u32>(m_video_codec_context->height, 16);
         const auto size = (pitch * height * 3) / 2;
@@ -577,6 +588,9 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
                 }
             } else {
                 LOG_ERROR(Lib_AvPlayer, "Could not read AV frame: error = {}", res);
+                Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::AvPlayerErrors);
+                Vulkan::RenderTrace::RecordAnomaly(Vulkan::RenderTrace::Anomaly::AvPlayerDemuxFail,
+                                                   [&] { return fmt::format("err={}", res); }, true);
                 m_state.OnError();
                 return;
             }
@@ -635,6 +649,9 @@ AvPlayerSource::AVFramePtr AvPlayerSource::ConvertVideoFrame(const AVFrame& fram
                                nv12_frame->data, nv12_frame->linesize);
     if (res < 0) {
         LOG_ERROR(Lib_AvPlayer, "Could not convert to NV12: {}", av_err2str(res));
+        Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::AvPlayerErrors);
+        Vulkan::RenderTrace::RecordAnomaly(Vulkan::RenderTrace::Anomaly::AvPlayerSwsFail,
+                                           [&] { return std::string(av_err2str(res)); }, true);
         return AVFramePtr{nullptr, &ReleaseAVFrame};
     }
     return nv12_frame;
@@ -716,6 +733,9 @@ void AvPlayerSource::VideoDecoderThread(std::stop_token stop) {
 
         auto res = avcodec_send_packet(m_video_codec_context.get(), packet->get());
         if (res < 0 && res != AVERROR(EAGAIN)) {
+            Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::AvPlayerErrors);
+            Vulkan::RenderTrace::RecordAnomaly(Vulkan::RenderTrace::Anomaly::AvPlayerSendPacketFail,
+                                               [&] { return std::string(av_err2str(res)); }, true);
             m_state.OnError();
             LOG_ERROR(Lib_AvPlayer, "Could not send packet to the video codec. Error = {}",
                       av_err2str(res));
@@ -736,6 +756,10 @@ void AvPlayerSource::VideoDecoderThread(std::stop_token stop) {
                     LOG_ERROR(Lib_AvPlayer,
                               "Could not receive frame from the video codec. Error = {}",
                               av_err2str(res));
+                    Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::AvPlayerErrors);
+                    Vulkan::RenderTrace::RecordAnomaly(
+                        Vulkan::RenderTrace::Anomaly::AvPlayerReceiveFrameFail,
+                        [&] { return std::string(av_err2str(res)); }, true);
                     m_state.OnError();
                     return;
                 }

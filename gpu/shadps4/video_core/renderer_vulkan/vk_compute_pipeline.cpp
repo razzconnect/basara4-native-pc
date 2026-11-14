@@ -6,6 +6,7 @@
 #include "shader_recompiler/info.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 namespace Vulkan {
@@ -118,6 +119,11 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
     if (pipeline_result != vk::Result::eSuccess) {
         LOG_ERROR(Render_Vulkan, "Failed to create compute pipeline {}: {} (skipping dispatch)",
                   debug_str, vk::to_string(pipeline_result));
+        RenderTrace::Count(RenderTrace::Counter::ComputePipelineFails);
+        RenderTrace::RecordAnomaly(
+            RenderTrace::Anomaly::ComputePipelineCreateFail,
+            [&] { return fmt::format("{} res={}", debug_str, vk::to_string(pipeline_result)); },
+            true);
         return;
     }
     pipeline = std::move(pipe);

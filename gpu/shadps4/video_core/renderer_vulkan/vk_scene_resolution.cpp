@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -24,6 +25,7 @@ SceneTargets::SceneTargets(const Instance& i, Scheduler& s, Runtime& r, Lookup g
     runtime.scene_targets = this;
     const char* force = std::getenv("SPARTAN_SCENE_STENCIL_BITS");
     force_stencil_bits = force && force[0] == '1';
+    RenderTrace::SetSceneSize(size.width, size.height);
     CreateResampleResources();
 }
 SceneTargets::~SceneTargets() {
@@ -110,6 +112,7 @@ bool SceneTargets::SetSize(SceneResolution::Size next) {
     size = next;
     std::printf("Scene resolution: raster %ux%u, half-resolution targets %ux%u, UI 1920x1080 "
                 "(live)\n", size.width, size.height, size.width / 2, size.height / 2);
+    RenderTrace::SetSceneSize(size.width, size.height);
     return true;
 }
 void SceneTargets::ResolveAll() {

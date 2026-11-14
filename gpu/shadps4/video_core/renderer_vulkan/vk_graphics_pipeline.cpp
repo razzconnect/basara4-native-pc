@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_lighting_test.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "common/elf_info.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -447,6 +448,15 @@ GraphicsPipeline::GraphicsPipeline(
     if (pipeline_result != vk::Result::eSuccess) {
         LOG_ERROR(Render_Vulkan, "Failed to create graphics pipeline {}: {} (skipping draw)",
                   debug_str, vk::to_string(pipeline_result));
+        RenderTrace::Count(RenderTrace::Counter::GraphicsPipelineFails);
+        RenderTrace::RecordAnomaly(
+            RenderTrace::Anomaly::GraphicsPipelineCreateFail,
+            [&] {
+                return fmt::format("{} res={} mrt={:#x} samples={} z={} st={}", debug_str,
+                                   vk::to_string(pipeline_result), key.mrt_mask, key.num_samples,
+                                   u32(key.z_format), u32(key.stencil_format));
+            },
+            true);
         return;
     }
     pipeline = std::move(pipe);
@@ -476,6 +486,9 @@ GraphicsPipeline::GraphicsPipeline(
         } else {
             LOG_ERROR(Render_Vulkan, "Failed to create the squaring pipeline {}: {}", debug_str,
                       vk::to_string(square_result));
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::SquarePipelineFail, [&] {
+                return fmt::format("{} res={}", debug_str, vk::to_string(square_result));
+            });
         }
     }
     g_spartanport_pipeline_total_ns += NsSince(started);

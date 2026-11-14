@@ -30,6 +30,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 
@@ -239,6 +240,12 @@ int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* co
         presenter->RegisterVideoOutSurface(group, address);
         LOG_INFO(Lib_VideoOut, "buffers[{}] = {:#x}", i + startIndex, address);
     }
+    Vulkan::RenderTrace::Log("vo.register", [&] {
+        return fmt::format("idx={} num={} {}x{} pitch={} fmt={} tile={}", startIndex, bufferNum,
+                           attribute->width, attribute->height, attribute->pitch_in_pixel,
+                           GetPixelFormatString(attribute->pixel_format),
+                           static_cast<u32>(attribute->tiling_mode));
+    });
 
     return group_index;
 }
@@ -606,6 +613,8 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
         std::unique_lock lock{port->port_mutex};
         if (index != -1 && port->flip_status.flip_pending_num > 16) {
             LOG_ERROR(Lib_VideoOut, "Flip queue is full");
+            Vulkan::RenderTrace::RecordAnomaly(Vulkan::RenderTrace::Anomaly::VideoOutFlipQueueFull,
+                                               "flip_pending_num > 16");
             return false;
         }
 

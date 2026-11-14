@@ -197,7 +197,7 @@ if (WIN32)
     target_compile_options(atrac9 PRIVATE -w)
     set_target_properties(atrac9 PROPERTIES C_STANDARD 99 INTERPROCEDURAL_OPTIMIZATION OFF)
     add_executable(spartanport-probe ../src/probe.c ${SPARTAN_RUNTIME} ../src/compat_win.c ../src/cpu_check.c ../src/vulkan_smoke.c
-        ../src/isa_rewrite.c ../src/isa_emulate.c
+        ../src/isa_rewrite.c ../src/isa_emulate.c ../src/crash_dump_win.c
         ../packaging/windows/spartanport-probe.rc)
     set_target_properties(spartanport-probe PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF OUTPUT_NAME basara4-core)
     target_compile_options(spartanport-probe PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Werror>)
@@ -206,6 +206,12 @@ if (WIN32)
     # The PS4 range (64 GiB - 1 TiB) must stay free: no high-entropy ASLR for heaps and stacks.
     # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
     target_link_options(spartanport-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
+    # Basara 4 PC: a crashing child writes a minidump that dbghelp can read back (ninja -C out/gpu crash-dump-test).
+    add_executable(crash-dump-test EXCLUDE_FROM_ALL ../tests/test_crash_dump.c ../src/crash_dump_win.c)
+    set_target_properties(crash-dump-test PROPERTIES C_STANDARD 11)
+    target_compile_options(crash-dump-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    target_include_directories(crash-dump-test PRIVATE ../src)
+    target_link_libraries(crash-dump-test PRIVATE dbghelp)
     # spartanport: runtime unit tests (ninja -C out/gpu mp3-test videodec-test services-test).
     add_executable(mp3-test EXCLUDE_FROM_ALL ../tests/test_mp3.c ../src/runtime_mp3.c ../src/compat_win.c)
     add_executable(videodec-test EXCLUDE_FROM_ALL ../tests/test_videodec.c ../src/compat_win.c)
@@ -298,6 +304,15 @@ target_include_directories(motion-history-test PRIVATE ..)
 add_executable(motion-shader-test EXCLUDE_FROM_ALL ../tests/test_motion_shaders.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(motion-shader-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(motion-shader-test PRIVATE spartanportgpu)
+# Basara 4 PC: FindImage's overlap loop (B4-20261114-texcache-regresi). "--expect-fixed" is
+# expected to fail until the loop keeps the subresource location (see the test's header).
+add_executable(overlap-loop-test EXCLUDE_FROM_ALL ../tests/test_overlap_loop.cpp ../tests/test_overlap_loop_stubs.cpp
+    shadps4/video_core/texture_cache/image_info.cpp shadps4/video_core/texture_cache/host_compatibility.cpp
+    shadps4/video_core/amdgpu/tiling.cpp shadps4/video_core/amdgpu/pixel_format.cpp
+    shim/common/assert.cpp shim/common/logging/log.cpp $<$<BOOL:${WIN32}>:../src/crash_dump_win.c>)
+target_compile_options(overlap-loop-test PRIVATE -UNDEBUG)
+target_include_directories(overlap-loop-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(overlap-loop-test PRIVATE Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum)
 add_executable(png-decode-test EXCLUDE_FROM_ALL ../tests/test_png_decode.cpp shim/spartanport_png.cpp)
 target_compile_options(png-decode-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_link_libraries(png-decode-test PRIVATE PkgConfig::FFMPEG)
@@ -328,6 +343,15 @@ add_executable(frame-capture-test EXCLUDE_FROM_ALL ../tests/test_frame_capture.c
 target_compile_options(frame-capture-test PRIVATE -UNDEBUG)
 target_include_directories(frame-capture-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(frame-capture-test PRIVATE Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum)
+add_executable(render-trace-test EXCLUDE_FROM_ALL ../tests/test_render_trace.cpp)
+target_compile_options(render-trace-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(render-trace-test PRIVATE shadps4)
+add_executable(render-trace-off-test EXCLUDE_FROM_ALL ../tests/test_render_trace_off.cpp)
+target_compile_options(render-trace-off-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(render-trace-off-test PRIVATE shadps4)
+add_executable(render-trace-open-fail-test EXCLUDE_FROM_ALL ../tests/test_render_trace_open_fail.cpp)
+target_compile_options(render-trace-open-fail-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(render-trace-open-fail-test PRIVATE shadps4)
 add_executable(lighting-test-knob-test EXCLUDE_FROM_ALL ../tests/test_lighting_test.cpp)
 target_compile_options(lighting-test-knob-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(lighting-test-knob-test PRIVATE shadps4)

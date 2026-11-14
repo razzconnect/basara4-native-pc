@@ -38,7 +38,7 @@ Frame rates above 60
   faster or glitchy, go back to 60. Turn VSync off, or the monitor refresh rate is the limit.
 
 Extracted DLC
-  Use "Manage extracted DLC..." to choose the parent folder containing one folder per add-on.
+  Use "Manage DLC..." to choose the parent folder containing one folder per add-on.
   Each add-on folder must be named with its 16-character entitlement label and contain
   sce_sys\param.sfo. Supported folders are available when the game starts. Raw PKG files are
   not opened or decrypted.

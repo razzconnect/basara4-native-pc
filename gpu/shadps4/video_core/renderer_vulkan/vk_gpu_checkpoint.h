@@ -20,6 +20,7 @@
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/renderer_vulkan/vk_render_trace.h"
 
 namespace Vulkan::GpuCheckpoint {
 
@@ -123,6 +124,8 @@ inline void ReportLost(vk::Queue queue, const char* where) {
     }
     std::fprintf(stderr, "GPU: DEVICE LOST in %s (Windows event nvlddmkm 153 / a driver-reported GPU error)\n", where);
     std::fprintf(stdout, "GPU: DEVICE LOST in %s (Windows event nvlddmkm 153 / a driver-reported GPU error)\n", where);
+    RenderTrace::RecordAnomaly(RenderTrace::Anomaly::DeviceLost, where, false);
+    RenderTrace::WriteSessionSummary();
     if (!Enabled()) {
         std::printf("GPU: checkpoints were not available, the faulting draw is unknown\n");
         std::fflush(stdout);

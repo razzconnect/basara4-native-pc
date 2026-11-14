@@ -91,7 +91,7 @@ Salin folder dump game PS4 Anda (yang berisi `eboot.bin`, `sce_module\`, dan `sc
 
 ### DLC hasil ekstrak
 
-Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalasi, atau `user\dlc` jika folder tersebut belum ada. Pilih folder induk DLC melalui **Manage extracted DLC…**. Setiap add-on harus berada di subfolder bernama entitlement label 16 karakter dan berisi `sce_sys\param.sfo`. File PKG mentah tidak dibuka atau didekripsi.
+Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalasi, atau `user\dlc` jika folder tersebut belum ada. Pilih folder induk DLC melalui **Manage DLC…**. Setiap add-on harus berada di subfolder bernama entitlement label 16 karakter dan berisi `sce_sys\param.sfo`. File PKG mentah tidak dibuka atau didekripsi.
 
 ---
 
