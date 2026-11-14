@@ -450,10 +450,12 @@ GraphicsPipeline::GraphicsPipeline(
                   debug_str, vk::to_string(pipeline_result));
         RenderTrace::Count(RenderTrace::Counter::GraphicsPipelineFails);
         RenderTrace::RecordAnomaly(
-            "pipeline.gfx_create_fail",
-            fmt::format("{} res={} mrt={:#x} samples={} z={} st={}", debug_str,
-                        vk::to_string(pipeline_result), key.mrt_mask, key.num_samples,
-                        u32(key.z_format), u32(key.stencil_format)),
+            RenderTrace::Anomaly::GraphicsPipelineCreateFail,
+            [&] {
+                return fmt::format("{} res={} mrt={:#x} samples={} z={} st={}", debug_str,
+                                   vk::to_string(pipeline_result), key.mrt_mask, key.num_samples,
+                                   u32(key.z_format), u32(key.stencil_format));
+            },
             true);
         return;
     }
@@ -484,9 +486,9 @@ GraphicsPipeline::GraphicsPipeline(
         } else {
             LOG_ERROR(Render_Vulkan, "Failed to create the squaring pipeline {}: {}", debug_str,
                       vk::to_string(square_result));
-            RenderTrace::RecordAnomaly(
-                "pipeline.square_fail",
-                fmt::format("{} res={}", debug_str, vk::to_string(square_result)));
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::SquarePipelineFail, [&] {
+                return fmt::format("{} res={}", debug_str, vk::to_string(square_result));
+            });
         }
     }
     g_spartanport_pipeline_total_ns += NsSince(started);

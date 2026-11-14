@@ -288,8 +288,9 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
     if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation, &info) !=
         VK_SUCCESS) {
         LOG_ERROR(Render_Vulkan, "Screenshot: no memory for the readback");
-        RenderTrace::RecordAnomaly("capture.png_nomem",
-                                   fmt::format("{}x{}", frame.width, frame.height));
+        RenderTrace::RecordAnomaly(RenderTrace::Anomaly::CapturePngNoMemory, [&] {
+            return fmt::format("{}x{}", frame.width, frame.height);
+        });
         return;
     }
     cmdbuf.copyImageToBuffer(frame.image, vk::ImageLayout::eTransferSrcOptimal, buffer,
@@ -311,7 +312,8 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
         vmaDestroyBuffer(allocator, buffer, allocation);
         if (!converted) {
             LOG_ERROR(Render_Vulkan, "Screenshot: unsupported format {}", vk::to_string(format));
-            RenderTrace::RecordAnomaly("screenshot.unsupported_fmt", vk::to_string(format));
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::ScreenshotUnsupportedFormat,
+                                       [&] { return vk::to_string(format); });
             if (notify_overlay) {
                 SpartanOverlay::ShowNotice("Screenshot failed: unsupported image format");
             }
@@ -346,11 +348,13 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
             } else {
                 std::printf("Render trace screenshot: %s (%ux%u)\n",
                             Common::FS::PathToUTF8String(path).c_str(), width, height);
-                RenderTrace::Log("capture.png_written", Common::FS::PathToUTF8String(path));
+                RenderTrace::Log("capture.png_written",
+                                 [&] { return Common::FS::PathToUTF8String(path); });
             }
         } else {
             LOG_ERROR(Render_Vulkan, "Screenshot: cannot write {}", Common::FS::PathToUTF8String(path));
-            RenderTrace::RecordAnomaly("capture.png_write_fail", Common::FS::PathToUTF8String(path));
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::CapturePngWriteFail,
+                                       [&] { return Common::FS::PathToUTF8String(path); });
             if (notify_overlay) {
                 SpartanOverlay::ShowNotice("Screenshot failed: cannot write the file");
             }
@@ -481,9 +485,9 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
                                      &unsafe_image, &frame->allocation, nullptr);
     if (result != VK_SUCCESS) {
         RenderTrace::Count(RenderTrace::Counter::VmaBudgetFallbacks);
-        RenderTrace::RecordAnomaly("vma.presenter_fallback",
-                                   fmt::format("{}x{} {}", width, height,
-                                               vk::to_string(vk::Result{result})));
+        RenderTrace::RecordAnomaly(RenderTrace::Anomaly::VmaPresenterFallback, [&] {
+            return fmt::format("{}x{} {}", width, height, vk::to_string(vk::Result{result}));
+        });
         VmaAllocationCreateInfo fallback_info = alloc_info;
         fallback_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &fallback_info,
@@ -996,7 +1000,8 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             // User resizes the window too fast or Alt-Tab is mid-transition. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");
             RenderTrace::Count(RenderTrace::Counter::PresentSkips);
-            RenderTrace::RecordAnomaly("present.skip", "acquireNextImageKHR failed", false);
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::PresentSkip,
+                                       "acquireNextImageKHR failed", false);
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             free_frame();
             return;

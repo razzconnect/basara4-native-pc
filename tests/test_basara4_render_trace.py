@@ -88,5 +88,62 @@ class Basara4RenderTraceLauncherTest(unittest.TestCase):
                 app.destroy()
 
 
+class Basara4RenderTraceErrorsTest(unittest.TestCase):
+    """Render-trace file errors are reported, not swallowed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user = Path(self._tmp.name)
+        self.log = self.user / "render_trace.log"
+        self.captures = self.user / "captures"
+        for name, value in (("RENDER_TRACE_LOG", self.log), ("CAPTURES_DIR", self.captures)):
+            patcher = mock.patch.object(bl, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_keep_previous_log_renames(self):
+        self.log.write_text("old run\n", encoding="utf-8")
+        self.assertEqual(bl.keep_previous_render_trace(), "")
+        self.assertFalse(self.log.exists())
+        self.assertEqual((self.user / "render_trace.previous.log").read_text(encoding="utf-8"), "old run\n")
+
+    def test_keep_previous_log_without_log(self):
+        self.assertEqual(bl.keep_previous_render_trace(), "")
+
+    def test_keep_previous_log_failure_is_reported(self):
+        self.log.write_text("old run\n", encoding="utf-8")
+        with mock.patch.object(bl.os, "replace", side_effect=PermissionError(13, "Access is denied")):
+            notice = bl.keep_previous_render_trace()
+        self.assertIn("Previous render_trace.log not kept", notice)
+        self.assertIn("Access is denied", notice)
+        self.assertIn("overwrites", notice)
+
+    def test_report_lists_tail_and_captures(self):
+        self.log.write_text("\n".join(f"line {i}" for i in range(20)) + "\n", encoding="utf-8")
+        self.captures.mkdir()
+        (self.captures / "frame_1.txt").write_text("x", encoding="utf-8")
+        report = bl.render_trace_report()
+        self.assertIn("--- [Recent Render Trace (render_trace.log)] ---\nline 8\n", report)
+        self.assertIn("line 19\n", report)
+        self.assertNotIn("line 7\n", report)
+        self.assertIn("--- [Recent Captures (user/captures)] ---\n  - frame_1.txt\n", report)
+
+    def test_report_without_files_is_empty(self):
+        self.assertEqual(bl.render_trace_report(), "")
+
+    def test_report_states_unreadable_log(self):
+        self.log.write_text("line\n", encoding="utf-8")
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Permission denied")):
+            report = bl.render_trace_report()
+        self.assertIn("render_trace.log could not be read: [Errno 13] Permission denied", report)
+
+    def test_report_states_unlistable_captures(self):
+        self.captures.mkdir()
+        with mock.patch.object(Path, "iterdir", side_effect=PermissionError(13, "Permission denied")):
+            report = bl.render_trace_report()
+        self.assertIn("user\\captures could not be listed: [Errno 13] Permission denied", report)
+
+
 if __name__ == "__main__":
     unittest.main()

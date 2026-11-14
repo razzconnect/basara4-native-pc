@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Basara 4 PC (Razz): lightweight rendering telemetry and on-demand trace support.
-// Zero hot-loop cost when SPARTAN_RENDER_TRACE is off (relaxed atomics incremented only on errors,
-// fallbacks, or rare lifecycle changes). When SPARTAN_RENDER_TRACE=<file|1> is active, writes a
-// timestamped render_trace.log (capped at 16 MiB) and requests up to 4 auto frame captures.
+// Cost when SPARTAN_RENDER_TRACE is off: Count() is one relaxed atomic add; Log/LogOnce return before
+// building their text; RecordAnomaly builds its detail text and takes the mutex for at most
+// kUntracedEventsPerTag events per tag per session (for the recent-anomalies list of an overlay
+// capture), after that one relaxed atomic load per event. Detail text is passed as a callable so it
+// is only formatted when it will be used. When SPARTAN_RENDER_TRACE=<file|1> is active, writes a
+// timestamped render_trace.log (capped at kMaxLogBytes) and requests up to kMaxAutoCaptures auto
+// frame captures.
 #pragma once
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +23,11 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "common/types.h"
@@ -66,10 +75,125 @@ inline constexpr std::array<const char*, std::size_t(Counter::Count)> CounterNam
     "avplayer_err",
 }};
 
+// Every RecordAnomaly tag. Each tag has its own budgets (below), so one tag that fires often can
+// never stop a different tag from being recorded or from queuing its auto capture.
+enum class Anomaly : std::size_t {
+    AvPlayerVideoOpenFail = 0,
+    AvPlayerDemuxFail,
+    AvPlayerSwsFail,
+    AvPlayerSendPacketFail,
+    AvPlayerReceiveFrameFail,
+    VideoOutFlipQueueFull,
+    VmaBufferFallback,
+    VmaImageFallback,
+    VmaPresenterFallback,
+    ComputePipelineCreateFail,
+    GraphicsPipelineCreateFail,
+    GraphicsPipelineAsyncFail,
+    SquarePipelineFail,
+    UnsupportedShaderStage,
+    ShaderCaptureFail,
+    ShaderCompileFail,
+    DeviceLost,
+    CapturePngNoMemory,
+    CapturePngWriteFail,
+    ScreenshotUnsupportedFormat,
+    PresentSkip,
+    SwapchainCreateFail,
+    SwapchainRecreate,
+    TexInvalidTSharp,
+    TexDepthAsColor,
+    TexFormatRetry,
+    TexFormatUnsupported,
+    TexOverlapFail,
+    TexFindDepthSubstitute,
+    Count
+};
+
+struct AnomalyInfo {
+    const char* name;
+    // Lifecycle events whose repetitions matter (how often the device was lost or the swapchain
+    // rebuilt): logged on every event while tracing, not only for a new detail text.
+    bool log_every_event;
+};
+
+inline constexpr std::array<AnomalyInfo, std::size_t(Anomaly::Count)> AnomalyInfos = {{
+    {"avplayer.video_open_fail", false},
+    {"avplayer.demux_fail", false},
+    {"avplayer.sws_fail", false},
+    {"avplayer.send_pkt_fail", false},
+    {"avplayer.recv_frame_fail", false},
+    {"vo.flip_queue_full", false},
+    {"vma.buffer_fallback", false},
+    {"vma.image_fallback", false},
+    {"vma.presenter_fallback", false},
+    {"pipeline.cs_create_fail", false},
+    {"pipeline.gfx_create_fail", false},
+    {"pipeline.gfx_async_fail", false},
+    {"pipeline.square_fail", false},
+    {"pipeline.unsupported_stage", false},
+    {"shader.capture_fail", false},
+    {"shader.compile_fail", false},
+    {"device.lost", true},
+    {"capture.png_nomem", false},
+    {"capture.png_write_fail", false},
+    {"screenshot.unsupported_fmt", false},
+    {"present.skip", false},
+    {"swapchain.create_fail", false},
+    {"swapchain.recreate", true},
+    {"tex.invalid_tsharp", false},
+    {"tex.depth_as_color", false},
+    {"tex.format_retry", false},
+    {"tex.format_unsupported", false},
+    {"tex.overlap_fail", false},
+    {"tex.find_depth_sub", false},
+}};
+
+inline constexpr const char* AnomalyName(Anomaly tag) {
+    return AnomalyInfos[std::size_t(tag)].name;
+}
+
+// Trace off: events per tag whose detail is formatted into the recent-anomalies list (the only
+// consumer while off is the header of a capture started from the overlay). The list keeps
+// kRecentAnomalyLines lines, so 8 per tag leaves room for several tags, and the off-path cost is at
+// most 8 formats + 8 lock/unlock per tag per session. Checked before formatting.
+inline constexpr u32 kUntracedEventsPerTag = 8;
+// Trace on: distinct detail texts recorded (log line + recent list) per tag. 64 examples of one tag
+// show its pattern (addresses, formats, sizes); more only grow the log and the dedupe set. Every
+// event is still counted by the caller's Counter, and tags that reach this budget are listed in
+// session.summary. Checked before formatting.
+inline constexpr u32 kTracedDetailsPerTag = 64;
+// Distinct keys per LogOnce tag. Today's caller keys by image-type pairs (a handful of values); the
+// cap only stops a future caller that keys by address from growing the set without bound.
+inline constexpr std::size_t kLogOnceKeysPerTag = 64;
+// Newest anomaly lines kept for the capture header: enough context for a bug report and still short
+// enough to read at the top of the capture file.
+inline constexpr std::size_t kRecentAnomalyLines = 32;
+// Unsupported formats kept for the log start and capture header. Format support is fixed per device,
+// so this only bounds the list printed for a device that lacks many formats.
+inline constexpr std::size_t kMaxUnsupportedFormats = 24;
+// render_trace.log stops growing at this size so a long session cannot fill the disk.
+inline constexpr u64 kMaxLogBytes = 16ULL * 1024 * 1024;
+// Each auto trigger (startup, movie, first anomaly) fires at most once, so at most 3 captures are
+// queued; this cap is a backstop so a future trigger cannot fill user\captures.
+inline constexpr u32 kMaxAutoCaptures = 4;
+// Startup auto capture at this flip: about 3 s at 60 fps after the first present, so the capture
+// records the first seconds of rendering on this GPU instead of the very first frame.
+inline constexpr u64 kStartupCaptureFlip = 180;
+// Movie auto capture at this decoded movie picture: about 0.5 s into the first movie at 30 fps, so
+// playback and the movie compositing path (bars, scaling) are running when the frame is captured.
+inline constexpr u32 kMovieCaptureFrame = 15;
+
 namespace detail {
+
+struct TagBudget {
+    std::atomic<u32> untraced_events{0};
+    std::atomic<u32> traced_details{0};
+};
 
 struct State {
     std::array<std::atomic<u64>, std::size_t(Counter::Count)> counters{};
+    std::array<TagBudget, std::size_t(Anomaly::Count)> budgets{};
     std::atomic<bool> auto_capture_pending{false};
     std::atomic<u32> auto_captures_taken{0};
     std::atomic<u32> movie_frames{0};
@@ -86,17 +210,33 @@ struct State {
     std::string scene_summary;
     std::string display_summary;
     std::string auto_capture_reason;
+    std::string log_error;
     std::vector<std::string> unsupported_formats;
     std::deque<std::string> recent_anomalies;
-    std::unordered_set<std::string> seen_keys;
+    // Dedupe sets: one per anomaly tag, and one per LogOnce tag, so neither can fill the other.
+    std::array<std::unordered_set<std::string>, std::size_t(Anomaly::Count)> anomaly_details;
+    std::unordered_map<std::string, std::unordered_set<std::string>> log_once_keys;
     FILE* log_file = nullptr;
     bool log_init = false;
     u64 log_bytes = 0;
 };
 
+// Never destroyed: WriteSessionSummary runs from std::atexit and decoder/render threads can still
+// record anomalies while the process exits, so the state must outlive every static destructor.
 inline State& GetState() {
-    static State state;
+    static State& state = *new State;
     return state;
+}
+
+// Detail and message arguments are either text (string_view-convertible) or a callable returning
+// text; a callable is only invoked when the text will be used.
+template <typename Text>
+inline std::string Materialize(Text&& text) {
+    if constexpr (std::is_invocable_v<Text&>) {
+        return std::string(text());
+    } else {
+        return std::string(std::string_view(text));
+    }
 }
 
 inline std::string WallTime() {
@@ -131,6 +271,21 @@ inline std::filesystem::path ResolveLogPath() {
     return std::filesystem::path(reinterpret_cast<const char8_t*>(env));
 }
 
+inline std::string PathText(const std::filesystem::path& path) {
+    const auto u8 = path.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+// The trace was requested but cannot be written: say so on stdout (last_run.log) and keep the reason
+// for the capture header, instead of silently running without a log.
+inline void ReportLogErrorLocked(State& s, std::string message) {
+    std::printf("Render trace: %s\n", message.c_str());
+    std::fflush(stdout);
+    if (s.log_error.empty()) {
+        s.log_error = std::move(message);
+    }
+}
+
 inline void EnsureLogFileLocked(State& s) {
     if (s.log_init) {
         return;
@@ -140,47 +295,55 @@ inline void EnsureLogFileLocked(State& s) {
     if (path.empty()) {
         return;
     }
-    std::error_code ec;
     if (path.has_parent_path()) {
+        std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) {
+            ReportLogErrorLocked(s, "cannot create the log folder " + PathText(path.parent_path()) +
+                                        ": " + ec.message());
+        }
     }
 #ifdef _WIN32
     s.log_file = _wfopen(path.wstring().c_str(), L"wb");
 #else
     s.log_file = std::fopen(path.c_str(), "wb");
 #endif
-    if (s.log_file) {
-        const std::string banner = "=== Basara 4 PC Render Trace Log ===\n";
-        std::fwrite(banner.data(), 1, banner.size(), s.log_file);
-        s.log_bytes = banner.size();
-        if (!s.gpu_summary.empty()) {
-            const std::string line = "[     0 ms] gpu.info " + s.gpu_summary + "\n";
-            std::fwrite(line.data(), 1, line.size(), s.log_file);
-            s.log_bytes += line.size();
-        }
-        if (!s.gpu_caps.empty()) {
-            const std::string line = "[     0 ms] gpu.caps " + s.gpu_caps + "\n";
-            std::fwrite(line.data(), 1, line.size(), s.log_file);
-            s.log_bytes += line.size();
-        }
-        if (!s.config_summary.empty()) {
-            const std::string line = "[     0 ms] config " + s.config_summary + "\n";
-            std::fwrite(line.data(), 1, line.size(), s.log_file);
-            s.log_bytes += line.size();
-        }
-        for (const auto& fmt_line : s.unsupported_formats) {
-            const std::string line = "[     0 ms] gpu.unsupported_format " + fmt_line + "\n";
-            std::fwrite(line.data(), 1, line.size(), s.log_file);
-            s.log_bytes += line.size();
-        }
-        std::fflush(s.log_file);
+    if (!s.log_file) {
+        const int err = errno;
+        ReportLogErrorLocked(s, "cannot open " + PathText(path) + ": " +
+                                    std::generic_category().message(err) +
+                                    "; the render trace is not written this session");
+        return;
     }
+    const std::string banner = "=== Basara 4 PC Render Trace Log ===\n";
+    std::fwrite(banner.data(), 1, banner.size(), s.log_file);
+    s.log_bytes = banner.size();
+    if (!s.gpu_summary.empty()) {
+        const std::string line = "[     0 ms] gpu.info " + s.gpu_summary + "\n";
+        std::fwrite(line.data(), 1, line.size(), s.log_file);
+        s.log_bytes += line.size();
+    }
+    if (!s.gpu_caps.empty()) {
+        const std::string line = "[     0 ms] gpu.caps " + s.gpu_caps + "\n";
+        std::fwrite(line.data(), 1, line.size(), s.log_file);
+        s.log_bytes += line.size();
+    }
+    if (!s.config_summary.empty()) {
+        const std::string line = "[     0 ms] config " + s.config_summary + "\n";
+        std::fwrite(line.data(), 1, line.size(), s.log_file);
+        s.log_bytes += line.size();
+    }
+    for (const auto& fmt_line : s.unsupported_formats) {
+        const std::string line = "[     0 ms] gpu.unsupported_format " + fmt_line + "\n";
+        std::fwrite(line.data(), 1, line.size(), s.log_file);
+        s.log_bytes += line.size();
+    }
+    std::fflush(s.log_file);
 }
 
 inline void WriteLogLocked(State& s, std::string_view tag, std::string_view msg) {
     EnsureLogFileLocked(s);
-    constexpr u64 kMaxBytes = 16ULL * 1024 * 1024;
-    if (!s.log_file || s.log_bytes >= kMaxBytes) {
+    if (!s.log_file || s.log_bytes >= kMaxLogBytes) {
         return;
     }
     char prefix[32];
@@ -199,7 +362,7 @@ inline void WriteLogLocked(State& s, std::string_view tag, std::string_view msg)
 }
 
 inline void QueueAutoCaptureLocked(State& s, std::string_view reason) {
-    if (s.auto_captures_taken.load(std::memory_order_relaxed) >= 4 ||
+    if (s.auto_captures_taken.load(std::memory_order_relaxed) >= kMaxAutoCaptures ||
         s.auto_capture_pending.load(std::memory_order_relaxed)) {
         return;
     }
@@ -257,7 +420,7 @@ inline void SetGpuInfo(std::string summary, std::string caps) {
 inline void AddUnsupportedFormat(const std::string& detail_line) {
     auto& s = detail::GetState();
     std::scoped_lock lk{s.mutex};
-    if (s.unsupported_formats.size() < 24) {
+    if (s.unsupported_formats.size() < kMaxUnsupportedFormats) {
         s.unsupported_formats.push_back(detail_line);
     }
     if (Enabled()) {
@@ -318,47 +481,80 @@ inline void SetDisplayInfo(u32 guest_w, u32 guest_h, u32 frame_w, u32 frame_h, b
     }
 }
 
-inline void Log(std::string_view tag, std::string_view msg) {
+// msg: text or a callable returning text; not evaluated when the trace is off.
+template <typename Message>
+inline void Log(std::string_view tag, Message&& msg) {
     if (!Enabled()) {
         return;
     }
+    const std::string text = detail::Materialize(std::forward<Message>(msg));
     auto& s = detail::GetState();
     std::scoped_lock lk{s.mutex};
-    detail::WriteLogLocked(s, tag, msg);
+    detail::WriteLogLocked(s, tag, text);
 }
 
-inline void LogOnce(std::string_view key, std::string_view tag, std::string_view msg) {
+// Logs the first message for each key of a tag (up to kLogOnceKeysPerTag keys per tag). key and msg:
+// text or callables returning text; not evaluated when the trace is off.
+template <typename Key, typename Message>
+inline void LogOnce(Key&& key, std::string_view tag, Message&& msg) {
     if (!Enabled()) {
         return;
     }
+    std::string key_text = detail::Materialize(std::forward<Key>(key));
     auto& s = detail::GetState();
+    {
+        std::scoped_lock lk{s.mutex};
+        auto& keys = s.log_once_keys[std::string(tag)];
+        if (keys.size() >= kLogOnceKeysPerTag || !keys.emplace(std::move(key_text)).second) {
+            return;
+        }
+    }
+    const std::string text = detail::Materialize(std::forward<Message>(msg));
     std::scoped_lock lk{s.mutex};
-    if (s.seen_keys.size() >= 256) {
-        return;
-    }
-    if (!s.seen_keys.emplace(key).second) {
-        return;
-    }
-    detail::WriteLogLocked(s, tag, msg);
+    detail::WriteLogLocked(s, tag, text);
 }
 
-inline void RecordAnomaly(std::string_view tag, std::string_view detail_msg,
-                          bool trigger_auto_capture = false) {
+// Records one anomaly event. detail_text: text or a callable returning text. The per-tag budgets
+// are checked before detail_text is evaluated and before the mutex is taken (see kUntracedEventsPerTag and
+// kTracedDetailsPerTag); a new detail text of a tag goes to the recent list and, while tracing, to the
+// log, and the first such anomaly with trigger_auto_capture queues an auto capture.
+template <typename Detail>
+inline void RecordAnomaly(Anomaly tag, Detail&& detail_text, bool trigger_auto_capture = false) {
+    const std::size_t index = std::size_t(tag);
+    const AnomalyInfo& info = AnomalyInfos[index];
     auto& s = detail::GetState();
+    auto& budget = s.budgets[index];
+    const bool tracing = Enabled();
+    if (tracing) {
+        if (!info.log_every_event &&
+            budget.traced_details.load(std::memory_order_relaxed) >= kTracedDetailsPerTag) {
+            return;
+        }
+    } else {
+        if (budget.untraced_events.load(std::memory_order_relaxed) >= kUntracedEventsPerTag ||
+            budget.untraced_events.fetch_add(1, std::memory_order_relaxed) >=
+                kUntracedEventsPerTag) {
+            return;
+        }
+    }
+    const std::string text = detail::Materialize(std::forward<Detail>(detail_text));
     std::scoped_lock lk{s.mutex};
-    const std::string key = std::string(tag) + ":" + std::string(detail_msg);
-    const bool is_new = s.seen_keys.size() < 512 && s.seen_keys.emplace(key).second;
+    auto& seen = s.anomaly_details[index];
+    bool is_new = false;
+    if (seen.size() < kTracedDetailsPerTag) {
+        is_new = seen.emplace(text).second;
+        budget.traced_details.store(u32(seen.size()), std::memory_order_relaxed);
+    }
     if (is_new) {
-        if (s.recent_anomalies.size() >= 32) {
+        if (s.recent_anomalies.size() >= kRecentAnomalyLines) {
             s.recent_anomalies.pop_front();
         }
-        s.recent_anomalies.push_back("[" + detail::WallTime() + "] " + std::string(tag) + " " +
-                                     std::string(detail_msg));
+        s.recent_anomalies.push_back("[" + detail::WallTime() + "] " + info.name + " " + text);
     }
-    if (Enabled() && (is_new || tag == "device.lost" || tag == "swapchain.recreate")) {
-        detail::WriteLogLocked(s, tag, detail_msg);
+    if (tracing && (is_new || info.log_every_event)) {
+        detail::WriteLogLocked(s, info.name, text);
         if (trigger_auto_capture && !s.anomaly_auto_done.exchange(true, std::memory_order_relaxed)) {
-            detail::QueueAutoCaptureLocked(s, std::string("auto_") + std::string(tag));
+            detail::QueueAutoCaptureLocked(s, std::string("auto_") + info.name);
         }
     }
 }
@@ -368,7 +564,8 @@ inline void OnFlip(u64 flip_count) {
         return;
     }
     auto& s = detail::GetState();
-    if (flip_count == 180 && !s.startup_auto_done.exchange(true, std::memory_order_relaxed)) {
+    if (flip_count == kStartupCaptureFlip &&
+        !s.startup_auto_done.exchange(true, std::memory_order_relaxed)) {
         std::scoped_lock lk{s.mutex};
         detail::QueueAutoCaptureLocked(s, "auto_startup");
     }
@@ -380,7 +577,7 @@ inline void OnMovieFrame() {
     }
     auto& s = detail::GetState();
     const u32 n = s.movie_frames.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (n == 15 && !s.movie_auto_done.exchange(true, std::memory_order_relaxed)) {
+    if (n == kMovieCaptureFrame && !s.movie_auto_done.exchange(true, std::memory_order_relaxed)) {
         std::scoped_lock lk{s.mutex};
         detail::QueueAutoCaptureLocked(s, "auto_movie");
     }
@@ -417,6 +614,9 @@ inline std::string FormatHeader() {
     }
     if (!s.display_summary.empty()) {
         out += "display: " + s.display_summary + "\n";
+    }
+    if (!s.log_error.empty()) {
+        out += "trace_log_error: " + s.log_error + "\n";
     }
     out += "anomalies:";
     for (std::size_t i = 0; i < std::size_t(Counter::Count); ++i) {
@@ -474,6 +674,16 @@ inline void WriteSessionSummary() {
         line += CounterNames[i];
         line += "=";
         line += std::to_string(s.counters[i].load(std::memory_order_relaxed));
+    }
+    std::string saturated;
+    for (std::size_t i = 0; i < std::size_t(Anomaly::Count); ++i) {
+        if (s.anomaly_details[i].size() >= kTracedDetailsPerTag) {
+            saturated += saturated.empty() ? "" : ",";
+            saturated += AnomalyInfos[i].name;
+        }
+    }
+    if (!saturated.empty()) {
+        line += " details_budget_reached=" + saturated;
     }
     detail::WriteLogLocked(s, "session.summary", line);
     std::fclose(s.log_file);

@@ -134,9 +134,9 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                                           &allocation, out_alloc_info);
         if (result != VK_SUCCESS) {
             Vulkan::RenderTrace::Count(Vulkan::RenderTrace::Counter::VmaBudgetFallbacks);
-            Vulkan::RenderTrace::RecordAnomaly(
-                "vma.buffer_fallback",
-                fmt::format("size={} {}", buffer_ci.size, vk::to_string(vk::Result{result})));
+            Vulkan::RenderTrace::RecordAnomaly(Vulkan::RenderTrace::Anomaly::VmaBufferFallback, [&] {
+                return fmt::format("size={} {}", buffer_ci.size, vk::to_string(vk::Result{result}));
+            });
             VmaAllocationCreateInfo fallback_ci = alloc_ci;
             fallback_ci.flags &= ~(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT |
                                    VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);

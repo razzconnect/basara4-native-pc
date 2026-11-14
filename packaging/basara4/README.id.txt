@@ -16,7 +16,7 @@ FPS di atas 60 bersifat eksperimental. Kalau gerakan terasa lebih cepat atau ada
 kembali ke 60. Matikan VSync agar tidak dibatasi refresh rate monitor.
 
 DLC hasil ekstrak
-  Gunakan "Manage extracted DLC..." untuk memilih folder induk yang berisi satu folder per add-on.
+  Gunakan "Manage DLC..." untuk memilih folder induk yang berisi satu folder per add-on.
   Tiap folder add-on harus bernama entitlement label 16 karakter dan berisi sce_sys\param.sfo.
   Folder yang didukung tersedia saat game dimulai. File PKG mentah tidak dibuka atau didekripsi.
 

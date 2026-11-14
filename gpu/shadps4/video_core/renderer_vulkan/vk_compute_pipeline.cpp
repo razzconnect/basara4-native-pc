@@ -121,8 +121,9 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
                   debug_str, vk::to_string(pipeline_result));
         RenderTrace::Count(RenderTrace::Counter::ComputePipelineFails);
         RenderTrace::RecordAnomaly(
-            "pipeline.cs_create_fail",
-            fmt::format("{} res={}", debug_str, vk::to_string(pipeline_result)), true);
+            RenderTrace::Anomaly::ComputePipelineCreateFail,
+            [&] { return fmt::format("{} res={}", debug_str, vk::to_string(pipeline_result)); },
+            true);
         return;
     }
     pipeline = std::move(pipe);

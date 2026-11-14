@@ -253,6 +253,42 @@ def format_size(n):
     return f"{n / 2**30:.1f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
 
 
+def keep_previous_render_trace():
+    """Before a traced start, rename the last render_trace.log to render_trace.previous.log.
+
+    The game opens render_trace.log for writing, so a failed rename means the last log is lost:
+    return a status notice saying so (empty when there was nothing to keep or the rename worked).
+    """
+    if not RENDER_TRACE_LOG.exists():
+        return ""
+    try:
+        os.replace(RENDER_TRACE_LOG, RENDER_TRACE_LOG.with_name("render_trace.previous.log"))
+    except OSError as exc:
+        return f"Previous render_trace.log not kept ({exc.strerror or exc}): this run overwrites it.  "
+    return ""
+
+
+def render_trace_report():
+    """Crash-report section: the render_trace.log tail and the newest captures, or why they are missing."""
+    text = ""
+    if RENDER_TRACE_LOG.is_file():
+        try:
+            lines = RENDER_TRACE_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            lines = [f"render_trace.log could not be read: {exc}"]
+        if lines:
+            text += "\n--- [Recent Render Trace (render_trace.log)] ---\n" + "\n".join(lines[-12:]) + "\n"
+    if CAPTURES_DIR.is_dir():
+        try:
+            entries = [f"  - {p.name}" for p in sorted(
+                CAPTURES_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:6]]
+        except OSError as exc:
+            entries = [f"  user\\captures could not be listed: {exc}"]
+        if entries:
+            text += "\n--- [Recent Captures (user/captures)] ---\n" + "\n".join(entries) + "\n"
+    return text
+
+
 def check_commit_limit_mb():
     """Returns available virtual memory (page file commit limit) in MB, or None if unavailable."""
     try:
@@ -1220,11 +1256,8 @@ class Launcher(tk.Tk):
                 os.replace(AUDIO_LOG, AUDIO_LOG.with_name("audio_debug.previous.log"))
             except OSError:
                 pass
-        if self.cfg.get("render_trace") and RENDER_TRACE_LOG.exists():
-            try:
-                os.replace(RENDER_TRACE_LOG, RENDER_TRACE_LOG.with_name("render_trace.previous.log"))
-            except OSError:
-                pass
+        if self.cfg.get("render_trace"):
+            notice += keep_previous_render_trace()
         if self.cfg.get("audio_log") and self.cfg.get("audio_wav"):  # only this run's captures stay
             AUDIO_WAV.mkdir(parents=True, exist_ok=True)
             for old in AUDIO_WAV.glob("*.wav"):
@@ -1571,23 +1604,6 @@ class Launcher(tk.Tk):
                 except Exception:
                     pass
 
-            render_tail = ""
-            if RENDER_TRACE_LOG.is_file():
-                try:
-                    r_lines = RENDER_TRACE_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-                    if r_lines:
-                        render_tail = "\n".join(r_lines[-12:])
-                except Exception:
-                    pass
-            capture_files = []
-            if CAPTURES_DIR.is_dir():
-                try:
-                    capture_files = sorted(
-                        CAPTURES_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
-                    )[:6]
-                except Exception:
-                    pass
-
             hints_block = ("\nDiagnosis Hardware / Memori:\n" + "\n".join(f"  {h}" for h in hw_hints) + "\n") if hw_hints else ""
             clip_text = (
                 f"=== Sengoku Basara 4 PC — Crash Diagnostic Report ===\n"
@@ -1604,12 +1620,7 @@ class Launcher(tk.Tk):
             )
             if audio_tail:
                 clip_text += f"\n--- [Recent Audio Log (audio_debug.log)] ---\n{audio_tail}\n"
-            if render_tail:
-                clip_text += f"\n--- [Recent Render Trace (render_trace.log)] ---\n{render_tail}\n"
-            if capture_files:
-                clip_text += "\n--- [Recent Captures (user/captures)] ---\n" + "\n".join(
-                    f"  - {p.name}" for p in capture_files
-                ) + "\n"
+            clip_text += render_trace_report()
 
             clip_text += "\n=== End of Report ==="
             self.clipboard_clear()

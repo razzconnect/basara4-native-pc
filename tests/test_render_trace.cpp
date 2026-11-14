@@ -55,6 +55,9 @@ int main() {
     const std::string log_str(reinterpret_cast<const char*>(log_u8.data()), log_u8.size());
     SetEnv("SPARTAN_RENDER_TRACE", log_str.c_str());
 
+    // Same order as spartanportgpu_init: the exit hook is registered before the state exists, and
+    // runs again (as a no-op) after the explicit summary below.
+    std::atexit(&RT::WriteSessionSummary);
     assert(RT::Enabled());
     assert(RT::LogPath() == log_path);
 
@@ -72,23 +75,41 @@ int main() {
     assert(RT::GetCount(RT::Counter::FramesPresented) == 180);
     assert(RT::GetCount(RT::Counter::GraphicsPipelineFails) == 2);
 
-    // Deduped anomalies + 32-entry ring cap + auto-capture triggers.
-    RT::RecordAnomaly("pipeline.gfx_create_fail", "vs=11 ps=22", true);
-    RT::RecordAnomaly("pipeline.gfx_create_fail", "vs=11 ps=22", true); // duplicate ignored
+    // Per-tag detail budget: 600 distinct details of one tag record kTracedDetailsPerTag of them, and
+    // the detail text is not built once the budget is spent.
+    int tsharp_formats = 0;
+    for (int i = 0; i < 600; ++i) {
+        RT::RecordAnomaly(RT::Anomaly::TexInvalidTSharp, [&] {
+            ++tsharp_formats;
+            return "addr=0x" + std::to_string(0x10000 + i * 0x100) + " w=64";
+        });
+    }
+    assert(tsharp_formats == int(RT::kTracedDetailsPerTag));
+    // LogOnce has its own per-tag key set: a flood of anomalies cannot stop it.
+    for (int i = 0; i < 70; ++i) {
+        RT::LogOnce("pool_type_" + std::to_string(i), "tex.pool_type_mismatch",
+                    "key=" + std::to_string(i));
+    }
+    RT::LogOnce("pool_type_0", "tex.pool_type_mismatch", "duplicate key ignored");
+    RT::LogOnce("first", "test.log_once_other_tag", "other tag still logged");
+
+    // A new tag after the flood is still recorded and still queues the anomaly auto capture.
+    RT::RecordAnomaly(RT::Anomaly::GraphicsPipelineCreateFail, "vs=11 ps=22", true);
+    RT::RecordAnomaly(RT::Anomaly::GraphicsPipelineCreateFail, "vs=11 ps=22", true); // duplicate
     std::string reason;
     assert(RT::ConsumeAutoCapture(reason));
     assert(reason == "auto_pipeline.gfx_create_fail");
     assert(!RT::ConsumeAutoCapture(reason));
 
     for (int i = 0; i < 40; ++i) {
-        RT::RecordAnomaly("tex.format_retry", "id=" + std::to_string(i), false);
+        RT::RecordAnomaly(RT::Anomaly::TexFormatRetry, "id=" + std::to_string(i), false);
     }
 
-    RT::OnFlip(180);
+    RT::OnFlip(RT::kStartupCaptureFlip);
     assert(RT::ConsumeAutoCapture(reason));
     assert(reason == "auto_startup");
 
-    for (int i = 0; i < 15; ++i) {
+    for (u32 i = 0; i < RT::kMovieCaptureFrame; ++i) {
         RT::OnMovieFrame();
     }
     assert(RT::ConsumeAutoCapture(reason));
@@ -106,7 +127,9 @@ int main() {
     assert(header.find("gfx_pipe_fail=2") != std::string::npos);
     assert(header.find("unsupported_formats:") != std::string::npos);
     assert(header.find("recent_anomalies:") != std::string::npos);
-    // 40 retries + 1 pipeline fail -> oldest dropped, newest 32 retained (id=39 present, id=0 evicted).
+    // 64 T# + 1 pipeline fail + 40 retries -> only the newest kRecentAnomalyLines (32) are kept
+    // (id=39 present, id=0 evicted).
+    static_assert(RT::kRecentAnomalyLines == 32);
     assert(header.find("id=39") != std::string::npos);
     assert(header.find("id=0\n") == std::string::npos);
 
@@ -122,6 +145,13 @@ int main() {
     assert(written.find("capture.saved reason=auto_startup trace=frame_1.txt screenshot=frame_1.png") !=
            std::string::npos);
     assert(written.find("presented=180") != std::string::npos);
+    assert(CountOccurrences(written, "tex.invalid_tsharp ") == RT::kTracedDetailsPerTag);
+    assert(written.find("pipeline.gfx_create_fail vs=11 ps=22") != std::string::npos);
+    assert(CountOccurrences(written, "pipeline.gfx_create_fail ") == 1);
+    assert(CountOccurrences(written, "tex.pool_type_mismatch ") == RT::kLogOnceKeysPerTag);
+    assert(written.find("duplicate key ignored") == std::string::npos);
+    assert(written.find("test.log_once_other_tag other tag still logged") != std::string::npos);
+    assert(written.find("details_budget_reached=tex.invalid_tsharp") != std::string::npos);
 
     std::filesystem::remove_all(tmp_dir, ec);
     std::puts("render-trace-test ok");

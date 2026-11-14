@@ -87,7 +87,8 @@ void Swapchain::Create(u32 width_, u32 height_) {
         swapchain_result == vk::Result::eErrorInitializationFailed) {
         LOG_WARNING(Render_Vulkan, "Failed to create swapchain ({}), postponing until window is ready",
                     vk::to_string(swapchain_result));
-        RenderTrace::RecordAnomaly("swapchain.create_fail", vk::to_string(swapchain_result));
+        RenderTrace::RecordAnomaly(RenderTrace::Anomaly::SwapchainCreateFail,
+                                   [&] { return vk::to_string(swapchain_result); });
         if (swapchain_result == vk::Result::eErrorSurfaceLostKHR) {
             RecreateSurface();
         }
@@ -101,19 +102,20 @@ void Swapchain::Create(u32 width_, u32 height_) {
 
     SetupImages();
     RefreshSemaphores();
-    RenderTrace::Log("swapchain.created",
-                     fmt::format("{}x{} count={} fmt={} mode={}", extent.width, extent.height,
-                                 image_count, vk::to_string(format.format),
-                                 vk::to_string(present_mode)));
+    RenderTrace::Log("swapchain.created", [&] {
+        return fmt::format("{}x{} count={} fmt={} mode={}", extent.width, extent.height,
+                           image_count, vk::to_string(format.format), vk::to_string(present_mode));
+    });
 }
 
 void Swapchain::Recreate(u32 width_, u32 height_) {
     LOG_DEBUG(Render_Vulkan, "Recreate the swapchain: width={} height={} HDR={}", width_, height_,
               needs_hdr);
     RenderTrace::Count(RenderTrace::Counter::SwapchainRecreates);
-    RenderTrace::RecordAnomaly("swapchain.recreate",
-                               fmt::format("{}x{} hdr={} fmt={}", width_, height_, int(needs_hdr),
-                                           vk::to_string(surface_format.format)));
+    RenderTrace::RecordAnomaly(RenderTrace::Anomaly::SwapchainRecreate, [&] {
+        return fmt::format("{}x{} hdr={} fmt={}", width_, height_, int(needs_hdr),
+                           vk::to_string(surface_format.format));
+    });
     Create(width_, height_);
 }
 
@@ -168,7 +170,7 @@ bool Swapchain::AcquireNextImage() {
     case static_cast<vk::Result>(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT):
 #endif
     case vk::Result::eErrorUnknown:
-        RenderTrace::Log("swapchain.acquire", vk::to_string(result));
+        RenderTrace::Log("swapchain.acquire", [&] { return vk::to_string(result); });
         needs_recreation = true;
         return false;
     case vk::Result::eErrorDeviceLost:
@@ -206,7 +208,7 @@ bool Swapchain::Present() {
         || result == static_cast<vk::Result>(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
 #endif
     ) {
-        RenderTrace::Log("swapchain.present", vk::to_string(result));
+        RenderTrace::Log("swapchain.present", [&] { return vk::to_string(result); });
         needs_recreation = true;
     } else {
         if (result == vk::Result::eErrorDeviceLost) {

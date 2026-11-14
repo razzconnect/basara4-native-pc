@@ -518,8 +518,11 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
                   permutation, capture_job.Error());
         RenderTrace::Count(RenderTrace::Counter::ShaderCaptureFails);
         RenderTrace::RecordAnomaly(
-            "shader.capture_fail",
-            fmt::format("{:#x}/{} {}", params.hash, permutation, capture_job.Error()), true);
+            RenderTrace::Anomaly::ShaderCaptureFail,
+            [&] {
+                return fmt::format("{:#x}/{} {}", params.hash, permutation, capture_job.Error());
+            },
+            true);
         return false;
     }
     const bool queued = build->job.Start(*compiler, [this, build] {
@@ -571,8 +574,12 @@ void PipelineCache::PublishShaders(bool wait) {
                           build->permutation, build->job.Error());
                 RenderTrace::Count(RenderTrace::Counter::ShaderCompileFails);
                 RenderTrace::RecordAnomaly(
-                    "shader.compile_fail",
-                    fmt::format("{:#x}/{} {}", hash, build->permutation, build->job.Error()), true);
+                    RenderTrace::Anomaly::ShaderCompileFail,
+                    [&] {
+                        return fmt::format("{:#x}/{} {}", hash, build->permutation,
+                                           build->job.Error());
+                    },
+                    true);
                 retire();
             } else {
                 ++i;
@@ -615,9 +622,11 @@ void PipelineCache::PublishGraphics(bool wait) {
                           std::hash<GraphicsPipelineKey>{}(it.key()), build->job.Error());
                 RenderTrace::Count(RenderTrace::Counter::GraphicsPipelineFails);
                 RenderTrace::RecordAnomaly(
-                    "pipeline.gfx_async_fail",
-                    fmt::format("{:#x} {}", std::hash<GraphicsPipelineKey>{}(it.key()),
-                                build->job.Error()),
+                    RenderTrace::Anomaly::GraphicsPipelineAsyncFail,
+                    [&] {
+                        return fmt::format("{:#x} {}", std::hash<GraphicsPipelineKey>{}(it.key()),
+                                           build->job.Error());
+                    },
                     true);
                 build->failure_logged = true;
             }
@@ -1072,12 +1081,14 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     case AmdGpu::ShaderStageEnable::VgtStages::EsGs:
         if (!instance.IsGeometryStageSupported()) {
             LOG_WARNING(Render_Vulkan, "Geometry shader stage unsupported, skipping");
-            RenderTrace::RecordAnomaly("pipeline.unsupported_stage", "EsGs geometry unsupported", true);
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::UnsupportedShaderStage,
+                                       "EsGs geometry unsupported", true);
             return false;
         }
         if (regs.vgt_gs_mode.onchip || regs.vgt_strmout_config.raw) {
             LOG_WARNING(Render_Vulkan, "Geometry shader features unsupported, skipping");
-            RenderTrace::RecordAnomaly("pipeline.unsupported_stage", "EsGs onchip/strmout unsupported");
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::UnsupportedShaderStage,
+                                       "EsGs onchip/strmout unsupported");
             return false;
         }
         if (!bind_stage(HwStage::Export, SwStage::Vertex)) {
@@ -1134,8 +1145,9 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
         break;
     default:
         LOG_WARNING(Render_Vulkan, "unimplemented shader stage {}", (u32)regs.stage_enable.raw);
-        RenderTrace::RecordAnomaly("pipeline.unsupported_stage",
-                                   fmt::format("stage_enable={:#x}", u32(regs.stage_enable.raw)));
+        RenderTrace::RecordAnomaly(RenderTrace::Anomaly::UnsupportedShaderStage, [&] {
+            return fmt::format("stage_enable={:#x}", u32(regs.stage_enable.raw));
+        });
         return false;
     }
 

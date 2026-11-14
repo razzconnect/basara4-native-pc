@@ -120,10 +120,10 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                                      &allocation, &alloc_info);
     if (result != VK_SUCCESS) {
         RenderTrace::Count(RenderTrace::Counter::VmaBudgetFallbacks);
-        RenderTrace::RecordAnomaly("vma.image_fallback",
-                                   fmt::format("{} {}x{} {}", vk::to_string(image_ci.format),
-                                               image_ci.extent.width, image_ci.extent.height,
-                                               vk::to_string(vk::Result{result})));
+        RenderTrace::RecordAnomaly(RenderTrace::Anomaly::VmaImageFallback, [&] {
+            return fmt::format("{} {}x{} {}", vk::to_string(image_ci.format), image_ci.extent.width,
+                               image_ci.extent.height, vk::to_string(vk::Result{result}));
+        });
         VmaAllocationCreateInfo fallback_ci = alloc_ci;
         fallback_ci.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         result = vmaCreateImage(allocator, &image_ci_unsafe, &fallback_ci, &unsafe_image,
@@ -197,10 +197,13 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
                   vk::to_string(supported_format), vk::to_string(format_info.type),
                   vk::to_string(format_info.flags), vk::to_string(format_info.usage));
         RenderTrace::RecordAnomaly(
-            "tex.format_unsupported",
-            fmt::format("{} type={} flags={} usage={}", vk::to_string(supported_format),
-                        vk::to_string(format_info.type), vk::to_string(format_info.flags),
-                        vk::to_string(format_info.usage)),
+            RenderTrace::Anomaly::TexFormatUnsupported,
+            [&] {
+                return fmt::format("{} type={} flags={} usage={}", vk::to_string(supported_format),
+                                   vk::to_string(format_info.type),
+                                   vk::to_string(format_info.flags),
+                                   vk::to_string(format_info.usage));
+            },
             true);
     }
     supported_samples = image_format_properties.result == vk::Result::eSuccess

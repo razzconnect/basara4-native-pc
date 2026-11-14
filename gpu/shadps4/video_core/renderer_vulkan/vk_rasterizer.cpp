@@ -2452,10 +2452,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                         tsharp.Address(), tsharp.pitch, tsharp.width, static_cast<u32>(data_fmt),
                         static_cast<u32>(num_fmt));
             RenderTrace::Count(RenderTrace::Counter::InvalidTSharps);
-            RenderTrace::RecordAnomaly("tex.invalid_tsharp",
-                                       fmt::format("addr={:#x} w={} pitch={} dfmt={} nfmt={}",
-                                                   tsharp.Address(), tsharp.width, tsharp.pitch,
-                                                   u32(data_fmt), u32(num_fmt)));
+            RenderTrace::RecordAnomaly(RenderTrace::Anomaly::TexInvalidTSharp, [&] {
+                return fmt::format("addr={:#x} w={} pitch={} dfmt={} nfmt={}", tsharp.Address(),
+                                   tsharp.width, tsharp.pitch, u32(data_fmt), u32(num_fmt));
+            });
             image_bindings.emplace_back(VideoCore::ImageId{}, &image_desc_storage.emplace_back());
             image_binding_entries.push_back(nullptr);
             binding_proxy_ok.push_back(false);
@@ -2499,12 +2499,16 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             RenderTrace::Count(RenderTrace::Counter::DepthColorSubstitutions);
             RenderTrace::RecordAnomaly(
-                "tex.depth_as_color",
-                fmt::format("want {} {}x{} at {:#x} got {} {}x{} at {:#x} redir={}",
-                            vk::to_string(wanted.view_info.format), wanted.info.size.width,
-                            wanted.info.size.height, wanted.info.guest_address,
-                            vk::to_string(used.info.pixel_format), used.info.size.width,
-                            used.info.size.height, used.info.guest_address, int(redirected)),
+                RenderTrace::Anomaly::TexDepthAsColor,
+                [&] {
+                    return fmt::format("want {} {}x{} at {:#x} got {} {}x{} at {:#x} redir={}",
+                                       vk::to_string(wanted.view_info.format),
+                                       wanted.info.size.width, wanted.info.size.height,
+                                       wanted.info.guest_address,
+                                       vk::to_string(used.info.pixel_format), used.info.size.width,
+                                       used.info.size.height, used.info.guest_address,
+                                       int(redirected));
+                },
                 true);
             static u32 logged = 0;
             if (logged++ >= 16) {
@@ -2605,12 +2609,16 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     RenderTrace::Count(RenderTrace::Counter::TextureStillNotFit);
                 }
                 RenderTrace::RecordAnomaly(
-                    "tex.format_retry",
-                    fmt::format("want {} {}x{} at {:#x} -> {} {}x{} still_bad={}",
-                                vk::to_string(desc.view_info.format), desc.info.size.width,
-                                desc.info.size.height, desc.info.guest_address,
-                                vk::to_string(retry.info.pixel_format), retry.info.size.width,
-                                retry.info.size.height, int(still_bad)),
+                    RenderTrace::Anomaly::TexFormatRetry,
+                    [&] {
+                        return fmt::format("want {} {}x{} at {:#x} -> {} {}x{} still_bad={}",
+                                           vk::to_string(desc.view_info.format),
+                                           desc.info.size.width, desc.info.size.height,
+                                           desc.info.guest_address,
+                                           vk::to_string(retry.info.pixel_format),
+                                           retry.info.size.width, retry.info.size.height,
+                                           int(still_bad));
+                    },
                     still_bad);
                 static u32 logged = 0;
                 if (logged++ < 16) {
