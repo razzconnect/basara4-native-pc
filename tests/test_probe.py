@@ -1,5 +1,5 @@
 """Boundary tests for the native loader; uses tiny synthetic x86-64 images."""
-from paths import ROOT, built
+from paths import ROOT, built, built_env
 from pathlib import Path
 import os
 import struct
@@ -55,7 +55,7 @@ class LoaderTests(unittest.TestCase):
             path.write_bytes(data)
             # In the temporary folder: a fault writes user/crash/*.dmp under the working directory.
             return subprocess.run([str(EXE.resolve()), str(path), '--cpu-only', *options], cwd=tmp,
-                                  capture_output=True, text=True, timeout=5)
+                                  capture_output=True, text=True, timeout=5, env=built_env(EXE))
 
     def test_original_instruction_reaches_named_import(self):
         # jmp [rip+2]; two padding bytes; relocated function pointer at +8
@@ -174,12 +174,8 @@ class LoaderTests(unittest.TestCase):
 
 
 def host_env():
-    env = dict(os.environ)
     # Development builds run from the MSYS2 tree: its CLANG64 DLLs (SDL3, ...), as in run.py.
-    if sys.platform == 'win32' and not (HOST_EXE.parent / 'SDL3.dll').is_file():
-        clang64 = Path(env.get('MSYS2_ROOT', r'C:\msys64')) / 'clang64' / 'bin'
-        env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
-    return env
+    return built_env(HOST_EXE)
 
 
 @unittest.skipUnless(HOST_EXE.exists(), 'build native probe first')

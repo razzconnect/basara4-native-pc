@@ -513,6 +513,8 @@ add_library(spartanport-test-no-dialog OBJECT ../tests/support/no_dialog.c)
 set(SPARTAN_TEST_ARGS_mp3-test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/data/sine.mp3)
 set(SPARTAN_TEST_ARGS_videodec-test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/data/tiny.h264)
 set(SPARTAN_TEST_ARGS_isa-stub-test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/data/isa_fixture.bin)
+set(SPARTAN_MOTION_SPV ${CMAKE_CURRENT_BINARY_DIR}/motion-shaders)
+set(SPARTAN_TEST_ARGS_motion-shader-test ${SPARTAN_MOTION_SPV})
 add_custom_target(spartanport-tests)
 get_property(spartan_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(target IN LISTS spartan_targets)
@@ -521,4 +523,23 @@ foreach(target IN LISTS spartan_targets)
         add_dependencies(spartanport-tests ${target})
         add_test(NAME ${target} COMMAND ${target} ${SPARTAN_TEST_ARGS_${target}})
     endif()
+endforeach()
+# motion-shader-test only writes the SPIR-V the backend emits for the motion-vector stages; spirv-val
+# (SPIRV-Tools) checks it, one test per file. The writer is the fixture's setup: when it fails, the
+# checks do not run and count as failed. Without spirv-val the checks fail with how to install it.
+set_tests_properties(motion-shader-test PROPERTIES FIXTURES_SETUP motion-shaders)
+find_program(SPARTAN_SPIRV_VAL spirv-val)
+if (NOT SPARTAN_SPIRV_VAL)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/spirv-val-missing.cmake
+        "message(FATAL_ERROR \"spirv-val not found: install SPIRV-Tools (MSYS2: pacman -S mingw-w64-clang-x86_64-spirv-tools), then reconfigure\")\n")
+endif()
+foreach(shader vertex-plain vertex-motion fragment-plain fragment-motion)
+    if (SPARTAN_SPIRV_VAL)
+        add_test(NAME motion-shader-spirv-val-${shader}
+                 COMMAND ${SPARTAN_SPIRV_VAL} --target-env vulkan1.3 ${SPARTAN_MOTION_SPV}/${shader}.spv)
+    else()
+        add_test(NAME motion-shader-spirv-val-${shader}
+                 COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/spirv-val-missing.cmake)
+    endif()
+    set_tests_properties(motion-shader-spirv-val-${shader} PROPERTIES FIXTURES_REQUIRED motion-shaders)
 endforeach()
