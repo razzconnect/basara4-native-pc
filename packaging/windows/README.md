@@ -17,13 +17,13 @@ pacman -S --needed git patch \
   mingw-w64-clang-x86_64-{spirv-tools,spirv-headers,spirv-cross}
 ```
 
-magic_enum, miniz and xbyak (not packaged by MSYS2) are submodules under `gpu/third_party/`.
+magic_enum, miniz and xbyak (not packaged by MSYS2) are vendored under `gpu/third_party/`: the
+repository contains them, so a plain clone is complete (no submodules).
 Before packaging, also install Windows Python 3.10+ from python.org with Tk support; the
 packaging script uses it to create its private Python environment.
 Then, in the repository, build with MSYS2 CLANG64:
 
 ```bash
-git submodule update --init --recursive
 bash build.sh                      # out/spartanport-probe.exe, out/spartanport-gpu-capabilities.exe
 bash packaging/windows/package.sh  # dist/spartanport-windows/ and .zip: SpartanPort.exe + DLLs
 ```

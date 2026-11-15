@@ -32,9 +32,8 @@ jobs:
       - name: Keep LF line endings
         shell: pwsh
         run: git config --global core.autocrlf false
+      # Third-party code is vendored in the repository (no submodules).
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # The runner's C:/msys64, where msys2-env.sh and package.sh look for the CLANG64 DLLs.
       - uses: msys2/setup-msys2@v2
         with:

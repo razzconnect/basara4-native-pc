@@ -1,7 +1,9 @@
 # Local changes to gpu/third_party/fsr-vulkan
 
-The submodule points at upstream FireBurn/FSR-Vulkan (`c64f093`). `build.sh` applies the
-patches here to its working tree when they are not applied yet:
+`gpu/third_party/fsr-vulkan` is vendored: upstream FireBurn/FSR-Vulkan (`c64f093`) committed in
+this repository with these patches already applied. They record what differs from upstream, for
+the next update of the library; `build.sh` checks that every one is in the tree and stops when one
+is missing (`VENDORED_PATCHES`, `tests/test_vendored_patches.py`):
 
 - `0001-...`: `SPARTAN_FSR4_PROFILE` (GPU time per FSR 4 pass) and `SPARTAN_FSR4_STATS` (driver
   statistics of each pass) in the FSR 4 v07 provider.

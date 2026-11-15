@@ -25,9 +25,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
+      # Third-party code is vendored in the repository (no submodules).
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Dependencies
         run: bash packaging/linux/ci-deps.sh
       - name: Build

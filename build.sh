@@ -2,6 +2,32 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p out
+# Third-party code is vendored: committed in this repository with this port's changes already in it
+# (no submodules). Each local change is kept as a patch beside the code it changes (patch folder:
+# library folder); the build checks that every one of them is in the tree, so a library update that
+# dropped one stops here instead of shipping without it. tests/test_vendored_patches.py reads this list.
+VENDORED_PATCHES=(
+    gpu/patches/fsr-vulkan:gpu/third_party/fsr-vulkan
+    third_party/patches/LibAtrac9:third_party/LibAtrac9
+)
+check_vendored() {  # check_vendored <file>...: required vendored files, then every recorded patch
+    local file entry patch missing=()
+    for file in "$@"; do
+        [[ -f $file ]] || missing+=("$file (missing)")
+    done
+    command -v git >/dev/null || { echo 'Need git to check the vendored patches.' >&2; exit 1; }
+    for entry in "${VENDORED_PATCHES[@]}"; do
+        for patch in "${entry%%:*}"/*.patch; do
+            git apply --reverse --check --directory="${entry#*:}" "$patch" 2>/dev/null ||
+                missing+=("$patch (not in ${entry#*:})")
+        done
+    done
+    if (( ${#missing[@]} )); then
+        printf 'Vendored third-party code differs from the repository: %s\n' "${missing[@]}" >&2
+        echo 'Restore the committed files: git checkout -- gpu/third_party third_party' >&2
+        exit 1
+    fi
+}
 # Windows: MSYS2 CLANG64 (packages in packaging/windows/README.md). The GPU library is static
 # there and CMake links spartanport-probe.exe as well; no PGO (GCC-only flags), LTO off by default.
 case $(uname -s) in
@@ -11,15 +37,8 @@ MINGW*|MSYS*)
     for tool in clang cmake ninja pkg-config; do
         command -v "$tool" >/dev/null || { echo "Need $tool from MSYS2 CLANG64 (packaging/windows/README.md)." >&2; exit 1; }
     done
-    if [[ ! -f gpu/third_party/fsr-vulkan/CMakeLists.txt || ! -f gpu/third_party/imgui/imgui.h ||
-          ! -f gpu/third_party/xbyak/xbyak/xbyak.h ]]; then
-        git submodule update --init --recursive
-    fi
-    for patch in gpu/patches/fsr-vulkan/*.patch; do
-        if ! git -C gpu/third_party/fsr-vulkan apply --reverse --check "$PWD/$patch" 2>/dev/null; then
-            git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
-        fi
-    done
+    check_vendored gpu/third_party/fsr-vulkan/CMakeLists.txt gpu/third_party/imgui/imgui.h \
+        gpu/third_party/xbyak/xbyak/xbyak.h
     cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSPARTAN_PGO=off \
         -DSPARTAN_LTO="${SPARTAN_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null
     echo "GPU library and loader: LTO ${SPARTAN_LTO:-OFF}"
@@ -80,16 +99,7 @@ if [[ -z $pgo ]]; then
     if [[ -n $(find pgo -name '*.gcda' -print -quit 2>/dev/null) ]]; then pgo=use; else pgo=off; fi
 fi
 mkdir -p pgo
-# Submodules (git clone --recursive, or: git submodule update --init) and this port's changes
-# to FSR-Vulkan (gpu/patches/fsr-vulkan), applied to its working tree once.
-if [[ ! -f gpu/third_party/fsr-vulkan/CMakeLists.txt || ! -f gpu/third_party/imgui/imgui.h ]]; then
-    git submodule update --init --recursive
-fi
-for patch in gpu/patches/fsr-vulkan/*.patch; do
-    if ! git -C gpu/third_party/fsr-vulkan apply --reverse --check "$PWD/$patch" 2>/dev/null; then
-        git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
-    fi
-done
+check_vendored gpu/third_party/fsr-vulkan/CMakeLists.txt gpu/third_party/imgui/imgui.h
 cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSPARTAN_PGO="$pgo" \
     -DSPARTAN_LTO="${SPARTAN_LTO:-ON}" -DSPARTAN_PGO_DIR="$PWD/pgo" >/dev/null
 echo "GPU library: PGO $pgo, LTO ${SPARTAN_LTO:-ON}"

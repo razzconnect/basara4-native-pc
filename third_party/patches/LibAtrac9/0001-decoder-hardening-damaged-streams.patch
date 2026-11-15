@@ -1,0 +1,51 @@
+From: Basara 4 PC (Razz)
+Subject: [PATCH] LibAtrac9: reject damaged streams instead of reading past the decoder tables
+
+---
+diff --git a/C/src/band_extension.c b/C/src/band_extension.c
+index 2847053..58f1e09 100644
+--- a/C/src/band_extension.c
++++ b/C/src/band_extension.c
+@@ -38,6 +38,8 @@ static void ApplyBandExtensionChannel(Channel* channel)
+ 	double scales[6];
+ 	int* values = channel->BexValues;
+ 
++	/* Basara 4 PC (Razz): damaged data can give a unit count the tables do not cover. */
++	if (channel->Block->QuantizationUnitCount < 13 || channel->Block->QuantizationUnitCount > 20) return;
+ 	const BexGroup* bexInfo = &BexGroupInfo[channel->Block->QuantizationUnitCount - 13];
+ 	const int bandCount = bexInfo->BandCount;
+ 	const int groupBUnit = bexInfo->GroupBUnit;
+@@ -45,6 +47,7 @@ static void ApplyBandExtensionChannel(Channel* channel)
+ 
+ 	const int totalUnits = Max(groupCUnit, 22);
+ 	const int bexQuantUnits = totalUnits - groupAUnit;
++	if (bexQuantUnits < 1 || bexQuantUnits > 6) return;
+ 
+ 	const int groupABin = QuantUnitToCoeffIndex[groupAUnit];
+ 	const int groupBBin = QuantUnitToCoeffIndex[groupBUnit];
+diff --git a/C/src/huffCodes.c b/C/src/huffCodes.c
+index 64dfea8..0f8aeb1 100644
+--- a/C/src/huffCodes.c
++++ b/C/src/huffCodes.c
+@@ -4,6 +4,8 @@
+ 
+ int ReadHuffmanValue(const HuffmanCodebook* huff, BitReaderCxt* br, int isSigned)
+ {
++	/* Basara 4 PC (Razz): a damaged stream can select an unused codebook (no lookup table). */
++	if (!huff->Lookup) return 0;
+ 	const int code = PeekInt(br, huff->MaxBitSize);
+ 	const unsigned char value = huff->Lookup[code];
+ 	const int bits = huff->Bits[value];
+diff --git a/C/src/unpack.c b/C/src/unpack.c
+index 8b66e49..614f285 100644
+--- a/C/src/unpack.c
++++ b/C/src/unpack.c
+@@ -366,6 +366,8 @@ static At9Status ReadSpectra(Channel* channel, BitReaderCxt* br)
+ 		if (precision <= maxHuffPrecision)
+ 		{
+ 			const HuffmanCodebook* huff = &HuffmanSpectrum[channel->CodebookSet[i]][precision][QuantUnitToCodebookIndex[i]];
++			/* Basara 4 PC (Razz): an unused codebook means the data is damaged; its value count would overrun values[]. */
++			if (!huff->Lookup) return ERR_UNPACK_BAND_PARAMS_INVALID;
+ 			const int groupCount = subbandCount >> huff->ValueCountPower;
+ 			for (int j = 0; j < groupCount; j++)
+ 			{

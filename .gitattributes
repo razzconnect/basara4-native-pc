@@ -1,2 +1,7 @@
 # git apply needs the patches byte-exact with the LF sources they change, on any core.autocrlf.
 *.patch text eol=lf
+# ... and the sources they change, on every checkout and git archive: the vendored libraries in
+# build.sh's VENDORED_PATCHES (LibAtrac9's own .gitattributes sets text=auto, which alone follows
+# core.eol, CRLF with Git for Windows). Binary files stay as they are (text=auto).
+gpu/third_party/fsr-vulkan/** text=auto eol=lf
+third_party/LibAtrac9/** text=auto eol=lf
