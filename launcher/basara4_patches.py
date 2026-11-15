@@ -10,7 +10,6 @@ period has passed) is skipped. The game measures the real time each frame took a
 by it, so a higher frame rate does not make it run faster.
 """
 import argparse
-import os
 import struct
 import sys
 from pathlib import Path
@@ -121,74 +120,6 @@ GUI_SCALE_UNCLAMP = (
     b'\x0f\x1f\x84\x00\x00\x00\x00\x00'  # 8-byte nop padding
 )
 
-# The game code GUI_SCALE_UNCLAMP overwrites: the clamp threshold load (vmovss xmm3, [rip+d], the first
-# 8 bytes of GUI_SCALE_CLAMP_PAT), then one 4-byte VEX vminss/vmaxss per scale register, in this
-# order. GUI_SCALE_UNCLAMP replaces slot i with its i-th vmovaps (the unclamped value).
-GUI_SCALE_SLOT_REGS = (8, 5, 9, 10, 11, 12, 7, 3)
-GUI_SCALE_ALL_SLOTS = frozenset(range(len(GUI_SCALE_SLOT_REGS)))
-GUI_SCALE_LOAD_LEN = 8
-GUI_SCALE_BLOCK_LEN = GUI_SCALE_LOAD_LEN + 4 * len(GUI_SCALE_SLOT_REGS)
-assert len(GUI_SCALE_UNCLAMP) == GUI_SCALE_BLOCK_LEN
-# Diagnostic: which scale registers are unclamped. Unset or "all": every one (the release patch);
-# "none": the game's own clamps; else slot numbers 0-7 (order of GUI_SCALE_SLOT_REGS), comma-separated.
-GUI_SCALE_SLOTS_ENV = "SPARTAN_GUI_SCALE_SLOTS"
-
-
-def gui_scale_slots(value):
-    """The slot set named by a SPARTAN_GUI_SCALE_SLOTS value; ValueError when it names none."""
-    text = (value or "all").strip().lower()
-    if text == "all":
-        return GUI_SCALE_ALL_SLOTS
-    if text == "none":
-        return frozenset()
-    try:
-        slots = frozenset(int(part) for part in text.split(","))
-    except ValueError:
-        slots = None
-    if not slots or not slots <= GUI_SCALE_ALL_SLOTS:
-        raise ValueError(f"{GUI_SCALE_SLOTS_ENV}={value!r}: use all, none or slot numbers 0-7")
-    return slots
-
-
-def _scalar_minmax_dest(code):
-    """Destination xmm register of a 4-byte VEX vminss/vmaxss between registers, else None."""
-    if len(code) != 4 or code[0] != 0xc5 or code[2] not in (0x5d, 0x5f) or code[1] & 0x03 != 0x02:
-        return None
-    if code[3] >> 6 != 3:
-        return None
-    return ((~code[1] >> 7) & 1) << 3 | (code[3] >> 3) & 7
-
-
-def gui_scale_block(image, off, unclamp):
-    """The 40 bytes for the cGUI scale code at off, with the slots in `unclamp` unclamped."""
-    if unclamp == GUI_SCALE_ALL_SLOTS:
-        return GUI_SCALE_UNCLAMP
-    original = image[off:off + GUI_SCALE_BLOCK_LEN]
-    block = bytearray(original[:GUI_SCALE_LOAD_LEN])
-    for i, reg in enumerate(GUI_SCALE_SLOT_REGS):
-        start = GUI_SCALE_LOAD_LEN + 4 * i
-        code = original[start:start + 4]
-        if _scalar_minmax_dest(code) != reg:
-            raise ValueError(f"cGUI scale code at {off + EBOOT_BASE:#x}: slot {i} is not a "
-                             f"vminss/vmaxss into xmm{reg} ({code.hex()})")
-        block += GUI_SCALE_UNCLAMP[4 * i:4 * i + 4] if i in unclamp else code
-    return bytes(block)
-
-
-# Diagnostic: "off" leaves the game's own 3D-to-2D projection clamps (the two vminss inside
-# HUD_PROJ_CLAMP_PAT, which the pattern match has already checked) unpatched; unset or "on" patches
-# them as released.
-HUD_PROJ_ENV = "SPARTAN_HUD_PROJ_PATCH"
-
-
-def hud_proj_patch(value):
-    """True when a SPARTAN_HUD_PROJ_PATCH value keeps the projection patch; ValueError otherwise."""
-    text = (value or "on").strip().lower()
-    if text not in ("on", "off"):
-        raise ValueError(f"{HUD_PROJ_ENV}={value!r}: use on or off")
-    return text == "on"
-
-
 RESOLUTION_SIZES = {
     "360p": (640, 360),
     "480p": (854, 480),
@@ -201,7 +132,7 @@ RESOLUTION_SIZES = {
 }
 
 
-def resolution_patches(image, res_name, gui_unclamp=GUI_SCALE_ALL_SLOTS, hud_proj=True):
+def resolution_patches(image, res_name):
     """Patch MT Framework internal render resolution in eboot.bin code."""
     if res_name not in RESOLUTION_SIZES:
         return []
@@ -236,13 +167,11 @@ def resolution_patches(image, res_name, gui_unclamp=GUI_SCALE_ALL_SLOTS, hud_pro
 
     # 6. Unclamp cGUI scaling modes so 2D UI scales proportionally to resolution without zooming
     for off in find(image, GUI_SCALE_CLAMP_PAT):
-        block = gui_scale_block(image, off, gui_unclamp)
-        if block != image[off:off + len(block)]:
-            writes.append((off, block))
+        writes.append((off, GUI_SCALE_UNCLAMP))
 
     # 7. Keep 3D-to-2D world projection (floating HP bars, target lock-on) in 1920x1080 design space
     #    so cGUI scales it once to the screen size across all resolutions (<720p and >1080p).
-    for off in find(image, HUD_PROJ_CLAMP_PAT) if hud_proj else ():
+    for off in find(image, HUD_PROJ_CLAMP_PAT):
         writes.append((off + 8, b'\xc5\xf8\x28\xcc'))
         writes.append((off + 20, b'\xc5\xf8\x28\xdc'))
 
@@ -286,16 +215,10 @@ def build(elf_path, out_path, unlimited, cheats=(), game_version=None, resolutio
         except LookupError as error:
             notes.append(f'unlimited fps skipped: {error}')
     if resolution and resolution != "native":
-        gui_unclamp = gui_scale_slots(os.environ.get(GUI_SCALE_SLOTS_ENV))
-        hud_proj = hud_proj_patch(os.environ.get(HUD_PROJ_ENV))
-        res_writes = resolution_patches(image, resolution, gui_unclamp, hud_proj)
+        res_writes = resolution_patches(image, resolution)
         if res_writes:
             writes += res_writes
             notes.append(f'resolution {resolution}')
-        if gui_unclamp != GUI_SCALE_ALL_SLOTS:
-            notes.append(f'gui scale slots {sorted(gui_unclamp)}')
-        if not hud_proj:
-            notes.append('hud projection patch off')
     if cheats:
         writes += basara4_cheats.compile_cheats(
             cheats, game_version, image, eboot_load_segments(elf))
