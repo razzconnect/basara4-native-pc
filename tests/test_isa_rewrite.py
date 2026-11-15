@@ -111,12 +111,16 @@ class ReadBootLinkedTests(unittest.TestCase):
         self.assertEqual((isa_rewrite.HEADER.size, isa_rewrite.RECORD.size), (64, 64))
 
     def test_main_without_iced_x86(self):
+        # 9a717af: a missing table does not stop the prepare pipeline (exit 0); the launcher only
+        # passes --isa-rewrite when isa-rewrite.bin exists.
         saved, isa_rewrite.iced_x86 = isa_rewrite.iced_x86, None
         try:
-            code, out = run_main(['missing.bin', '--out', '.'])
+            with tempfile.TemporaryDirectory() as tmp:
+                code, out = run_main(['missing.bin', '--out', tmp])
+                self.assertFalse((Path(tmp) / 'isa-rewrite.bin').exists())
         finally:
             isa_rewrite.iced_x86 = saved
-        self.assertEqual((code, out), (1, 'ISA: rewrite table unavailable (iced_x86 is not installed)\n'))
+        self.assertEqual((code, out), (0, 'ISA: rewrite table unavailable (iced_x86 is not installed)\n'))
 
 
 @unittest.skipUnless(isa_rewrite.iced_x86, 'pip install iced-x86')
@@ -168,7 +172,7 @@ class TableTests(unittest.TestCase):
             short.write_bytes(boot_linked([(RET, 0x1000, 5)])[:-1])
             for path, reason in ((Path(tmp) / 'missing.bin', ''), (bad, 'not a G3PROBE5 image'), (short, 'out of bounds')):
                 code, out = run_main([str(path), '--out', tmp])
-                self.assertEqual(code, 1, path.name)
+                self.assertEqual(code, 0, path.name)  # 9a717af: reported, the pipeline goes on
                 self.assertTrue(out.startswith('ISA: rewrite table unavailable (' + reason), out)
             self.assertFalse((Path(tmp) / 'isa-rewrite.bin').exists())
 
