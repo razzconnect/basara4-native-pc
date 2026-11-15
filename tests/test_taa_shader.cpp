@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Run the production TAA shader on synthetic inputs, including undefined/invalid history.
-#include <cassert>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -15,6 +14,10 @@
 #include "video_core/host_shaders/taa_comp.h"
 #include "video_core/host_shaders/taa_sharpen_comp.h"
 #include <vk_mem_alloc.h>
+// Match the library's Vulkan-Hpp dispatcher layout (spartanportgpu builds with NDEBUG), then
+// enable test assertions, as in test_pipeline_binary_cache.cpp.
+#undef NDEBUG
+#include <cassert>
 
 int main(int argc, char** argv) {
     using namespace Vulkan;

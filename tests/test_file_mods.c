@@ -4,12 +4,25 @@
 static int32_t guest_errno;
 int32_t *runtime_errno(void) { return &guest_errno; }
 int32_t runtime_guest_errno(int e) { return e; }
+/* runtime_file.c notes sound file opens in the audio log; no audio log here. */
+int runtime_audio_log_enabled(void) { return 0; }
+void runtime_audio_log(const char *fmt,...) { (void)fmt; }
 uintptr_t runtime_lookup(const RuntimeExport *table,size_t n,const char *name) {
     for (size_t i=0;i<n;++i) if (!strcmp(table[i].name,name)) return (uintptr_t)table[i].function;
     return 0;
 }
+#ifdef _WIN32
+/* Basara 4 PC: a symbolic link needs administrator rights or Developer Mode on Windows; a hard link
+ * puts the same mod file into the game folder without either. */
+static int link_file(const char *target,const char *link) { return CreateHardLinkA(link,target,NULL) ? 0 : -1; }
+#else
+static int link_file(const char *target,const char *link) { return symlink(target,link); }
+#endif
 int main(void) {
-    char root[]="/tmp/spartanport-mod-files-XXXXXX";
+    /* The system temporary folder (TMPDIR / TEMP), not a fixed /tmp that Windows does not have. */
+    const char *tmp=getenv("TMPDIR") ? getenv("TMPDIR") : getenv("TEMP") ? getenv("TEMP") : "/tmp";
+    char root[512];
+    snprintf(root,sizeof(root),"%s/spartanport-mod-files-XXXXXX",tmp);
     assert(mkdtemp(root));
     char game[512],user[512],source[512],link[512];
     snprintf(game,sizeof(game),"%s/game",root);
@@ -18,7 +31,7 @@ int main(void) {
     snprintf(link,sizeof(link),"%s/game/asset.dcx",root);
     assert(!mkdir(game,0755));
     FILE *f=fopen(source,"w"); assert(f); assert(fputs("modded",f)>=0); assert(!fclose(f));
-    assert(!symlink(source,link));
+    assert(!link_file(source,link));
     runtime_file_configure(game,user);
     for (int i=0;i<3;++i) {
         const char *path=i==0 ? "/app0/asset.dcx" : i==1 ? "/hostapp/asset.dcx" : "asset.dcx";

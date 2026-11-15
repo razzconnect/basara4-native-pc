@@ -1,4 +1,4 @@
-from paths import ROOT
+from paths import ROOT, built, built_env
 from pathlib import Path
 import struct
 import subprocess
@@ -8,9 +8,7 @@ import unittest
 from unittest.mock import patch
 import content_profile
 
-EXE=ROOT/'out/content-test'
-if sys.platform == 'win32':
-    EXE=EXE.with_suffix('.exe')
+EXE=built('content-test')
 
 class ProfileTests(unittest.TestCase):
     def test_sfo_parameters_and_explicit_trial_profile(self):
@@ -59,7 +57,7 @@ class ProfileTests(unittest.TestCase):
 @unittest.skipUnless(EXE.exists(),'run bash build.sh --test first')
 class ContentTests(unittest.TestCase):
     def run_case(self,*args):
-        return subprocess.run([str(EXE.resolve()),*args],capture_output=True,text=True,timeout=5)
+        return subprocess.run([str(EXE.resolve()),*args],capture_output=True,text=True,timeout=5,env=built_env(EXE))
 
     def test_lifecycle_and_output_boundaries(self):
         r=self.run_case();self.assertEqual(r.returncode,0,r.stdout+r.stderr)

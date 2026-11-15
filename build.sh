@@ -29,6 +29,27 @@ MINGW*|MSYS*)
     fi
     cp out/gpu/basara4-core.exe out/gpu/spartanport-gpu-capabilities.exe out/gpu/spartanport-play.exe out/
     echo "Built $PWD/out/basara4-core.exe"
+    if [[ ${1:-} == --test ]]; then
+        # Every C/C++ test is a *-test target registered with CTest in gpu/CMakeLists.txt (no error
+        # dialogs: tests/support/no_dialog.c); the Python tests are discovered from tests/.
+        if ! ninja -C out/gpu spartanport-tests > out/gpu-test-build.log 2>&1; then
+            grep -v '^\[' out/gpu-test-build.log | tail -40 >&2
+            echo 'Test build failed (full log: out/gpu-test-build.log)' >&2; exit 1
+        fi
+        # The Windows Python that runs the launcher and packaging/basara4/make_package.py (iced_x86,
+        # Tk), not MSYS2's: the Windows launcher "py -3" when present. PYTHON overrides it.
+        if [[ -n ${PYTHON:-} ]]; then python_cmd=("$PYTHON")
+        elif command -v py >/dev/null; then python_cmd=(py -3)
+        else python_cmd=(python); fi
+        failed=()
+        ctest --test-dir out/gpu --output-on-failure || failed+=('C/C++ (ctest)')
+        echo "Python tests: $("${python_cmd[@]}" -c 'import sys; print(sys.executable, sys.version.split()[0])')"
+        "${python_cmd[@]}" -m unittest discover -s tests || failed+=('Python (unittest)')
+        if (( ${#failed[@]} )); then
+            echo "Tests failed: ${failed[*]}" >&2; exit 1
+        fi
+        echo 'All tests passed'
+    fi
     exit 0
     ;;
 esac

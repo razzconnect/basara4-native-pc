@@ -260,6 +260,27 @@ if (WIN32)
     target_compile_options(tsc-clock-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     target_include_directories(tsc-clock-test PRIVATE .. ../src)
     target_link_libraries(tsc-clock-test PRIVATE bcrypt -pthread)
+    # Basara 4 PC: the runtime tests build.sh --test used to build only on Linux (tests/test_pad.c,
+    # test_content.c, test_file_mods.c, test_runtime.c, test_sema.c), with the probe's Windows sources.
+    add_executable(pad-test EXCLUDE_FROM_ALL ../tests/test_pad.c ../src/compat_win.c)
+    add_executable(content-test EXCLUDE_FROM_ALL ../tests/test_content.c ../src/runtime_content.c ../src/compat_win.c)
+    add_executable(file-mods-test EXCLUDE_FROM_ALL ../tests/test_file_mods.c ../src/compat_win.c)
+    add_executable(runtime-test EXCLUDE_FROM_ALL ../tests/test_runtime.c ${SPARTAN_RUNTIME} ../src/compat_win.c
+        ../src/crash_dump_win.c)
+    add_executable(sema-test EXCLUDE_FROM_ALL ../tests/test_sema.c ${SPARTAN_RUNTIME} ../src/compat_win.c
+        ../src/crash_dump_win.c)
+    foreach(test pad-test content-test file-mods-test runtime-test sema-test)
+        set_target_properties(${test} PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+        target_compile_options(${test} PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+        target_include_directories(${test} PRIVATE .. ../src)
+        target_link_libraries(${test} PRIVATE bcrypt -pthread)
+    endforeach()
+    target_link_libraries(pad-test PRIVATE PkgConfig::SDL3)
+    foreach(test runtime-test sema-test)
+        target_link_libraries(${test} PRIVATE spartanportgpu atrac9 onecore ws2_32)
+        # The runtime reserves the PS4 address range at start, as in spartanport-probe.
+        target_link_options(${test} PRIVATE -Wl,--disable-high-entropy-va)
+    endforeach()
     add_executable(spartanport-gpu-capabilities ../tools/gpu_capabilities.c ../packaging/windows/spartanport-gpu-capabilities.rc)
     target_include_directories(spartanport-gpu-capabilities PRIVATE shadps4)
     target_link_libraries(spartanport-gpu-capabilities PRIVATE Vulkan::Vulkan)
@@ -276,26 +297,12 @@ target_compile_definitions(pipeline-binary-cache-test PRIVATE NOMINMAX WIN32_LEA
 target_include_directories(pipeline-binary-cache-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(pipeline-binary-cache-test PRIVATE spartanportgpu)
 target_compile_options(pipeline-binary-cache-test PRIVATE -fPIC)
-if (WIN32)
-    target_sources(pipeline-binary-cache-test PRIVATE ../src/compat_win.c)
-    target_compile_definitions(pipeline-binary-cache-test PRIVATE sigjmp_buf=spartanport_jmp_buf)
-    target_compile_options(pipeline-binary-cache-test PRIVATE
-        -include ${CMAKE_CURRENT_SOURCE_DIR}/../src/compat_win.h)
-    target_link_libraries(pipeline-binary-cache-test PRIVATE onecore)
-endif()
 add_executable(pipeline-binary-initialization-test EXCLUDE_FROM_ALL
     ../tests/test_pipeline_binary_initialization.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_compile_definitions(pipeline-binary-initialization-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_include_directories(pipeline-binary-initialization-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(pipeline-binary-initialization-test PRIVATE spartanportgpu)
 target_compile_options(pipeline-binary-initialization-test PRIVATE -fPIC)
-if (WIN32)
-    target_sources(pipeline-binary-initialization-test PRIVATE ../src/compat_win.c)
-    target_compile_definitions(pipeline-binary-initialization-test PRIVATE sigjmp_buf=spartanport_jmp_buf)
-    target_compile_options(pipeline-binary-initialization-test PRIVATE
-        -include ${CMAKE_CURRENT_SOURCE_DIR}/../src/compat_win.h)
-    target_link_libraries(pipeline-binary-initialization-test PRIVATE onecore)
-endif()
 set_source_files_properties(../tests/test_pipeline_binary_cache.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
@@ -388,13 +395,13 @@ add_executable(scene-resolution-test EXCLUDE_FROM_ALL ../tests/test_scene_resolu
 target_include_directories(scene-resolution-test PRIVATE shim shadps4 third_party/gcn/include)
 # The test's Vulkan-Hpp inline methods have a different set of platform extensions
 # from vk_platform.cpp. Keep them local and use an explicit dispatcher in the test.
-target_compile_options(scene-resolution-test PRIVATE -UNDEBUG -fPIC)
+target_compile_options(scene-resolution-test PRIVATE -fPIC)
 set_source_files_properties(../tests/test_scene_resolution.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_link_libraries(scene-resolution-test PRIVATE spartanportgpu)
 add_executable(taa-shader-test EXCLUDE_FROM_ALL ../tests/test_taa_shader.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(taa-shader-test PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include)
-target_compile_options(taa-shader-test PRIVATE -UNDEBUG -fPIC)
+target_compile_options(taa-shader-test PRIVATE -fPIC)
 set_source_files_properties(../tests/test_taa_shader.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_link_libraries(taa-shader-test PRIVATE spartanportgpu)
@@ -402,9 +409,31 @@ add_dependencies(taa-shader-test host_shaders)
 
 add_executable(camera-motion-test EXCLUDE_FROM_ALL ../tests/test_camera_motion.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(camera-motion-test PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include)
-target_compile_options(camera-motion-test PRIVATE -UNDEBUG -fPIC)
+target_compile_options(camera-motion-test PRIVATE -fPIC)
 target_link_libraries(camera-motion-test PRIVATE spartanportgpu)
 add_dependencies(camera-motion-test host_shaders)
+# Basara 4 PC: the renderer tests on tests/test_gpu_runtime_stubs.cpp link the static GPU library on
+# Windows, so they need the runtime's Windows layer (compat_win.c) and the crash dump writer that
+# gpu/shim/common/assert.cpp calls (src/crash_dump_win.c). The pipeline binary tests also read the
+# runtime's headers (compat_win.h, sigjmp_buf); the others get sigjmp_buf from spartanport_toggles.h.
+if (WIN32)
+    foreach(test pipeline-binary-cache-test pipeline-binary-initialization-test motion-shader-test
+            scene-resolution-test taa-shader-test camera-motion-test)
+        target_sources(${test} PRIVATE ../src/compat_win.c ../src/crash_dump_win.c)
+        target_link_libraries(${test} PRIVATE onecore)
+    endforeach()
+    foreach(test pipeline-binary-cache-test pipeline-binary-initialization-test)
+        target_compile_definitions(${test} PRIVATE sigjmp_buf=spartanport_jmp_buf)
+        target_compile_options(${test} PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/../src/compat_win.h)
+    endforeach()
+endif()
+# They share Vulkan-Hpp's dispatcher with the library, whose layout depends on NDEBUG: build them with
+# the library's NDEBUG (each test re-enables assert after its Vulkan headers). A mismatch is an ODR
+# violation the static Windows link resolves to the wrong copy (a crash in DispatchLoaderDynamic::init).
+foreach(test pipeline-binary-cache-test pipeline-binary-initialization-test motion-shader-test
+        scene-resolution-test taa-shader-test camera-motion-test)
+    target_compile_definitions(${test} PRIVATE NDEBUG)
+endforeach()
 
 # spartanport: FSR 4 benchmark outside the game (tools/fsr4_bench.cpp): ninja -C out/gpu fsr4-bench.
 add_executable(upscaler-support-test EXCLUDE_FROM_ALL ../tests/test_upscaler_support.cpp
@@ -474,3 +503,43 @@ add_executable(swapchain-focus-test EXCLUDE_FROM_ALL ../tests/test_swapchain_foc
 target_include_directories(swapchain-focus-test PRIVATE shim shadps4)
 target_link_libraries(swapchain-focus-test PRIVATE PkgConfig::SDL3 Vulkan::Vulkan fmt::fmt)
 target_compile_options(swapchain-focus-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+
+# Basara 4 PC: one list of tests. Every target whose name ends in "-test" is registered with CTest and
+# with the "spartanport-tests" target (build.sh --test on Windows: ninja spartanport-tests, then
+# ctest), so a new *-test target runs without being added anywhere else. Keep this block last.
+# Arguments a test needs come from SPARTAN_TEST_ARGS_<target>; tests run in the build directory.
+enable_testing()
+add_library(spartanport-test-no-dialog OBJECT ../tests/support/no_dialog.c)
+set(SPARTAN_TEST_ARGS_mp3-test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/data/sine.mp3)
+set(SPARTAN_TEST_ARGS_videodec-test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/data/tiny.h264)
+set(SPARTAN_TEST_ARGS_isa-stub-test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/data/isa_fixture.bin)
+set(SPARTAN_MOTION_SPV ${CMAKE_CURRENT_BINARY_DIR}/motion-shaders)
+set(SPARTAN_TEST_ARGS_motion-shader-test ${SPARTAN_MOTION_SPV})
+add_custom_target(spartanport-tests)
+get_property(spartan_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(target IN LISTS spartan_targets)
+    if (target MATCHES "-test$")
+        target_link_libraries(${target} PRIVATE spartanport-test-no-dialog)
+        add_dependencies(spartanport-tests ${target})
+        add_test(NAME ${target} COMMAND ${target} ${SPARTAN_TEST_ARGS_${target}})
+    endif()
+endforeach()
+# motion-shader-test only writes the SPIR-V the backend emits for the motion-vector stages; spirv-val
+# (SPIRV-Tools) checks it, one test per file. The writer is the fixture's setup: when it fails, the
+# checks do not run and count as failed. Without spirv-val the checks fail with how to install it.
+set_tests_properties(motion-shader-test PROPERTIES FIXTURES_SETUP motion-shaders)
+find_program(SPARTAN_SPIRV_VAL spirv-val)
+if (NOT SPARTAN_SPIRV_VAL)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/spirv-val-missing.cmake
+        "message(FATAL_ERROR \"spirv-val not found: install SPIRV-Tools (MSYS2: pacman -S mingw-w64-clang-x86_64-spirv-tools), then reconfigure\")\n")
+endif()
+foreach(shader vertex-plain vertex-motion fragment-plain fragment-motion)
+    if (SPARTAN_SPIRV_VAL)
+        add_test(NAME motion-shader-spirv-val-${shader}
+                 COMMAND ${SPARTAN_SPIRV_VAL} --target-env vulkan1.3 ${SPARTAN_MOTION_SPV}/${shader}.spv)
+    else()
+        add_test(NAME motion-shader-spirv-val-${shader}
+                 COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/spirv-val-missing.cmake)
+    endif()
+    set_tests_properties(motion-shader-spirv-val-${shader} PROPERTIES FIXTURES_REQUIRED motion-shaders)
+endforeach()

@@ -28,14 +28,31 @@ int main(void) {
     fold_one((const float[8]){0,0,0.5f,0,0,0,0,0},lr); assert(near(lr[0],0.35355f) && near(lr[1],0.35355f));
     fold_one((const float[8]){0,0,0,1,0,0,0,0},lr); assert(near(lr[0],0) && near(lr[1],0));
     fold_one((const float[8]){0,0,0,0,0.5f,0,0.5f,0},lr); assert(near(lr[0],0.70711f) && near(lr[1],0));
-    /* A loud mix is clamped instead of going past full scale. */
-    fold_one((const float[8]){1,-1,1,0,1,-1,1,-1},lr); assert(lr[0]==1.0f && lr[1]==-1.0f);
+    /* A loud mix is soft-limited (55ceee4): it approaches +-0.995 (0.7 + 0.295) instead of being
+       clipped at full scale. */
+    fold_one((const float[8]){1,-1,1,0,1,-1,1,-1},lr); assert(near(lr[0],0.995f) && near(lr[1],-0.99437f));
+    /* The limiter on its own (one front channel, -8 .. 8): transparent up to 0.7, never past 0.995,
+       monotonic and symmetric; just above the knee it is still continuous. */
+    float previous=-1.0f;
+    for (int i=-800;i<=800;++i) {
+        const float x=(float)i/100.0f;
+        float neg[2];
+        fold_one((const float[8]){x,0,0,0,0,0,0,0},lr);
+        fold_one((const float[8]){-x,0,0,0,0,0,0,0},neg);
+        assert(fabsf(lr[0])<=0.995f+1e-6f && lr[1]==0);
+        if (fabsf(x)<=0.7f) assert(lr[0]==x);
+        assert(lr[0]>=previous && lr[0]==-neg[0]);
+        previous=lr[0];
+    }
+    fold_one((const float[8]){0.7001f,0,0,0,0,0,0,0},lr); assert(near(lr[0],0.7001f));
+    fold_one((const float[8]){0.9f,0,0,0,0,0,0,0},lr); assert(lr[0]>0.85f && lr[0]<0.9f);
 
     /* s16 frames, several in one buffer folded in place. */
     int16_t s[2*8]={16384,0,0,0,0,0,0,0, 32767,32767,32767,0,32767,32767,32767,32767};
     assert(downmix_stereo((unsigned char *)s,2,0)==2*2*2);
     assert(s[0]==16383 && s[1]==0);
-    assert(s[2]==32767 && s[3]==32767);
+    /* The loud s16 frame is limited below full scale too: (int16)(soft_limit * 32767), about 32603. */
+    assert(s[2]==s[3] && s[2]>=32600 && s[2]<=(int16_t)(0.995f*32767.0f));
     puts("audio downmix ok");
     return 0;
 }

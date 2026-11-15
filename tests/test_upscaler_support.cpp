@@ -3,20 +3,46 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <initializer_list>
-#include <unistd.h>
+#include <string>
 #include "spartanport_settings.h"
+
+// Basara 4 PC: portable environment and temporary file (no setenv/mkstemp/"/tmp" on Windows), the
+// same way as test_graphics_settings.cpp. An empty value removes the variable on Windows.
+static void SetEnvironment(const char* name, const char* value) {
+#if defined(_WIN32)
+    const int result = _putenv_s(name, value);
+#else
+    const int result = setenv(name, value, 1);
+#endif
+    assert(result == 0);
+    (void)result;
+}
+static void UnsetEnvironment(const char* name) {
+#if defined(_WIN32)
+    const int result = _putenv_s(name, "");
+#else
+    const int result = unsetenv(name);
+#endif
+    assert(result == 0);
+    (void)result;
+}
 
 int main() {
     using namespace SpartanSettings;
-    char path[] = "/tmp/spartanport-upscaler-test-XXXXXX";
-    const int fd = mkstemp(path);
-    assert(fd >= 0);
-    close(fd);
-    setenv("SPARTAN_CONFIG", path, 1);
-    unsetenv("SPARTAN_UPSCALER");
-    unsetenv("SPARTAN_UPSCALE_PRESET");
-    unsetenv("SPARTAN_RENDER_RES");
+    const std::string config_path =
+        (std::filesystem::temp_directory_path() / "spartanport-upscaler-test.ini").string();
+    const char* path = config_path.c_str();
+    {
+        FILE* created = std::fopen(path, "w");
+        assert(created);
+        std::fclose(created);
+    }
+    SetEnvironment("SPARTAN_CONFIG", path);
+    UnsetEnvironment("SPARTAN_UPSCALER");
+    UnsetEnvironment("SPARTAN_UPSCALE_PRESET");
+    UnsetEnvironment("SPARTAN_RENDER_RES");
     auto& s = Get();
     s.upscaler = UpscalerTaa;
     s.preset = Performance;
@@ -59,7 +85,7 @@ int main() {
     s.upscaler = UpscalerFsr3;
     s.preset = Performance;
     assert(RenderPreset() == Performance && !ResolutionNeedsRestart());
-    setenv("SPARTAN_RENDER_RES", "1706x960", 1);
+    SetEnvironment("SPARTAN_RENDER_RES", "1706x960");
     assert(RenderPreset() == Quality && ResolutionNeedsRestart());
     s.preset = Quality;
     assert(!ResolutionNeedsRestart());
@@ -74,9 +100,9 @@ int main() {
     s.output_res = (output + 1) % OutputCount;
     assert(ResolutionNeedsRestart());
     s.output_res = output;
-    setenv("SPARTAN_RENDER_RES", "", 1);
+    SetEnvironment("SPARTAN_RENDER_RES", "");
     assert(!FixedRenderSession() && !ResolutionNeedsRestart());
-    unsetenv("SPARTAN_RENDER_RES");
+    UnsetEnvironment("SPARTAN_RENDER_RES");
     std::remove(path);
     std::puts("Upscaler support: saved choices and FSR 3.1 fallback PASS");
 }
