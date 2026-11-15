@@ -250,5 +250,87 @@ class GuiScaleSlotTests(unittest.TestCase):
             self.assertEqual((writes, notes), (bp.resolution_patches(image, "720p"), ["resolution 720p"]))
 
 
+# Every resolution the launcher offers besides native; a preset added or removed must update this.
+PRESETS = ("360p", "480p", "540p", "720p", "900p", "1440p", "1800p", "4K")
+
+
+def hud_writes():
+    hud = SITES["HUD_PROJ_CLAMP_PAT"]
+    return [(hud + 8, b"\xc5\xf8\x28\xcc"), (hud + 20, b"\xc5\xf8\x28\xdc")]
+
+
+def env_without(*names):
+    return {k: v for k, v in os.environ.items() if k not in names}
+
+
+class HudProjectionSwitchTests(unittest.TestCase):
+    """SPARTAN_HUD_PROJ_PATCH: the 3D-to-2D projection patch on (release) or off, at every preset."""
+
+    def test_presets_are_the_launcher_resolutions(self):
+        self.assertEqual(tuple(bp.RESOLUTION_SIZES), PRESETS)
+
+    def test_on_is_the_release_patch_at_every_preset(self):
+        for image in (synthetic_image(), image_with_full_gui_block()):
+            for name in PRESETS + ("native", "bogus"):
+                with self.subTest(name=name):
+                    on = bp.resolution_patches(image, name, hud_proj=bp.hud_proj_patch("on"))
+                    self.assertEqual(on, bp.resolution_patches(image, name))
+                    if name in PRESETS:
+                        self.assertEqual([w for w in on if w in hud_writes()], hud_writes())
+
+    def test_off_leaves_only_the_projection_code_unpatched_at_every_preset(self):
+        image = image_with_full_gui_block()
+        hud = SITES["HUD_PROJ_CLAMP_PAT"]
+        original = image[hud:hud + len(pattern_bytes(bp.HUD_PROJ_CLAMP_PAT))]
+        for name in PRESETS:
+            with self.subTest(name=name):
+                on = bp.resolution_patches(image, name)
+                off = bp.resolution_patches(image, name, hud_proj=False)
+                self.assertEqual(off, [w for w in on if w not in hud_writes()])
+                patched = apply(image, off)
+                self.assertEqual(patched[hud:hud + len(original)], original)
+                # Every other release patch is still there, the cGUI scale code included.
+                gui = SITES["GUI_SCALE_CLAMP_PAT"]
+                self.assertEqual(patched[gui:gui + bp.GUI_SCALE_BLOCK_LEN], bp.GUI_SCALE_UNCLAMP)
+                self.assertEqual(len(off), len(on) - 2)
+
+    def test_off_combines_with_gui_scale_slots(self):
+        image = image_with_full_gui_block()
+        for name in PRESETS:
+            with self.subTest(name=name):
+                both = bp.resolution_patches(image, name, frozenset(), hud_proj=False)
+                gui_only = bp.resolution_patches(image, name, frozenset())
+                self.assertEqual(both, [w for w in gui_only if w not in hud_writes()])
+
+    def test_values(self):
+        for value, want in ((None, True), ("", True), ("on", True), (" ON ", True), ("off", False),
+                            ("Off", False)):
+            self.assertIs(bp.hud_proj_patch(value), want, value)
+        for bad in ("0", "no", "of", "on,off"):
+            with self.assertRaises(ValueError, msg=bad):
+                bp.hud_proj_patch(bad)
+
+    def test_build_reads_the_environment_at_every_preset(self):
+        image = image_with_full_gui_block()
+        with tempfile.TemporaryDirectory() as tmp:
+            elf, out = Path(tmp) / "eboot.elf", Path(tmp) / "patches.bin"
+            elf.write_bytes(synthetic_elf(image))
+            base = env_without(bp.HUD_PROJ_ENV, bp.GUI_SCALE_SLOTS_ENV)
+            for name in PRESETS:
+                with self.subTest(name=name):
+                    with mock.patch.dict(os.environ, {**base, bp.HUD_PROJ_ENV: "off"}, clear=True):
+                        writes, notes = bp.build(elf, out, False, resolution=name)
+                    self.assertEqual(writes, bp.resolution_patches(image, name, hud_proj=False))
+                    self.assertEqual(notes, [f"resolution {name}", "hud projection patch off"])
+                    with mock.patch.dict(os.environ, base, clear=True):
+                        writes, notes = bp.build(elf, out, False, resolution=name)
+                    self.assertEqual((writes, notes), (bp.resolution_patches(image, name), [f"resolution {name}"]))
+            with mock.patch.dict(os.environ, {**base, bp.HUD_PROJ_ENV: "maybe"}, clear=True):
+                with self.assertRaises(ValueError):
+                    bp.build(elf, out, False, resolution="720p")
+            with mock.patch.dict(os.environ, {**base, bp.HUD_PROJ_ENV: "off"}, clear=True):
+                self.assertEqual(bp.build(elf, out, False, resolution="native"), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()

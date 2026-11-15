@@ -174,6 +174,21 @@ def gui_scale_block(image, off, unclamp):
         block += GUI_SCALE_UNCLAMP[4 * i:4 * i + 4] if i in unclamp else code
     return bytes(block)
 
+
+# Diagnostic: "off" leaves the game's own 3D-to-2D projection clamps (the two vminss inside
+# HUD_PROJ_CLAMP_PAT, which the pattern match has already checked) unpatched; unset or "on" patches
+# them as released.
+HUD_PROJ_ENV = "SPARTAN_HUD_PROJ_PATCH"
+
+
+def hud_proj_patch(value):
+    """True when a SPARTAN_HUD_PROJ_PATCH value keeps the projection patch; ValueError otherwise."""
+    text = (value or "on").strip().lower()
+    if text not in ("on", "off"):
+        raise ValueError(f"{HUD_PROJ_ENV}={value!r}: use on or off")
+    return text == "on"
+
+
 RESOLUTION_SIZES = {
     "360p": (640, 360),
     "480p": (854, 480),
@@ -186,7 +201,7 @@ RESOLUTION_SIZES = {
 }
 
 
-def resolution_patches(image, res_name, gui_unclamp=GUI_SCALE_ALL_SLOTS):
+def resolution_patches(image, res_name, gui_unclamp=GUI_SCALE_ALL_SLOTS, hud_proj=True):
     """Patch MT Framework internal render resolution in eboot.bin code."""
     if res_name not in RESOLUTION_SIZES:
         return []
@@ -227,7 +242,7 @@ def resolution_patches(image, res_name, gui_unclamp=GUI_SCALE_ALL_SLOTS):
 
     # 7. Keep 3D-to-2D world projection (floating HP bars, target lock-on) in 1920x1080 design space
     #    so cGUI scales it once to the screen size across all resolutions (<720p and >1080p).
-    for off in find(image, HUD_PROJ_CLAMP_PAT):
+    for off in find(image, HUD_PROJ_CLAMP_PAT) if hud_proj else ():
         writes.append((off + 8, b'\xc5\xf8\x28\xcc'))
         writes.append((off + 20, b'\xc5\xf8\x28\xdc'))
 
@@ -272,12 +287,15 @@ def build(elf_path, out_path, unlimited, cheats=(), game_version=None, resolutio
             notes.append(f'unlimited fps skipped: {error}')
     if resolution and resolution != "native":
         gui_unclamp = gui_scale_slots(os.environ.get(GUI_SCALE_SLOTS_ENV))
-        res_writes = resolution_patches(image, resolution, gui_unclamp)
+        hud_proj = hud_proj_patch(os.environ.get(HUD_PROJ_ENV))
+        res_writes = resolution_patches(image, resolution, gui_unclamp, hud_proj)
         if res_writes:
             writes += res_writes
             notes.append(f'resolution {resolution}')
         if gui_unclamp != GUI_SCALE_ALL_SLOTS:
             notes.append(f'gui scale slots {sorted(gui_unclamp)}')
+        if not hud_proj:
+            notes.append('hud projection patch off')
     if cheats:
         writes += basara4_cheats.compile_cheats(
             cheats, game_version, image, eboot_load_segments(elf))
