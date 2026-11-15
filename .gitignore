@@ -40,3 +40,7 @@ CHANGELOG*.md
 RELEASE_NOTES*.md
 RELEASING.md
 
+/.agents/
+/.claude/
+CLAUDE.md
+AGENTS.md
