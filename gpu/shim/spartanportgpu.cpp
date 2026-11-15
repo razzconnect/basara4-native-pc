@@ -298,6 +298,10 @@ extern "C" unsigned long long spartanportgpu_copy_yields(void) {
     return SpartanCopy::Yields();
 }
 
+extern "C" void spartanportgpu_session_end(void) {
+    Vulkan::RenderTrace::WriteSessionSummary();
+}
+
 // Kernel service thread: runs boost::asio timers for equeue timer events.
 namespace Libraries::Kernel {
 boost::asio::io_context io_context;

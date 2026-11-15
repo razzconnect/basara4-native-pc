@@ -54,6 +54,9 @@ int spartanportgpu_mouse_aim_sensitivity(void);
 unsigned spartanportgpu_symbol_count(void);
 /* Yields of threads waiting for guest memory copies (CPU report, #209). */
 unsigned long long spartanportgpu_copy_yields(void);
+/* The session ends (exit, Exit to Desktop, restart): writes the present summary to stdout and,
+ * while tracing, session.summary to render_trace.log. Only the first call per process writes. */
+void spartanportgpu_session_end(void);
 /* Trophy notice at the top-right of the game window (any thread). title: the trophy's name,
  * detail: its description (null or empty: none), png: its icon (PNG bytes; null: a drawn medal). */
 void spartanportgpu_toast_trophy(const char *title, const char *detail, const unsigned char *png, uint64_t png_size);
