@@ -1,4 +1,4 @@
-from paths import ROOT
+from paths import ROOT, built
 from pathlib import Path
 import struct
 import subprocess
@@ -8,9 +8,7 @@ import unittest
 from unittest.mock import patch
 import content_profile
 
-EXE=ROOT/'out/content-test'
-if sys.platform == 'win32':
-    EXE=EXE.with_suffix('.exe')
+EXE=built('content-test')
 
 class ProfileTests(unittest.TestCase):
     def test_sfo_parameters_and_explicit_trial_profile(self):

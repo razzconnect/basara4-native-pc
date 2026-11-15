@@ -1,5 +1,5 @@
 """Boundary tests for the native loader; uses tiny synthetic x86-64 images."""
-from paths import ROOT
+from paths import ROOT, built
 from pathlib import Path
 import os
 import struct
@@ -8,8 +8,8 @@ import sys
 import tempfile
 import unittest
 
-EXE = ROOT / 'out/spartanport-probe'
-HOST_EXE = ROOT / ('out/spartanport-probe' + ('.exe' if sys.platform == 'win32' else ''))
+# Basara 4 PC: on Windows the loader is out/basara4-core.exe (build.sh copies it there).
+EXE = HOST_EXE = built('spartanport-probe', 'out/basara4-core.exe')
 
 
 def package(code, relocs=(), names=(), capabilities=None):
@@ -53,7 +53,8 @@ class LoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'boot.bin'
             path.write_bytes(data)
-            return subprocess.run([str(EXE.resolve()), str(path), '--cpu-only', *options],
+            # In the temporary folder: a fault writes user/crash/*.dmp under the working directory.
+            return subprocess.run([str(EXE.resolve()), str(path), '--cpu-only', *options], cwd=tmp,
                                   capture_output=True, text=True, timeout=5)
 
     def test_original_instruction_reaches_named_import(self):
@@ -118,8 +119,13 @@ class LoaderTests(unittest.TestCase):
 
     def test_illegal_instruction_reports_guest_offset(self):
         r = self.run_image(package(b'\x0f\x0b'))
-        self.assertEqual(r.returncode, 132)
-        self.assertIn('at guest offset 0x0,', r.stderr)
+        if sys.platform == 'win32':
+            # src/probe.c fatal_exception: the exception code and guest offset, then exit code 3.
+            self.assertEqual(r.returncode, 3, r.stderr)
+            self.assertIn('Fault: exception 0xc000001d at guest offset 0x0 ', r.stderr)
+        else:
+            self.assertEqual(r.returncode, 132)  # SIGILL
+            self.assertIn('at guest offset 0x0,', r.stderr)
 
     def test_text_parser_guard_is_installed_for_matching_game_code(self):
         image = bytearray(0xc33000)
