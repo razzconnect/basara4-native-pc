@@ -163,6 +163,8 @@ bool Swapchain::AcquireNextImage() {
         return true;
     case vk::Result::eTimeout:
     case vk::Result::eNotReady:
+        RenderTrace::NoteAcquireFailure(RenderTrace::AcquireFailure::Timeout,
+                                        vk::to_string(result));
         return false;
     case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
@@ -170,10 +172,12 @@ bool Swapchain::AcquireNextImage() {
     case static_cast<vk::Result>(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT):
 #endif
     case vk::Result::eErrorUnknown:
+        RenderTrace::NoteAcquireFailure(RenderTrace::AcquireFailure::Error, vk::to_string(result));
         RenderTrace::Log("swapchain.acquire", [&] { return vk::to_string(result); });
         needs_recreation = true;
         return false;
     case vk::Result::eErrorDeviceLost:
+        RenderTrace::NoteAcquireFailure(RenderTrace::AcquireFailure::Error, vk::to_string(result));
         GpuCheckpoint::ReportLost(instance.GetGraphicsQueue(), "Swapchain::AcquireNextImage");
         ASSERT_MSG(false, "Device lost during Swapchain::AcquireNextImage");
         return false;
@@ -273,8 +277,20 @@ void Swapchain::FindPresentMode() {
         LOG_ERROR(Render, "Failed to query available present modes, falling back to Fifo as "
                           "guaranteed supported option.");
         present_mode = vk::PresentModeKHR::eFifo;
+        std::printf("Swapchain: present modes unknown (query failed: %s), using Fifo\n",
+                    vk::to_string(modes_result).c_str());
+        RenderTrace::SetPresentMode(vk::to_string(present_mode));
         return;
     }
+    // Which modes this GPU/driver offers for the window: tells a report whether "VSync off" could
+    // get Mailbox or Immediate at all.
+    std::string supported;
+    for (const vk::PresentModeKHR mode : modes) {
+        supported += supported.empty() ? "" : ", ";
+        supported += vk::to_string(mode);
+    }
+    std::printf("Swapchain: present modes supported: %s\n",
+                supported.empty() ? "none" : supported.c_str());
 
     // spartanport: VSync on is Fifo (no tearing, waits for the display); off is Mailbox when the
     // driver has it, else Immediate (tearing allowed), else Fifo.
@@ -285,6 +301,7 @@ void Swapchain::FindPresentMode() {
                    : has(vk::PresentModeKHR::eImmediate) ? vk::PresentModeKHR::eImmediate
                                                          : vk::PresentModeKHR::eFifo;
     std::printf("Swapchain: VSync %s (%s)\n", vsync ? "on" : "off", vk::to_string(present_mode).c_str());
+    RenderTrace::SetPresentMode(vk::to_string(present_mode));
 }
 
 void Swapchain::UpdateVsync() {

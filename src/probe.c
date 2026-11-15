@@ -48,9 +48,13 @@ static int entered_game;
 static int gpu_enabled;
 static unsigned cpu_missing_sets; /* CPU_SET_* the host lacks; the guest code needs them rewritten */
 static IsaTable *isa_table; /* rewritten sites (--isa-rewrite); the fault handlers and the report read it */
+/* runtime_report() runs on every exit the runtime handles (window closed, the guest's exit and
+ * _exit, a guest debug exception, an unsupported import), so the GPU session end is written here
+ * too; menu_quit and runtime_restart call it themselves. */
 static void loader_report_hook(void) {
     if (isa_table) isa_rewrite_report(isa_table, stdout);
     if (gpu_enabled) printf("GPU: copy waits yielded %llu times\n", spartanportgpu_copy_yields());
+    if (gpu_enabled) spartanportgpu_session_end();
 }
 int vulkan_smoke(void);
 
@@ -766,6 +770,7 @@ static void install_stat_multipliers(Segment *segments, uint64_t count, uint64_t
  * does: GPU, audio and guest threads are still running, so no destructors. */
 static void menu_quit(void) {
     puts("Pause menu: Exit to Desktop");
+    if (gpu_enabled) spartanportgpu_session_end();
     fflush(NULL);
 #ifdef _WIN32
     TerminateProcess(GetCurrentProcess(),0);
@@ -871,6 +876,7 @@ static void apply_patches(const char *path, Segment **segments_ptr, uint64_t *ns
  * applied at start). Descriptors are closed first so the old GPU device and its memory are
  * released before the new process opens its own. */
 void runtime_restart(void) {
+    if (gpu_enabled) spartanportgpu_session_end();
     fflush(NULL);
 #ifdef _WIN32
     /* run.py sets SPARTAN_RESTART_COMMAND: the launch command line, started again (new patches). */
