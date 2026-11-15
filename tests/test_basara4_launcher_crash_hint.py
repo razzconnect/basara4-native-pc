@@ -1,7 +1,7 @@
 """Crash diagnosis in launcher/basara4_launcher.py (replaces the upstream test_launcher_exit_hint.py).
 
 Locks the current behaviour of extract_crash_summary and explain_hardware_crash. Logs are synthetic
-lines in the runtime's format. Wording changes to the hints are a separate ticket (Argus seq 249 C).
+lines in the runtime's format. Changing the hint wording is a separate change.
 """
 import tempfile
 import unittest

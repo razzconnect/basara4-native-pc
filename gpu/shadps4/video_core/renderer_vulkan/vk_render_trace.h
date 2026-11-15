@@ -192,7 +192,7 @@ inline constexpr u32 kMaxAutoCaptures = 4;
 // time, not flips: it was flip 180 (3 s at 60 fps), but with an unlocked frame rate the launcher
 // runs vblank at 480 Hz (SPARTAN_VBLANK_HZ=0) and flip 180 came 0.4-0.9 s after the first one,
 // still on the black boot screen (13 of 13 such sessions; at 60 fps it came at 3.7 s and showed
-// the game, 1 of 1). Ticket B4-20261114-texcache-regresi.
+// the game, 1 of 1).
 inline constexpr u64 kStartupCaptureDelayMs = 3000;
 // Movie auto capture at this decoded movie picture: about 0.5 s into the first movie at 30 fps, so
 // playback and the movie compositing path (bars, scaling) are running when the frame is captured.

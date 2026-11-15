@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Basara 4 PC: TextureCache::FindImage's overlap resolution loop (tests/test_overlap_loop.cpp).
 //
-// Rule (ticket B4-20261114-texcache-regresi, cutscene double picture): the view FindImage returns
+// Rule (cutscene double picture): the view FindImage returns
 // describes where the request lies in the image it returns, whatever order the page table lists
 // the overlapping images in. Before, the loop reset the view at every iteration and kept only the
 // last iteration's: a request found at mip 1 of a chain was drawn into level 0 whenever a stale

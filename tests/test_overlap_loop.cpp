@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // FindImage's overlap loop (texture_cache/overlap_resolution.h, the code FindImage runs) with
-// ImageInfo's own MipOf/SliceOf. Ticket B4-20261114-texcache-regresi, cutscene double picture.
+// ImageInfo's own MipOf/SliceOf (the cutscene double picture).
 //
 // Rule: the view FindImage returns is the request's location in the returned image, whatever
 // order the page table lists the overlapping images in. Checked for every order of every set of

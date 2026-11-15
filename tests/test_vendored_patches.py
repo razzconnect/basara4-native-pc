@@ -1,4 +1,4 @@
-"""Vendored third-party code (B4-20261115-submodule-git): the libraries under gpu/third_party/ and
+"""Vendored third-party code: the libraries under gpu/third_party/ and
 third_party/ are committed in this repository with this port's changes in them, and every change is
 recorded as a patch that build.sh checks (VENDORED_PATCHES). This test reads that list from build.sh,
 so build.sh and the test cannot drift apart."""
