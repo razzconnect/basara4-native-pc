@@ -3286,7 +3286,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     if (census_on) {
         std::array<const VideoCore::ImageInfo*, AmdGpu::NUM_COLOR_BUFFERS> colors{};
         // Basara 4 PC: the CB address and the view level/layer of each draw (frame capture
-        // "cbN draw K" lines), not only the image (B4-20261114-texcache-regresi).
+        // "cbN draw K" lines), not only the image.
         std::array<FrameCapture::ColorView, AmdGpu::NUM_COLOR_BUFFERS> color_views{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
             if (cb_descs[cb].first) {

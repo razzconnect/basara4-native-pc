@@ -42,8 +42,8 @@ public:
     static void Poll();
 
     /// Where a color attachment of a draw points: the guest CB address and the view's base
-    /// level/layer in the image the texture cache found for it (Basara 4 PC, ticket
-    /// B4-20261114-texcache-regresi: a mip target drawn into level 0).
+    /// level/layer in the image the texture cache found for it (Basara 4 PC: shows a mip
+    /// target drawn into level 0).
     struct ColorView {
         VAddr cb_address{};
         u32 base_level{};

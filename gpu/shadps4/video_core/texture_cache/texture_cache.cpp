@@ -1200,7 +1200,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     int view_mip{-1};
     int view_slice{-1};
     if (!image_id) {
-        // Basara 4 PC (B4-20261114-texcache-regresi, cutscene double picture): the loop is in
+        // Basara 4 PC (cutscene double picture): the loop is in
         // overlap_resolution.h. The returned view is the request's location in the returned image,
         // whatever order image_ids lists the overlapping images in.
         const OverlapLoopResult overlap = RunOverlapLoop(

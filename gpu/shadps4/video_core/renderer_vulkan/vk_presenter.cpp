@@ -348,7 +348,7 @@ void CaptureScreenshot(const Instance& instance, Scheduler& scheduler, vk::Comma
             } else {
                 std::printf("Render trace screenshot: %s (%ux%u)\n",
                             Common::FS::PathToUTF8String(path).c_str(), width, height);
-                // Basara 4 PC (B4-20261114-texcache-regresi): black=1 when every pixel is black,
+                // Basara 4 PC: black=1 when every pixel is black,
                 // i.e. the presented frame itself was black (the PNG comes from the same frame
                 // image as a hotkey capture), so a black PNG is not read as a failed capture.
                 RenderTrace::Log("capture.png_written", [&] {
