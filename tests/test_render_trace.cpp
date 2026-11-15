@@ -9,6 +9,7 @@
 #include <iterator>
 #include <string>
 
+#include "support/capture_stdout.h"
 #include "video_core/renderer_vulkan/vk_render_trace.h"
 
 namespace {
@@ -147,8 +148,13 @@ int main() {
     assert(header.find("id=39") != std::string::npos);
     assert(header.find("id=0\n") == std::string::npos);
 
-    RT::WriteSessionSummary();
-    RT::WriteSessionSummary(); // idempotent
+    // Tracing on: last_run.log (stdout) still gets the one present summary line.
+    const std::string stdout_text = CaptureStdout(tmp_dir / "stdout.txt", [] {
+        RT::WriteSessionSummary();
+        RT::WriteSessionSummary(); // idempotent
+    });
+    assert(CountOccurrences(stdout_text, "Present summary:") == 1);
+    assert(stdout_text.find("Present summary: presented=180 ") == 0);
 
     const std::string written = ReadAll(log_path);
     assert(CountOccurrences(written, "gpu.info ") == 1);
@@ -159,6 +165,7 @@ int main() {
     assert(written.find("capture.saved reason=auto_startup trace=frame_1.txt screenshot=frame_1.png") !=
            std::string::npos);
     assert(written.find("presented=180") != std::string::npos);
+    assert(written.find(" acquire_timeouts=0 acquire_errors=0 ") != std::string::npos);
     assert(CountOccurrences(written, "tex.invalid_tsharp ") == RT::kTracedDetailsPerTag);
     assert(written.find("pipeline.gfx_create_fail vs=11 ps=22") != std::string::npos);
     assert(CountOccurrences(written, "pipeline.gfx_create_fail ") == 1);

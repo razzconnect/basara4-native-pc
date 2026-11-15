@@ -37,6 +37,8 @@ namespace Vulkan::RenderTrace {
 enum class Counter : std::size_t {
     FramesPresented = 0,
     PresentSkips,
+    AcquireTimeouts,
+    AcquireErrors,
     SwapchainRecreates,
     ShaderCaptureFails,
     ShaderCompileFails,
@@ -60,6 +62,8 @@ enum class Counter : std::size_t {
 inline constexpr std::array<const char*, std::size_t(Counter::Count)> CounterNames = {{
     "presented",
     "present_skips",
+    "acquire_timeouts",
+    "acquire_errors",
     "swapchain_recreates",
     "shader_cap_fail",
     "shader_comp_fail",
@@ -216,6 +220,7 @@ struct State {
     std::atomic<bool> movie_auto_done{false};
     std::atomic<bool> anomaly_auto_done{false};
     std::atomic<bool> summary_written{false};
+    std::atomic<bool> present_summary_written{false};
 
     std::mutex mutex;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -224,6 +229,8 @@ struct State {
     std::string config_summary;
     std::string scene_summary;
     std::string display_summary;
+    std::string present_mode;         ///< swapchain present mode in use (empty: none created)
+    std::string last_acquire_failure; ///< result of the newest acquire that gave no image
     std::string auto_capture_reason;
     std::string log_error;
     std::vector<std::string> unsupported_formats;
@@ -405,6 +412,60 @@ inline void Count(Counter c, u64 delta = 1) {
 
 inline u64 GetCount(Counter c) {
     return detail::GetState().counters[std::size_t(c)].load(std::memory_order_relaxed);
+}
+
+// An acquire that gave no swapchain image. Timeout: the presentation engine held every image for
+// the whole acquire wait (eTimeout, eNotReady). Error: the swapchain or surface has to be rebuilt
+// (out of date, surface or exclusive fullscreen lost, device lost). Called only on failure, so the
+// mutex is never taken for a frame that presents.
+enum class AcquireFailure { Timeout, Error };
+
+inline void NoteAcquireFailure(AcquireFailure kind, std::string_view result) {
+    Count(kind == AcquireFailure::Timeout ? Counter::AcquireTimeouts : Counter::AcquireErrors);
+    auto& s = detail::GetState();
+    std::scoped_lock lk{s.mutex};
+    s.last_acquire_failure.assign(result);
+}
+
+// The present mode the swapchain was created with (set again when VSync changes).
+inline void SetPresentMode(std::string mode) {
+    auto& s = detail::GetState();
+    std::scoped_lock lk{s.mutex};
+    s.present_mode = std::move(mode);
+}
+
+// One line for last_run.log, trace on or off: whether the game kept presenting frames, how many it
+// skipped because no swapchain image came back, and why the last acquire failed. A log that ends
+// without it was not closed by the game (Force stop, crash).
+inline std::string FormatPresentSummary() {
+    auto& s = detail::GetState();
+    std::string line = "Present summary:";
+    for (const Counter c : {Counter::FramesPresented, Counter::PresentSkips,
+                            Counter::AcquireTimeouts, Counter::AcquireErrors,
+                            Counter::SwapchainRecreates}) {
+        line += " ";
+        line += CounterNames[std::size_t(c)];
+        line += "=";
+        line += std::to_string(GetCount(c));
+    }
+    std::scoped_lock lk{s.mutex};
+    line += " last_acquire_failure=";
+    line += s.last_acquire_failure.empty() ? "none" : s.last_acquire_failure;
+    line += " present_mode=";
+    line += s.present_mode.empty() ? "none" : s.present_mode;
+    line += "\n";
+    return line;
+}
+
+// Writes FormatPresentSummary() to out once per process.
+inline void WritePresentSummary(std::FILE* out) {
+    auto& s = detail::GetState();
+    if (s.present_summary_written.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    const std::string line = FormatPresentSummary();
+    std::fputs(line.c_str(), out);
+    std::fflush(out);
 }
 
 inline void SetGpuInfo(std::string summary, std::string caps) {
@@ -686,7 +747,11 @@ inline void OnFrameCaptureSaved(std::string_view txt_path, std::string_view png_
     Log("capture.saved", msg);
 }
 
+// The end of a session: every exit the game controls calls this (window closed or Stop game, the
+// guest's exit() through std::atexit, device lost, presenter teardown). The present summary goes to
+// last_run.log in every session; session.summary only to render_trace.log while tracing.
 inline void WriteSessionSummary() {
+    WritePresentSummary(stdout);
     if (!Enabled()) {
         return;
     }
