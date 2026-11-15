@@ -3,11 +3,13 @@
 The image is synthetic: each code pattern the patcher looks for is placed at a known offset between
 int3 padding (wildcard bytes "??" filled with nops). No eboot or other game file is read.
 """
+import os
 import struct
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from paths import ROOT
 
@@ -141,6 +143,111 @@ class PatchFileTests(unittest.TestCase):
             writes, notes = bp.build(elf, out, False, resolution="native")
             self.assertEqual((writes, notes), ([], []))
             self.assertEqual(out.read_bytes(), struct.pack("<8sQQ", b"G3PATCH2", bp.EBOOT_BASE, 0))
+
+
+def vex_scalar(opcode, dest, src1, src2):
+    """4-byte VEX2 vminss (0x5d) / vmaxss (0x5f) dest, src1, src2 between xmm registers."""
+    byte1 = (((~dest >> 3) & 1) << 7) | ((~src1 & 0xf) << 3) | 0x02
+    return bytes([0xc5, byte1, opcode, 0xc0 | (dest & 7) << 3 | (src2 & 7)])
+
+
+# Synthetic stand-in for the six game instructions after GUI_SCALE_CLAMP_PAT (slots 2-7): clamps of
+# x, y and min(x, y) against the threshold in xmm3. The real ones are only read from eboot.elf.
+SYNTHETIC_SLOTS = (vex_scalar(0x5f, 9, 3, 0) + vex_scalar(0x5f, 10, 3, 1) + vex_scalar(0x5d, 11, 3, 0) +
+                   vex_scalar(0x5d, 12, 3, 1) + vex_scalar(0x5f, 7, 3, 2) + vex_scalar(0x5d, 3, 3, 2))
+
+
+def image_with_full_gui_block(slots=SYNTHETIC_SLOTS):
+    image = bytearray(synthetic_image())
+    gui = SITES["GUI_SCALE_CLAMP_PAT"] + len(pattern_bytes(bp.GUI_SCALE_CLAMP_PAT))
+    image[gui:gui + len(slots)] = slots
+    return bytes(image)
+
+
+class GuiScaleSlotTests(unittest.TestCase):
+    """SPARTAN_GUI_SCALE_SLOTS: which cGUI scale registers the resolution patch unclamps."""
+
+    def block(self, image, writes):
+        gui = SITES["GUI_SCALE_CLAMP_PAT"]
+        return apply(image, writes)[gui:gui + bp.GUI_SCALE_BLOCK_LEN]
+
+    def test_layout_matches_the_known_game_bytes(self):
+        # The two instructions inside GUI_SCALE_CLAMP_PAT are slots 0 and 1, and the generator used
+        # by these tests encodes them byte for byte.
+        code = pattern_bytes(bp.GUI_SCALE_CLAMP_PAT)
+        self.assertEqual(bp._scalar_minmax_dest(code[8:12]), 8)
+        self.assertEqual(bp._scalar_minmax_dest(code[12:16]), 5)
+        self.assertEqual(vex_scalar(0x5d, 8, 3, 4) + vex_scalar(0x5f, 5, 3, 4), code[8:16])
+        self.assertEqual(bp.GUI_SCALE_BLOCK_LEN, len(bp.GUI_SCALE_UNCLAMP))
+
+    def test_default_is_the_release_patch(self):
+        # Unset or "all": exactly the bytes v1.0.8 writes, with or without the full block in the image.
+        self.assertEqual(bp.gui_scale_slots(None), bp.GUI_SCALE_ALL_SLOTS)
+        for image in (synthetic_image(), image_with_full_gui_block()):
+            for name in bp.RESOLUTION_SIZES:
+                self.assertEqual(bp.resolution_patches(image, name, bp.gui_scale_slots("all")),
+                                 bp.resolution_patches(image, name), name)
+                self.assertEqual(self.block(image, bp.resolution_patches(image, name)),
+                                 bp.GUI_SCALE_UNCLAMP, name)
+
+    def test_none_keeps_the_game_code(self):
+        image = image_with_full_gui_block()
+        writes = bp.resolution_patches(image, "720p", bp.gui_scale_slots("none"))
+        gui = SITES["GUI_SCALE_CLAMP_PAT"]
+        self.assertEqual([w for w in writes if gui <= w[0] < gui + bp.GUI_SCALE_BLOCK_LEN], [])
+        # Every other resolution patch is unchanged.
+        others = [w for w in bp.resolution_patches(image, "720p") if w[0] != gui]
+        self.assertEqual(writes, others)
+
+    def test_each_slot_alone(self):
+        image = image_with_full_gui_block()
+        gui = SITES["GUI_SCALE_CLAMP_PAT"]
+        original = image[gui:gui + bp.GUI_SCALE_BLOCK_LEN]
+        for i in range(len(bp.GUI_SCALE_SLOT_REGS)):
+            block = self.block(image, bp.resolution_patches(image, "1440p", frozenset({i})))
+            self.assertEqual(block[:bp.GUI_SCALE_LOAD_LEN], original[:bp.GUI_SCALE_LOAD_LEN])
+            for j in range(len(bp.GUI_SCALE_SLOT_REGS)):
+                at = bp.GUI_SCALE_LOAD_LEN + 4 * j
+                want = bp.GUI_SCALE_UNCLAMP[4 * j:4 * j + 4] if j == i else original[at:at + 4]
+                self.assertEqual(block[at:at + 4], want, (i, j))
+
+    def test_unexpected_game_code_fails_the_variant_only(self):
+        broken = bytearray(SYNTHETIC_SLOTS)
+        broken[8:12] = vex_scalar(0x5d, 13, 3, 0)  # slot 4 writes xmm13, not xmm11
+        image = image_with_full_gui_block(bytes(broken))
+        with self.assertRaisesRegex(ValueError, "slot 4"):
+            bp.resolution_patches(image, "720p", frozenset({1}))
+        with self.assertRaises(ValueError):
+            bp.resolution_patches(synthetic_image(), "720p", frozenset())  # block not in the image
+        self.assertEqual(self.block(image, bp.resolution_patches(image, "720p")), bp.GUI_SCALE_UNCLAMP)
+
+    def test_slot_values(self):
+        self.assertEqual(bp.gui_scale_slots(" ALL "), bp.GUI_SCALE_ALL_SLOTS)
+        self.assertEqual(bp.gui_scale_slots(""), bp.GUI_SCALE_ALL_SLOTS)
+        self.assertEqual(bp.gui_scale_slots("None"), frozenset())
+        self.assertEqual(bp.gui_scale_slots("1, 6,7"), frozenset({1, 6, 7}))
+        for bad in ("8", "-1", "x", "1,,2", ","):
+            with self.assertRaises(ValueError, msg=bad):
+                bp.gui_scale_slots(bad)
+
+    def test_build_reads_the_environment(self):
+        image = image_with_full_gui_block()
+        with tempfile.TemporaryDirectory() as tmp:
+            elf, out = Path(tmp) / "eboot.elf", Path(tmp) / "patches.bin"
+            elf.write_bytes(synthetic_elf(image))
+            with mock.patch.dict(os.environ, {bp.GUI_SCALE_SLOTS_ENV: "1"}):
+                writes, notes = bp.build(elf, out, False, resolution="720p")
+            self.assertEqual(writes, bp.resolution_patches(image, "720p", frozenset({1})))
+            self.assertEqual(notes, ["resolution 720p", "gui scale slots [1]"])
+            with mock.patch.dict(os.environ, {bp.GUI_SCALE_SLOTS_ENV: "9"}):
+                with self.assertRaises(ValueError):
+                    bp.build(elf, out, False, resolution="720p")
+            with mock.patch.dict(os.environ, {bp.GUI_SCALE_SLOTS_ENV: "none"}):
+                self.assertEqual(bp.build(elf, out, False, resolution="native"), ([], []))
+            env = {k: v for k, v in os.environ.items() if k != bp.GUI_SCALE_SLOTS_ENV}
+            with mock.patch.dict(os.environ, env, clear=True):
+                writes, notes = bp.build(elf, out, False, resolution="720p")
+            self.assertEqual((writes, notes), (bp.resolution_patches(image, "720p"), ["resolution 720p"]))
 
 
 if __name__ == "__main__":
