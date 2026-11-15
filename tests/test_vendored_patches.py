@@ -45,6 +45,13 @@ class VendoredPatchesTest(unittest.TestCase):
                  for base in ('gpu/patches', 'third_party/patches') for path in (ROOT / base).rglob('*.patch')}
         self.assertEqual(found, listed)
 
+    def test_patched_libraries_check_out_with_lf(self):
+        # git apply compares bytes: a library checked out with CRLF (Git for Windows with core.eol
+        # native, or LibAtrac9's own text=auto) would fail the check although the patch is there.
+        rules = (ROOT / '.gitattributes').read_text(encoding='utf-8').splitlines()
+        for _patches, library in vendored_patches():
+            self.assertIn(f'{library}/** text=auto eol=lf', rules, library)
+
     def test_no_submodules(self):
         # The libraries are plain folders in the tree; a .gitmodules or a gitfile in one of them makes
         # git treat the folder as a separate (missing) repository and build.sh stop.
