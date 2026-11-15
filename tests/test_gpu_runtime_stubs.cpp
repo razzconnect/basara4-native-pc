@@ -4,10 +4,13 @@
 #include <cstdint>
 #include <cstddef>
 #include <setjmp.h>
+#if defined(_WIN32) && !defined(sigjmp_buf)
+#include "spartanport_toggles.h"  // Windows has no sigjmp_buf: the GPU library's own definition
+#endif
 // Renderer tests have no guest process. Clock/host-thread services work; guest accesses abort.
 extern "C" {
-thread_local sigjmp_buf* runtime_fault_recover = nullptr;
-uint32_t runtime_disabled_optimizations = 0;
+__thread sigjmp_buf* runtime_fault_recover = nullptr;  // as declared in spartanport_toggles.h
+uint64_t runtime_disabled_optimizations = 0;  // runtime_memory.c, spartanport_toggles.h: 64-bit
 uint64_t runtime_tsc_frequency() { return 1000000000; }
 int runtime_file_translate(const char*, char*, size_t) { std::abort(); }
 uint64_t runtime_memory_clamp(uintptr_t, uint64_t) { std::abort(); }
@@ -22,5 +25,8 @@ uint64_t runtime_process_time_counter() { return runtime_process_time_us() * 100
 uint64_t runtime_read_tsc() { return runtime_process_time_counter(); }
 int32_t* runtime_errno() { std::abort(); }
 int runtime_memory_write_backing(uintptr_t, const void*, uint64_t) { std::abort(); }
+// The GPU library prints the runtime's counters on fatal errors (gpu/shim/spartanportgpu.cpp);
+// there is no guest runtime here. The static Windows library needs the symbol at link time.
+void runtime_report() {}
 }
 
