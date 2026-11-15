@@ -137,7 +137,6 @@ E2D_NODE_POS_LEN = 56
 # vmovhlps xmm1,xmm0,xmm0; vdivss xmm1,xmm1,[rip+1280.0] (720.0 follows it); vmovss [rdi],xmm1.
 UBGUI_SCALE_PAT = ("48 8d 05 ?? ?? ?? ?? 48 8b 00 c5 f8 5b 80 30 0d 00 00 c5 f8 12 c8 "
                    "c5 f2 5e 0d ?? ?? ?? ?? c5 fa 11 0f")
-VIEWPORT_RECT = 0xd30
 
 
 def _rip_target(image, disp_at, next_ip):
@@ -167,6 +166,7 @@ def e2d_node_pos_patch(image):
     if _f32_at(image, _rip_target(image, a + 18, a + 22)) != 3.0:
         raise ValueError(f'2D effect position code at {a + EBOOT_BASE:#x} does not divide by 3.0')
     viewport = _rip_target(image, u + 3, u + 7)  # a pointer in .bss, filled at run time
+    rect = image[u + 14:u + 18]  # the game's own displacement of the screen rect (vcvtdq2ps)
     const = _rip_target(image, u + 26, u + 30)
     if (_f32_at(image, const), _f32_at(image, const + 4)) != (1280.0, 720.0):
         raise ValueError(f'GUI screen scale code at {u + EBOOT_BASE:#x} does not divide by 1280/720')
@@ -178,7 +178,7 @@ def e2d_node_pos_patch(image):
 
     code = (b'\x48\x8d\x05' + rel32(viewport, a + 7) +                 # lea rax,[rip+viewport ptr]
             b'\x48\x8b\x00' +                                          # mov rax,[rax]
-            b'\xc5\xf8\x5b\x90' + struct.pack('<I', VIEWPORT_RECT) +   # vcvtdq2ps xmm2,[rax+0D30h]
+            b'\xc5\xf8\x5b\x90' + rect +                               # vcvtdq2ps xmm2,[rax+rect]
             b'\xc5\xe8\x12\xd2' +                                      # vmovhlps xmm2,xmm2,xmm2: W, H
             b'\xc5\xe8\x5e\x15' + rel32(const, a + 30) +               # vdivps xmm2,xmm2,[1280, 720]
             b'\xc5\xfa\x7e\x43\x40' +                                  # vmovq xmm0,[rbx+40h]: x, y

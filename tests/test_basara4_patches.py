@@ -150,6 +150,10 @@ PRESETS = ("360p", "480p", "540p", "720p", "900p", "1440p", "1800p", "4K")
 # Synthetic layout for the 2D effect position code: the site, uBasaraGUI's scale code it reads, the
 # 3.0 the site divides by, the 1280.0/720.0 pair and the viewport pointer cell (in .bss in the game).
 E2D_SITE, UBGUI_SITE, CONST_THREE, CONST_SCALE, VIEWPORT_CELL = 0x1100, 0x1200, 0x1300, 0x1310, 0x1320
+# Where the game keeps the screen rect (x, y, W, H as int32) in the viewport object: uBasaraGUI's scale
+# code reads [viewport+0D30h] (checked against the game's eboot). Kept here as a literal so the test
+# does not follow a wrong offset in the patcher.
+SCREEN_RECT = 0xD30
 
 
 def e2d_site_code(site):
@@ -161,6 +165,7 @@ def e2d_site_code(site):
 def ubgui_scale_code(site):
     code = bytearray(pattern_bytes(bp.UBGUI_SCALE_PAT))
     struct.pack_into("<i", code, 3, VIEWPORT_CELL - (site + 7))
+    struct.pack_into("<I", code, 14, SCREEN_RECT)  # vcvtdq2ps xmm0,[rax+0D30h]
     struct.pack_into("<i", code, 26, CONST_SCALE - (site + 30))
     return bytes(code)
 
@@ -206,7 +211,7 @@ class E2DMachine:
     def __init__(self, image, screen, node_xy):
         self.mem = bytearray(image) + bytearray(0x301000 - len(image))
         struct.pack_into("<Q", self.mem, VIEWPORT_CELL, self.VIEWPORT)
-        struct.pack_into("<4i", self.mem, self.VIEWPORT + bp.VIEWPORT_RECT, 0, 0, *screen)
+        struct.pack_into("<4i", self.mem, self.VIEWPORT + SCREEN_RECT, 0, 0, *screen)
         struct.pack_into("<ff", self.mem, self.NODE + 0x40, *node_xy)
         self.rax, self.rcx, self.rbx, self.r14 = 0x1111, 0x2222, self.NODE, self.EFFECT
         self.xmm = {0: [0.0] * 4, 1: [0.0] * 4, 2: [0.0] * 4}
@@ -243,6 +248,8 @@ class E2DMachine:
                 self.rax, ip = f32_bits(x[0][0]) | f32_bits(x[0][1]) << 32, ip + 5
             elif b[:3] == b"\x0f\x1f\x00":                     # nop
                 ip += 3
+            elif b[:5] == b"\x0f\x1f\x44\x00\x00":             # nop (5 bytes)
+                ip += 5
             elif b[:5] == b"\xc5\xfa\x10\x43\x40":             # vmovss xmm0,[rbx+40h]
                 x[0], ip = [self.f(self.rbx + 0x40), 0.0, 0.0, 0.0], ip + 5
             elif b[:5] == b"\xc5\xfa\x10\x4b\x44":             # vmovss xmm1,[rbx+44h]
@@ -302,6 +309,12 @@ class E2DNodePositionTests(unittest.TestCase):
                 self.assertEqual([(o, len(d)) for o, d in at_site], [(E2D_SITE, bp.E2D_NODE_POS_LEN)])
         for name in ("native", "bogus"):
             self.assertEqual(bp.resolution_patches(image, name), [], name)
+
+    def test_patch_reads_the_screen_rect_where_the_game_does(self):
+        (site, code), = bp.e2d_node_pos_patch(image_with_e2d())
+        self.assertEqual(site, E2D_SITE)
+        self.assertEqual(code[10:14], b"\xc5\xf8\x5b\x90")  # vcvtdq2ps xmm2,[rax+disp32]
+        self.assertEqual(struct.unpack_from("<I", code, 14)[0], SCREEN_RECT)
 
     def test_other_patches_are_the_release_ones_at_every_preset(self):
         with_code, without_code = image_with_e2d(), image_with_e2d(sites=())
