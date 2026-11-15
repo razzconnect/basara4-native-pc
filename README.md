@@ -190,9 +190,9 @@ AudioOut / DirectSound / WASAPI
 
 ### Compilation Steps
 
-1. Clone the repository recursively:
+1. Clone the repository (third-party code is included; there are no submodules):
    ```bash
-   git clone --recursive https://github.com/razzconnect/basara4-native-pc.git
+   git clone https://github.com/razzconnect/basara4-native-pc.git
    cd basara4-pc
    ```
 
@@ -262,4 +262,4 @@ Join our community for discussions, troubleshooting, updates, and more:
 This project is licensed under the **GNU General Public License v2.0 or later** ([LICENSE](LICENSE)).
 
 - All modifications, reverse-engineered engine contracts, custom audio graph code, and launcher source code created by Razz are Copyright (C) 2026 Razz under GPL-2.0-or-later.
-- Third-party components and submodules retain their respective authors' licenses as described in `NOTICE.md` and `third_party/`.
+- Third-party components (vendored under `gpu/third_party/` and `third_party/`) retain their respective authors' licenses as described in `NOTICE.md` and `third_party/`.

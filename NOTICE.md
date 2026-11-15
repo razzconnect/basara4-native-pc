@@ -27,7 +27,8 @@ Copyright (C) 2026 Razz, released under the GNU GPL v2 or later.
 - **The in-game menu for this game** (`gpu/shim/spartanport_overlay.cpp`): the cheat, orb and enemy-bar
   sections of the original were removed; added FSR 1 upscaling and a controller section.
 - **`--no-game-hooks`** in the loader: leaves out the signature-based hooks written for another game.
-- **LibAtrac9 hardening** (`third_party/LibAtrac9/C/src/huffCodes.c`, `unpack.c`): a damaged ATRAC9 stream no longer
+- **LibAtrac9 hardening** (`third_party/LibAtrac9/C/src/band_extension.c`, `huffCodes.c`, `unpack.c`; recorded as
+  `third_party/patches/LibAtrac9/0001-decoder-hardening-damaged-streams.patch`): a damaged ATRAC9 stream no longer
   crashes the decoder.
 - **Packaging** (`packaging/basara4/`): the script that assembles the Windows folder, its readmes and the
   DLL list.

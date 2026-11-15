@@ -43,7 +43,7 @@ endif()
 find_package(Vulkan REQUIRED)
 find_package(fmt REQUIRED)
 find_package(Boost REQUIRED)
-# spartanport (Windows): MSYS2 has no magic_enum/miniz packages; the submodules are used instead.
+# spartanport (Windows): MSYS2 has no magic_enum/miniz packages; the vendored copies in third_party/ are used instead.
 find_package(magic_enum QUIET)
 if (NOT magic_enum_FOUND)
     add_library(magic_enum INTERFACE)

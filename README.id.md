@@ -157,7 +157,7 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 
 1. Clone repositori:
    ```bash
-   git clone --recursive https://github.com/razzconnect/basara4-native-pc.git
+   git clone https://github.com/razzconnect/basara4-native-pc.git
    cd basara4-pc
    ```
 
