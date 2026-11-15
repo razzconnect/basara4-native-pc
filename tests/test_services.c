@@ -24,7 +24,10 @@ int main(void) {
     memset(param+56,0,4); param[56]=1;
     assert(msg_open(param)==0 && msg_status()==DIALOG_FINISHED);
     assert(msg_result(result)==0);
-    memcpy(&value,result+4,4); assert(value==1);
+    /* OrbisMsgDialogResult: mode @0, result @4 (0 = OK), buttonId @8 (1 = OK); shadPS4 msgdialog_ui.h. */
+    memcpy(&value,result,4); assert(value==1);
+    memcpy(&value,result+4,4); assert(value==0);
+    memcpy(&value,result+8,4); assert(value==1);
     param[56]=2;
     assert(msg_open(param)==0 && msg_status()==DIALOG_RUNNING);
     assert(msg_result(result)==DIALOG_NOT_FINISHED);

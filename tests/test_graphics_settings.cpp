@@ -89,11 +89,15 @@ int main() {
     SpartanSettings::Load();
     assert(v.display_mode == G::Borderless && !v.vsync && v.fps_limit == 240 && !v.async_shaders);
     assert(v.render_resolution == 4 && v.engine_fps == 240 && !v.deferred_readback && v.stale_readback);
-    // FSR 1 left the menus in 2.2.0: a saved fsr1=1 (or SPARTAN_FSR1) no longer turns it on.
-    assert(!v.fsr1 && !v.rcas && v.rcas_strength == 40 && v.frames_queued == 2);
-    SetEnvironment("SPARTAN_FSR1", "1");
+    // Basara 4 PC (6d90bb1): FSR 1 is a launcher and in-game menu option again, so a saved fsr1=1
+    // turns it on, and SPARTAN_FSR1 (set by the launcher) wins over the file either way.
+    assert(v.fsr1 && !v.rcas && v.rcas_strength == 40 && v.frames_queued == 2);
+    SetEnvironment("SPARTAN_FSR1", "0");
     SpartanSettings::Load();
     assert(!v.fsr1);
+    SetEnvironment("SPARTAN_FSR1", "1");
+    SpartanSettings::Load();
+    assert(v.fsr1);
     SetEnvironment("SPARTAN_FSR1", "");
     assert(!SpartanSettings::GraphicsNeedRestart());
     assert(v.applied_engine_fps == 240);  // no SPARTAN_ENGINE_FPS: the configured rate
@@ -113,7 +117,7 @@ int main() {
     const std::string saved = Read(path);
     for (const char* line : {"display_mode=borderless\n", "vsync=0\n", "fps_limit=60\n", "async_shaders=0\n",
                              "render_resolution=1440p\n", "engine_fps=240\n", "deferred_readback=0\n",
-                             "stale_readback=1\n", "fsr1=0\n", "rcas=0\n", "rcas_strength=40\n",
+                             "stale_readback=1\n", "fsr1=1\n", "rcas=0\n", "rcas_strength=40\n",
                              "frames_queued=2\n"}) {
         assert(saved.find(line) != std::string::npos);
     }
@@ -126,6 +130,17 @@ int main() {
     assert(v.render_resolution == G::ParseResolution("8K"));
     SpartanSettings::Save();
     assert(Read(path).find("render_resolution=8K\n") != std::string::npos);
+    {
+        // SPARTAN_FSR1=1 from the launcher turns FSR 1 on over a saved fsr1=0; without it the file counts.
+        std::ofstream out(path);
+        out << "fsr1=0\n";
+    }
+    SetEnvironment("SPARTAN_FSR1", "1");
+    SpartanSettings::Load();
+    assert(v.fsr1);
+    SetEnvironment("SPARTAN_FSR1", "");
+    SpartanSettings::Load();
+    assert(!v.fsr1);
 
     {
         // The resolutions of the enabled mods' patch files (run.py: SPARTAN_EXTRA_RESOLUTIONS) follow the built-in
