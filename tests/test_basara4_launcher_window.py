@@ -91,6 +91,73 @@ class RunLogAndPlayTests(unittest.TestCase):
                 showerror.assert_called_once()
                 self.assertIsNone(app.proc)
 
+    def play_with_vulkan(self, vulkan, answer, play_now=False, cfg=None):
+        """on_play with the Vulkan probe `vulkan` and the user's `answer` to the warning:
+        (askyesno mock, deiconify mock, whether the game was prepared)."""
+        with tempfile.TemporaryDirectory() as tmp, \
+                launcher(tmp, play_now=play_now, cfg=cfg) as (app, paths, _game, _iconify):
+            paths.core.parent.mkdir(parents=True, exist_ok=True)
+            paths.core.write_bytes(b"synthetic runtime")
+            with mock.patch.object(bl, "VULKAN", vulkan), \
+                    mock.patch.object(bl, "SYSTEM_GPUS", bl.gpu_choices(vulkan)), \
+                    mock.patch.object(bl, "check_commit_limit_mb", return_value=None), \
+                    mock.patch.object(bl.threading, "Thread") as thread, \
+                    mock.patch.object(bl.Launcher, "deiconify") as deiconify, \
+                    mock.patch.object(bl.messagebox, "askyesno", return_value=answer) as ask:
+                app._load_ini_into_ui()  # the GPU dropdown shows the saved gpu_index of this probe
+                app.on_play()
+            return ask, deiconify, thread.called
+
+    def test_vulkan_warning_before_the_game_starts(self):
+        old_loader = bl.VulkanProbe(True, (1, 0), False, [], "")
+        ask, deiconify, started = self.play_with_vulkan(old_loader, answer=False, play_now=True)
+        self.assertEqual(ask.call_args.args, bl.vulkan_warning("old", old_loader, None))
+        self.assertEqual(ask.call_args.args[0], "Vulkan Terlalu Lama")
+        self.assertIn("baru mendukung Vulkan 1.0.", ask.call_args.args[1])
+        self.assertEqual((ask.call_args.kwargs["icon"], ask.call_args.kwargs["default"]), ("warning", "no"))
+        deiconify.assert_called_once()  # the --play shortcut brings the window back for the question
+        self.assertFalse(started)  # "No": the game is not started
+        ask, _, started = self.play_with_vulkan(old_loader, answer=True)
+        self.assertTrue(started)  # "Yes": it starts anyway
+        missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
+        ask = self.play_with_vulkan(missing, answer=False)[0]
+        self.assertEqual(ask.call_args.args[0], "Vulkan Tidak Ditemukan")
+        self.assertEqual(ask.call_args.args, bl.vulkan_warning("missing", missing, None))
+
+    def test_vulkan_warning_follows_the_chosen_gpu(self):
+        mixed = bl.VulkanProbe(True, (1, 3), True, [("Old dGPU", 2, (1, 2)), ("New iGPU", 1, (1, 3))], "")
+        ask, _, started = self.play_with_vulkan(mixed, answer=False)  # Auto: the discrete GPU
+        ask.assert_called_once()
+        self.assertIn("baru mendukung Vulkan 1.2.", ask.call_args.args[1])  # the GPU the game would use
+        self.assertFalse(started)
+        ask, deiconify, started = self.play_with_vulkan(mixed, answer=False, cfg={"gpu_index": 1})
+        ask.assert_not_called()
+        deiconify.assert_not_called()
+        self.assertTrue(started)
+
+    def test_no_warning_on_a_vulkan_1_3_pc(self):
+        ready = bl.VulkanProbe(True, (1, 4), True, [("RTX", 2, (1, 4))], "")
+        ask, deiconify, started = self.play_with_vulkan(ready, answer=False)
+        ask.assert_not_called()
+        deiconify.assert_not_called()
+        self.assertTrue(started)
+
+    def test_crash_report_carries_the_vulkan_line(self):
+        vulkan = bl.VulkanProbe(True, (1, 0), False, [], "")
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, _paths, _game, _iconify), \
+                mock.patch.object(bl, "VULKAN", vulkan), \
+                mock.patch.object(bl.messagebox, "showinfo"), \
+                mock.patch.object(bl.Launcher, "clipboard_clear"), \
+                mock.patch.object(bl.Launcher, "clipboard_append") as append:  # the user's clipboard stays as it is
+            app._show_crash_dialog(0xC0000139)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            copy = next(w for w in descendants(dialog)
+                        if isinstance(w, ttk.Button) and "Clipboard" in str(w.cget("text")))
+            copy.invoke()
+        report = append.call_args.args[0]
+        self.assertIn("Exit Code     : 0xc0000139\n", report)
+        self.assertIn("Vulkan        : loader 1.0, no instance; needs 1.3\n", report)
+
 
 class IconTests(unittest.TestCase):
     def test_launcher_icon_file(self):
