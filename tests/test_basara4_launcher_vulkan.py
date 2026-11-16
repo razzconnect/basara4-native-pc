@@ -68,6 +68,12 @@ def problem(result, gpu_index=-1):
     return bl.vulkan_problem(result, bl.game_gpu_id(gpu_index, bl.gpu_choices(result)))
 
 
+def warning(result, gpu_index=-1):
+    """The (title, message) on_play shows for this probe and GPU choice."""
+    gpu_id = bl.game_gpu_id(gpu_index, bl.gpu_choices(result))
+    return bl.vulkan_warning(bl.vulkan_problem(result, gpu_id), result, gpu_id)
+
+
 class ProbeTests(unittest.TestCase):
     def test_no_vulkan_dll(self):
         result = bl.probe_vulkan(load=missing)
@@ -167,28 +173,55 @@ class ReportTests(unittest.TestCase):
 
 class WarningTextTests(unittest.TestCase):
     def test_wording(self):
-        self.assertEqual(bl.vulkan_warning("no_gpu"), (
-            "Launcher tidak menemukan kartu grafis yang mendukung Vulkan di PC ini. Game ini membutuhkan GPU "
-            "dan driver dengan dukungan Vulkan.\n\n"
-            "Yang bisa dicoba:\n"
-            "1. Perbarui driver kartu grafis dari situs NVIDIA, AMD, atau Intel, atau lewat Windows Update. "
-            "Lalu buka launcher lagi.\n"
-            "2. Kalau PC punya kartu grafis terpisah, pastikan drivernya terpasang, bukan hanya driver bawaan "
-            "Windows.\n"
-            "3. Beberapa kartu grafis lama memang tidak mendukung Vulkan. Kalau sudah diperbarui dan pesan ini "
-            "tetap muncul, kemungkinan PC ini belum bisa menjalankan game.\n\n"
-            "Tetap jalankan game?"))
-        self.assertTrue(bl.vulkan_warning("missing").startswith(
-            "File Vulkan bawaan Windows (vulkan-1.dll) tidak ditemukan di PC ini. Game ini membutuhkan"))
-        self.assertTrue(bl.vulkan_warning("old").startswith(
-            "Komponen Vulkan di PC ini terlalu lama untuk game ini. Game ini membutuhkan"))
+        not_found = (
+            "Vulkan Tidak Ditemukan",
+            "⚠️ Game ini membutuhkan Vulkan 1.3 untuk menampilkan grafis, tetapi Vulkan tidak ditemukan di PC ini.\n"
+            "Biasanya karena driver kartu grafis belum terpasang, sudah lama, atau masih driver bawaan Windows.\n\n"
+            "👉 Solusi:\n"
+            "1. Pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update).\n"
+            "2. Restart PC, lalu buka launcher lagi.\n\n"
+            "Kalau pesan ini masih muncul, kemungkinan kartu grafis PC ini belum mendukung Vulkan 1.3, sehingga "
+            "game tidak bisa berjalan.\n\n"
+            "Tetap coba jalankan game?")
+        self.assertEqual(warning(bl.probe_vulkan(load=missing)), not_found)
+        self.assertEqual(warning(probe(instance=False)[0]), not_found)  # no_gpu: the same message
+        self.assertEqual(warning(probe(devices=[("Old dGPU", DGPU, (1, 2)), ("New iGPU", IGPU, (1, 3))])[0]), (
+            "Vulkan Terlalu Lama",
+            "⚠️ Game ini membutuhkan Vulkan 1.3, tetapi PC ini baru mendukung Vulkan 1.2.\n\n"
+            "Kartu grafis yang terdeteksi:\n"
+            "  • Old dGPU — Vulkan 1.2\n"
+            "  • New iGPU — Vulkan 1.3\n\n"
+            "👉 Solusi: pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update), "
+            "lalu restart PC.\n"
+            "Kalau driver sudah yang terbaru, kartu grafis ini belum mendukung Vulkan 1.3, sehingga game tidak bisa "
+            "berjalan di PC ini.\n\n"
+            "Tetap coba jalankan game?"))
 
-    def test_every_problem_has_a_message(self):
-        found = {problem(bl.probe_vulkan(load=missing)), problem(probe(instance=False)[0]),
-                 problem(probe(loader=(1, 2))[0])}
-        self.assertEqual(found, set(bl.VULKAN_WARNING_OPENING))
-        tails = {bl.vulkan_warning(p).split(" Game ini", 1)[1] for p in found}
-        self.assertEqual(len(tails), 1)  # only the opening sentence differs
+    def test_old_names_the_version_the_game_would_get(self):
+        def first_line(result, gpu_index=-1):
+            title, message = warning(result, gpu_index)
+            self.assertEqual(title, "Vulkan Terlalu Lama")
+            return message.splitlines()[0]
+        # The loader decides when it is too old, even next to a newer GPU.
+        self.assertEqual(first_line(probe(loader=(1, 2), devices=[("GPU", DGPU, (1, 4))])[0]),
+                         "⚠️ Game ini membutuhkan Vulkan 1.3, tetapi PC ini baru mendukung Vulkan 1.2.")
+        # A 1.0 loader lists no GPU: the list is left out.
+        title, message = warning(probe(loader=None, instance=False)[0])
+        self.assertIn("baru mendukung Vulkan 1.0.", message)
+        self.assertNotIn("Kartu grafis yang terdeteksi", message)
+        # Otherwise the chosen GPU, or the newest one when the game chooses.
+        two_old = probe(devices=[("A", IGPU, (1, 1)), ("B", IGPU, (1, 2))])[0]
+        self.assertTrue(first_line(two_old, 0).endswith("baru mendukung Vulkan 1.1."))
+        self.assertTrue(first_line(two_old, -1).endswith("baru mendukung Vulkan 1.2."))
+
+    def test_no_windows_update_advice(self):
+        results = [bl.probe_vulkan(load=missing), probe(instance=False)[0], probe(loader=(1, 2))[0],
+                   probe(devices=[("GPU", DGPU, (1, 2))])[0]]
+        for result in results:
+            title, message = warning(result)
+            self.assertIn("situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update)", message, title)
+            self.assertNotIn("lewat Windows Update", message, title)
+            self.assertTrue(message.endswith("Tetap coba jalankan game?"), title)
 
 
 if __name__ == "__main__":

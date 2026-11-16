@@ -620,24 +620,36 @@ def vulkan_problem(probe, gpu_id):
     return None if any(api >= VULKAN_REQUIRED for api in apis) else "old"
 
 
-VULKAN_WARNING_OPENING = {
-    "no_gpu": "Launcher tidak menemukan kartu grafis yang mendukung Vulkan di PC ini.",
-    "missing": "File Vulkan bawaan Windows (vulkan-1.dll) tidak ditemukan di PC ini.",
-    "old": "Komponen Vulkan di PC ini terlalu lama untuk game ini.",
-}
-
-
-def vulkan_warning(problem):
-    """The "Vulkan Belum Siap" question shown before the game starts, for a vulkan_problem()."""
-    return (
-        f"{VULKAN_WARNING_OPENING[problem]} Game ini membutuhkan GPU dan driver dengan dukungan Vulkan.\n\n"
-        "Yang bisa dicoba:\n"
-        "1. Perbarui driver kartu grafis dari situs NVIDIA, AMD, atau Intel, atau lewat Windows Update. "
-        "Lalu buka launcher lagi.\n"
-        "2. Kalau PC punya kartu grafis terpisah, pastikan drivernya terpasang, bukan hanya driver bawaan Windows.\n"
-        "3. Beberapa kartu grafis lama memang tidak mendukung Vulkan. Kalau sudah diperbarui dan pesan ini "
-        "tetap muncul, kemungkinan PC ini belum bisa menjalankan game.\n\n"
-        "Tetap jalankan game?")
+def vulkan_warning(problem, probe, gpu_id):
+    """The question shown before the game starts, as (title, message), for vulkan_problem(probe, gpu_id).
+    "missing" and "no_gpu": Vulkan is not found. "old": the version the game would get (the loader's when
+    that is too old, else the GPU the game uses) and every GPU with its version."""
+    need = "%d.%d" % VULKAN_REQUIRED
+    if problem == "old":
+        if probe.loader is not None and probe.loader < VULKAN_REQUIRED:
+            have = probe.loader
+        elif gpu_id is not None and 0 <= gpu_id < len(probe.devices):
+            have = probe.devices[gpu_id][2]
+        else:
+            have = max(api for _, _, api in probe.devices)
+        gpus = "".join(f"  • {name} — Vulkan {major}.{minor}\n" for name, _, (major, minor) in probe.devices)
+        return "Vulkan Terlalu Lama", (
+            f"⚠️ Game ini membutuhkan Vulkan {need}, tetapi PC ini baru mendukung Vulkan {have[0]}.{have[1]}.\n\n"
+            + (f"Kartu grafis yang terdeteksi:\n{gpus}\n" if gpus else "")
+            + "👉 Solusi: pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update), "
+            "lalu restart PC.\n"
+            f"Kalau driver sudah yang terbaru, kartu grafis ini belum mendukung Vulkan {need}, sehingga game "
+            "tidak bisa berjalan di PC ini.\n\n"
+            "Tetap coba jalankan game?")
+    return "Vulkan Tidak Ditemukan", (
+        f"⚠️ Game ini membutuhkan Vulkan {need} untuk menampilkan grafis, tetapi Vulkan tidak ditemukan di PC ini.\n"
+        "Biasanya karena driver kartu grafis belum terpasang, sudah lama, atau masih driver bawaan Windows.\n\n"
+        "👉 Solusi:\n"
+        "1. Pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update).\n"
+        "2. Restart PC, lalu buka launcher lagi.\n\n"
+        f"Kalau pesan ini masih muncul, kemungkinan kartu grafis PC ini belum mendukung Vulkan {need}, sehingga "
+        "game tidak bisa berjalan.\n\n"
+        "Tetap coba jalankan game?")
 
 
 def describe_vulkan(probe):
@@ -1387,11 +1399,12 @@ class Launcher(tk.Tk):
             self._deiconify()
             messagebox.showerror("Cannot start", f"Runtime not found: {exe}")
             return
-        problem = vulkan_problem(VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS))
+        gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
+        problem = vulkan_problem(VULKAN, gpu_id)
         if problem:
             self._deiconify()
-            if not messagebox.askyesno("Vulkan Belum Siap", vulkan_warning(problem), icon="warning",
-                                       default="no", parent=self):
+            title, message = vulkan_warning(problem, VULKAN, gpu_id)
+            if not messagebox.askyesno(title, message, icon="warning", default="no", parent=self):
                 return
         avail_mb = check_commit_limit_mb()
         if avail_mb is not None and avail_mb < 2560:
