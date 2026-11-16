@@ -237,9 +237,10 @@ class RunLogAndPlayTests(unittest.TestCase):
     def test_a_report_folder_that_cannot_be_written_does_not_stop_the_game(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
                 mock.patch.object(bl.basara4_report, "write_atomic", side_effect=PermissionError(13, "Access is denied")):
-            self.assertIn("Session report not written (Access is denied)", app._start_session_report(game))
+            self.assertIn("Session report not written (PermissionError: Access is denied)",
+                          app._start_session_report(game))
             app._finish_session_report(1)
-            self.assertIn("Session report not saved (Access is denied)", app.stop_note)
+            self.assertIn("Session report not saved (PermissionError: Access is denied)", app.stop_note)
 
     def test_unfinished_sessions_are_marked_when_the_launcher_opens(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,9 +266,19 @@ class RunLogAndPlayTests(unittest.TestCase):
             startfile.assert_called_once_with(paths.user / "reports")
             self.assertIn(target.name, showinfo.call_args.args[1])
             with zipfile.ZipFile(target) as zf:
-                self.assertEqual(sorted(zf.namelist()), ["captures/frame.png", "crash/core-1.dmp", "last_run.log",
+                # The crash dump holds the process environment and is never zipped: named, sized, kept on the PC.
+                self.assertEqual(sorted(zf.namelist()), ["captures/frame.png", "last_run.log",
                                                          "report.json", "report.txt"])
-                self.assertEqual(json.loads(zf.read("report.json"))["end"]["exit_hex"], "0xC0000005")
+                report = json.loads(zf.read("report.json"))
+                self.assertEqual(report["end"]["exit_hex"], "0xC0000005")
+                self.assertEqual(report["crash_dump_kept_on_pc"], {"file": "core-1.dmp", "bytes": 4,
+                                                                   "folder": "user\\crash"})
+                self.assertIn("crash/core-1.dmp (4 bytes): disimpan di PC", zf.read("report.txt").decode("utf-8"))
+            self.assertTrue((paths.user / "crash" / "core-1.dmp").is_file())  # the dump itself stays
+            text = showinfo.call_args.args[1]
+            self.assertIn("File crash dump (.dmp) tidak ikut", text)
+            self.assertIn("pesan pribadi (DM)", text)
+            self.assertNotIn("tidak perlu dijelaskan lagi", text)
 
     def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
@@ -287,6 +298,115 @@ class RunLogAndPlayTests(unittest.TestCase):
             send.assert_called_once()
             next(b for b in buttons if "Clipboard" in str(b.cget("text"))).invoke()
         self.assertNotIn("qa_leak_7f3a", append.call_args.args[0].lower())
+
+    def test_crash_dialog_names_a_stub_called_just_before_the_crash(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            paths.log.write_text("GPU [Lib.SaveData] <Error> savedata.cpp:12 sceSaveDataMount5: (STUBBED) called\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            texts = [str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label)]
+            self.assertTrue(any("sceSaveDataMount5" in text and "tidak biasa" in text for text in texts))
+
+    # ---- the report never stops PLAY or the poll loop, and keeps nothing private ----
+    def test_a_failing_collector_does_not_stop_play(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl, "system_info", side_effect=RuntimeError("WMI is broken")), \
+                mock.patch.object(bl, "content_info", side_effect=AttributeError("'list' object has no attribute 'get'")):
+            app.pending = (None, game, bl.CORE, [], "", "dlc")
+            with mock.patch.object(bl.subprocess, "Popen") as popen:
+                app._wait_prepare()
+            popen.call_args.kwargs["stdout"].close()
+            popen.assert_called_once()  # the game started
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["system"], {"unknown": "RuntimeError: WMI is broken"})
+            self.assertEqual(report["content"], {"unknown": "AttributeError: 'list' object has no attribute 'get'"})
+            self.assertEqual(report["collect_errors"], ["system: RuntimeError: WMI is broken",
+                                                        "content: AttributeError: 'list' object has no attribute 'get'"])
+
+    def test_a_report_that_cannot_be_built_still_starts_the_game(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.basara4_report, "new_report", side_effect=TypeError("broken")):
+            self.assertEqual(app._start_session_report(game), "Session report not written (TypeError: broken).  ")
+
+    def test_a_failing_finish_keeps_the_poll_loop_running(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.basara4_report, "analyze_log", side_effect=RuntimeError("bad log")), \
+                mock.patch.object(bl.Launcher, "_show_crash_dialog"), \
+                mock.patch.object(bl.Launcher, "after") as after:
+            app._start_session_report(game)
+            paths.log.write_text("Runtime: started\n", encoding="utf-8")
+            app.proc = mock.Mock()
+            app.proc.poll.return_value = 5
+            app.proc.returncode = 5
+            app._poll()
+            after.assert_called_with(500, app._poll)  # the loop goes on
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "finished")
+            self.assertEqual(report["end"]["exit_code"], 5)
+            self.assertEqual(report["log"], {"unknown": "report not completed: RuntimeError: bad log"})
+            self.assertIn("finish: RuntimeError: bad log", report["collect_errors"])
+            # Called directly (without _poll, which shows and clears the note), the reason is in the status note.
+            app._start_session_report(game)
+            app._finish_session_report(5)
+            self.assertIn("Session report incomplete (RuntimeError: bad log)", app.stop_note)
+
+    def test_crash_copy_in_user_crash_is_masked(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(bl.os.environ, {"USERNAME": "QA_LEAK_7f3a", "COMPUTERNAME": "PC-QA_LEAK_7f3a"}):
+            app._start_session_report(game)
+            paths.log.write_text("Settings: C:\\Users\\QA_LEAK_7f3a\\b4\\user\\basara4.ini on PC-QA_LEAK_7f3a\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            crash_copy, = (paths.user / "crash").glob("report-*.txt")
+            text = crash_copy.read_text(encoding="utf-8")
+            self.assertNotIn("qa_leak_7f3a", text.lower())
+            self.assertIn("<pc>", text)
+
+    def test_a_game_folder_name_never_reaches_the_report(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, _game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"):
+            game = Path(tmp) / "GAMES QAFOLDER 7f3a" / "Basara4"  # no param.sfo: the error names the folder
+            game.mkdir(parents=True)
+            app.cfg["game"] = str(game).upper()  # saved in another case than the error message writes it
+            app._start_session_report(game)
+            paths.log.write_text(f"io_file.cpp:202 Open: path={str(game).lower()}\\\\x\n", encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            zip_path = app.send_report()
+            texts = [p.read_text(encoding="utf-8") for p in (paths.user / "reports").glob("session-*")]
+            texts += [p.read_text(encoding="utf-8") for p in (paths.user / "crash").glob("report-*.txt")]
+            with zipfile.ZipFile(zip_path) as zf:
+                texts += [zf.read(name).decode("utf-8") for name in zf.namelist()]
+            self.assertEqual(len(texts), 6)  # session .json/.txt, crash copy, zip report.json/.txt/last_run.log
+            for text in texts:
+                self.assertNotIn("qafolder", text.lower())
+
+    def test_a_dump_from_an_earlier_session_is_not_named(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"):
+            (paths.user / "crash").mkdir(parents=True)
+            old = paths.user / "crash" / "core-old.dmp"
+            old.write_bytes(b"MDMP")
+            bl.os.utime(old, (1_000_000_000, 1_000_000_000))  # written long before this session
+            app._start_session_report(game)
+            paths.log.write_text("Fault: read access to 0000000000000000 at guest offset 0x10 (thread 1)\n",
+                                 encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            with zipfile.ZipFile(app.send_report()) as zf:
+                report = json.loads(zf.read("report.json"))
+                self.assertNotIn("crash_dump_kept_on_pc", report)
+                self.assertNotIn("core-old", zf.read("report.txt").decode("utf-8"))
+
+    def test_send_report_without_a_session_still_describes_the_pc(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"):
+            with zipfile.ZipFile(app.send_report()) as zf:
+                report = json.loads(zf.read("report.json"))
+            self.assertEqual(report["status"], "no-session")
+            self.assertIn("os", report["system"])
+            self.assertIn("check", report["vulkan"])
 
 
 class IconTests(unittest.TestCase):

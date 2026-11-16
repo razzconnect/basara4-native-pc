@@ -276,6 +276,121 @@ class PrivacyTests(unittest.TestCase):
         masker = rp.Masker(None, None, None, "ab", None)
         self.assertEqual(masker("tab ab cab"), "tab ab cab")
 
+    def test_paths_in_every_written_form_and_case(self):
+        game = r"D:\GAMES QAFOLDER 7f3a\Basara4"
+        masker = rp.Masker(None, game, None, None, None)
+        forms = [
+            r"[Errno 2] No such file or directory: 'D:\\GAMES QAFOLDER 7f3a\\Basara4\\sce_sys\\param.sfo'",  # str(exc)
+            json.dumps({"path": game + r"\sce_sys"}),  # escaped again in JSON
+            "d:/games qafolder 7F3A/basara4/eboot.bin",  # forward slashes, other case
+            r"D:\\\\GAMES QAFOLDER 7f3a\\\\Basara4",  # escaped twice
+            r"D:\GAMES QAFOLDER 7f3a\Basara4\\",  # trailing separators
+        ]
+        for text in forms:
+            masked = masker(text)
+            self.assertNotIn("qafolder", masked.lower(), text)
+            self.assertIn("<game>", masked, text)
+
+    def test_unknown_reasons_never_reach_the_signature(self):
+        def finished(folder):
+            report = started_report()
+            report["game"]["app_ver"] = rp.unknown(f"param.sfo not readable: [Errno 2] '{folder}\\sce_sys\\param.sfo'")
+            return rp.finish_report(report, 0xC0000005, False, False, BUG_002_LINES, [], "NVIDIA")
+        one, two = finished(r"D:\GAMES QAFOLDER 7f3a"), finished(r"E:\Other\Place")
+        self.assertEqual(one["signature"], two["signature"])
+        self.assertIn("build=unknown/1a2b3c4d/1.0.9-beta", one["signature"])
+        self.assertNotIn("QAFOLDER", one["signature"])
+        stop = rp.signature(1, rp.analyze_log([r"STOP: cannot read D:\GAMES QAFOLDER 7f3a\eboot.bin or /app0/x/y.arc"]),
+                            "b", "AMD")
+        self.assertNotIn("QAFOLDER", stop)
+        self.assertNotIn("/app0", stop)
+        self.assertIn("STOP: cannot read <path> | build=b", stop)
+        guest = rp.signature(1, rp.analyze_log(["STOP: missing /app0/nativePS4/x.arc"]), "b", "AMD")
+        self.assertIn("STOP: missing <path> |", guest)
+
+    def test_reason_names_the_file_not_the_folder(self):
+        err = FileNotFoundError(2, "No such file or directory", r"D:\GAMES QAFOLDER 7f3a\sce_sys\param.sfo")
+        self.assertEqual(rp.reason(err), "FileNotFoundError: No such file or directory (param.sfo)")
+        self.assertEqual(rp.reason(ValueError("bad")), "ValueError: bad")
+
+
+class StubTests(unittest.TestCase):
+    STUB = "GPU [Lib.AvPlayer] <Error> avplayer.cpp:55 sceAvPlayerDisableStream: (STUBBED) called"
+    NEW = "GPU [Lib.SaveData] <Error> savedata.cpp:12 sceSaveDataMount5: (STUBBED) called"
+
+    def test_names_and_counts_are_kept(self):
+        a = rp.analyze_log([self.STUB] * 3 + [self.NEW])
+        self.assertEqual(a["stubs"], {"sceAvPlayerDisableStream": 3, "sceSaveDataMount5": 1})
+        self.assertEqual(a["stub_calls"], 4)
+        self.assertEqual(a["near_primary_stubs"], [])  # no crash: nothing is unusual
+        self.assertIn("sceSaveDataMount5 x1", rp.render_text(rp.finish_report({}, 0, False, False,
+                                                                              [self.STUB, self.NEW], [], "x")))
+
+    def test_a_stub_just_before_a_crash_is_shown(self):
+        lines = [self.STUB] + ["Runtime: line"] * 40 + [self.NEW, "Runtime: line"] + BUG_002_LINES
+        a = rp.analyze_log(lines)
+        self.assertEqual(a["near_primary_stubs"], ["sceSaveDataMount5"])  # the far one is only counted
+        s = summary(lines)
+        self.assertEqual(s["near_primary_stubs"], ["sceSaveDataMount5"])
+        self.assertTrue(s["detected_errors"][0].startswith("Fault: write"))  # still not called fatal
+        self.assertNotIn(self.NEW, s["detected_errors"])
+        text = rp.render_text(rp.finish_report({}, 0xC0000005, False, False, lines, [], "x"))
+        self.assertIn("dipanggil tepat sebelum berhenti (tidak biasa)", text)
+        self.assertIn("  * sceSaveDataMount5", text)
+
+    def test_healthy_sessions_still_show_nothing(self):
+        corpus = HealthySessionTests().corpus()
+        self.assertEqual(rp.analyze_log(corpus)["near_primary_stubs"], [])
+        self.assertEqual(summary(corpus)["detected_errors"][0][:9], "Tidak ada")
+
+
+class OrderAndLimitTests(unittest.TestCase):
+    def test_newest_fault_or_stop_first(self):
+        lines = ["STOP: first unsupported PS4 import: sceFoo (index 1)", "Runtime: line",
+                 "Fault: read access to 0000000000000000 at guest offset 0x10 (thread 1)"]
+        self.assertTrue(rp.analyze_log(lines)["primary"][0].startswith("Fault:"))
+        self.assertTrue(summary(lines)["detected_errors"][0].startswith("Fault:"))
+        self.assertTrue(summary(lines)["detected_errors"][1].startswith("STOP:"))
+
+    def test_non_null_addresses_do_not_change_the_signature(self):
+        def sig(address):
+            return rp.signature(0xC0000005, rp.analyze_log(
+                [f"Fault: read access to {address} at guest offset 0xaebfb7 (thread 1)"]), "b", "AMD")
+        self.assertEqual(sig("00007ff600001234"), sig("0000000000002000"))
+        self.assertIn("read:addr", sig("00007ff600001234"))
+        self.assertNotEqual(sig("0000000000000000"), sig("0000000000002000"))  # null is its own class
+
+    def test_files_over_the_limit_are_left_out_and_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            big, small = Path(tmp) / "big.png", Path(tmp) / "small.png"
+            big.write_bytes(b"x" * 20)
+            small.write_bytes(b"x" * 5)
+            target = Path(tmp) / "r.zip"
+            skipped = rp.make_zip(target, {"schema": 1}, "text\n", rp.Masker(), binaries=[
+                ("captures/big.png", big), ("captures/small.png", small)],
+                withheld=["crash/core.dmp (9 bytes): kept"], max_file_bytes=10)
+            self.assertEqual(skipped, ["crash/core.dmp (9 bytes): kept",
+                                       "captures/big.png: 20 bytes, over the 10 byte limit"])
+            with zipfile.ZipFile(target) as zf:
+                self.assertEqual(sorted(zf.namelist()), ["captures/small.png", "report.json", "report.txt"])
+                note = zf.read("report.txt").decode("utf-8")
+            self.assertIn("over the 10 byte limit", note)
+            self.assertIn("crash/core.dmp (9 bytes): kept", note)
+
+    def test_a_write_that_fails_half_way_leaves_the_old_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "session.json"
+            target.write_text('{"old": 1}', encoding="utf-8")
+            real = Path.write_text
+
+            def half(self, text, *args, **kwargs):
+                real(self, text[:3], *args, **kwargs)  # part of the file reaches the disk, then the write fails
+                raise OSError(28, "No space left on device")
+            with mock.patch.object(Path, "write_text", half):
+                with self.assertRaises(OSError):
+                    rp.write_atomic(target, '{"new": 2}')
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"old": 1}')
+
 
 if __name__ == "__main__":
     unittest.main()

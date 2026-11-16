@@ -173,7 +173,7 @@ def explain_hardware_crash(exit_code, detected_errors, tail_context):
 def extract_crash_summary(log_path, max_context_lines=10, max_signatures=4):
     """The fatal signatures of a log, newest first with Fault/STOP/ASSERT always on top, the unusual
     not-found misses, and the last lines (File trace lines left out so they do not crowd them)."""
-    empty = {"unusual_not_found": [], "near_primary_not_found": [], "hidden_not_found": 0}
+    empty = {"unusual_not_found": [], "near_primary_not_found": [], "near_primary_stubs": [], "hidden_not_found": 0}
     if not log_path.is_file():
         return dict(empty, detected_errors=["File log tidak ditemukan (game belum sempat menulis log)."],
                     tail_context="")
@@ -203,6 +203,7 @@ def extract_crash_summary(log_path, max_context_lines=10, max_signatures=4):
         "unusual_not_found": analysis["unusual_not_found"],
         "near_primary_not_found": analysis["near_primary_not_found"],
         "hidden_not_found": analysis["hidden_not_found"],
+        "near_primary_stubs": analysis["near_primary_stubs"],
     }
 
 
@@ -437,12 +438,12 @@ def game_info(game):
         info["title_id"] = values.get("TITLE_ID") or {"unknown": "param.sfo has no TITLE_ID"}
         info["app_ver"] = values.get("APP_VER") or {"unknown": "param.sfo has no APP_VER"}
     except Exception as exc:  # a missing or damaged param.sfo is reported, not fatal: the game may still start
-        info["title_id"] = info["app_ver"] = {"unknown": f"param.sfo not readable: {exc}"}
+        info["title_id"] = info["app_ver"] = {"unknown": f"param.sfo not readable: {basara4_report.reason(exc)}"}
     try:
         stamp = json.loads(STAMP.read_text(encoding="utf-8-sig"))
         info["eboot_sha8"] = (stamp.get("eboot_sha256") or "")[:8] or {"unknown": "prepared.json has no hash"}
     except (OSError, ValueError) as exc:
-        info["eboot_sha8"] = {"unknown": f"prepared.json not readable: {exc}"}
+        info["eboot_sha8"] = {"unknown": f"prepared.json not readable: {basara4_report.reason(exc)}"}
     info["folder"] = str(game)
     return info
 
@@ -479,7 +480,7 @@ def content_info(cfg):
         profile = json.loads((OUT / "content-profile.json").read_text(encoding="utf-8"))
         dlc = [addon.get("label") for addon in profile.get("mounted_addons", [])]
     except (OSError, ValueError) as exc:
-        dlc = {"unknown": f"content-profile.json not readable: {exc}"}
+        dlc = {"unknown": f"content-profile.json not readable: {basara4_report.reason(exc)}"}
     return {"dlc": dlc, "cheats": list(cfg.get("cheats", [])), "dlc_dir": cfg.get("dlc_dir")}
 
 
@@ -1942,60 +1943,89 @@ class Launcher(tk.Tk):
         basara4_report.write_atomic(self.session_report_path.with_suffix(".txt"),
                                     masker(basara4_report.render_text(report, getattr(self, "session_tail", None))))
 
+    @staticmethod
+    def _collected(what, collect, errors):
+        """One part of the report. A part that fails becomes {"unknown": reason} and its reason is listed
+        in the report's collect_errors: the report never stops the game or the launcher."""
+        try:
+            return collect()
+        except Exception as exc:  # any failure: written down with its reason, never hidden, never fatal
+            errors.append(f"{what}: {basara4_report.reason(exc)}")
+            return basara4_report.unknown(basara4_report.reason(exc))
+
     def _start_session_report(self, game):
         """Write this session's report just before the game starts, so it exists even when the game
-        never writes a log line. Returns a status notice when it could not be written."""
+        never writes a log line. Returns a status notice when it could not be written; never raises."""
         now = datetime.datetime.now()
         self.session_started_at = now.timestamp()
         self.session_tail = None
-        gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
-        settings = {key: value for key, value in self.cfg.items() if key != "keymap"}
-        settings["keymap_custom"] = bool(self.cfg.get("keymap"))
-        settings["render_size"] = "%dx%d" % basara4_patches.RESOLUTION_SIZES.get(self.cfg.get("resolution"), NATIVE_SIZE)
-        settings["ini"] = read_ini(self._ini())  # {} when the file does not exist yet
-        self.session_report = basara4_report.new_report(
-            now.isoformat(timespec="seconds"), {"version": VERSION, "core_sha8": file_sha8(CORE), "frozen": FROZEN},
-            game_info(game), system_info(), vulkan_info(VULKAN, gpu_id), settings, content_info(self.cfg))
-        name, n = f"session-{now:%Y%m%d-%H%M%S}", 1
-        while (REPORTS / f"{name}.json").exists():
-            n += 1
-            name = f"session-{now:%Y%m%d-%H%M%S}-{n}"
-        self.session_report_path = REPORTS / f"{name}.json"
+        errors = []
         try:
+            gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
+
+            def settings():
+                values = {key: value for key, value in self.cfg.items() if key != "keymap"}
+                values["keymap_custom"] = bool(self.cfg.get("keymap"))
+                values["render_size"] = "%dx%d" % basara4_patches.RESOLUTION_SIZES.get(
+                    self.cfg.get("resolution"), NATIVE_SIZE)
+                values["ini"] = read_ini(self._ini())  # {} when the file does not exist yet
+                return values
+            part = self._collected
+            self.session_report = basara4_report.new_report(
+                now.isoformat(timespec="seconds"),
+                part("launcher", lambda: {"version": VERSION, "core_sha8": file_sha8(CORE), "frozen": FROZEN}, errors),
+                part("game", lambda: game_info(game), errors), part("system", system_info, errors),
+                part("vulkan", lambda: vulkan_info(VULKAN, gpu_id), errors), part("settings", settings, errors),
+                part("content", lambda: content_info(self.cfg), errors))
+            self.session_report["collect_errors"] = errors
+            name, n = f"session-{now:%Y%m%d-%H%M%S}", 1
+            while (REPORTS / f"{name}.json").exists():
+                n += 1
+                name = f"session-{now:%Y%m%d-%H%M%S}-{n}"
+            self.session_report_path = REPORTS / f"{name}.json"
             self._write_session_report()
             basara4_report.prune(REPORTS)
-        except OSError as exc:
-            return f"Session report not written ({exc.strerror or exc}).  "
+        except Exception as exc:  # the game starts anyway; the status line says why there is no report
+            return f"Session report not written ({basara4_report.reason(exc)}).  "
         return ""
 
     def _finish_session_report(self, code):
         """Complete the running session's report with how it ended and what the log says; on a crash,
-        also keep the report text in user\\crash."""
+        also keep the report text in user\\crash. Never raises: _poll must keep running."""
         report, self.session_report = self.session_report, None
         if report is None or report.get("status") != "started":
             self.session_report = report
             return
-        try:
-            lines = LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            lines = None
         crashed = isinstance(code, int) and code != 0 and not self.user_stopped
-        hints = []
-        if crashed:
-            data = extract_crash_summary(LOG)
-            hints = explain_hardware_crash(code, data["detected_errors"], data["tail_context"])
-        vendor = report.get("vulkan", {}).get("gpu_vendor_for_game", "none")
-        self.session_report = basara4_report.finish_report(report, code, self.user_stopped, self.forced_stop,
-                                                          lines, hints, vendor)
-        self.session_tail = basara4_report.tail_without_trace(lines or [], 10)
+        try:
+            try:
+                lines = LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                lines = None  # finish_report writes the log as unknown, with the reason
+            hints = []
+            if crashed:
+                data = extract_crash_summary(LOG)
+                hints = explain_hardware_crash(code, data["detected_errors"], data["tail_context"])
+            vendor = (report.get("vulkan") or {}).get("gpu_vendor_for_game", "none")
+            self.session_report = basara4_report.finish_report(report, code, self.user_stopped, self.forced_stop,
+                                                              lines, hints, vendor)
+            self.session_tail = basara4_report.tail_without_trace(lines or [], 10)
+        except Exception as exc:  # keep how the session ended, say why the rest is missing
+            why = basara4_report.reason(exc)
+            self.session_report = dict(report, status="finished", log=basara4_report.unknown(f"report not completed: {why}"),
+                                       end={"exit_code": code, "stopped_by_user": bool(self.user_stopped),
+                                            "forced": bool(self.forced_stop), "crashed": crashed},
+                                       collect_errors=list(report.get("collect_errors") or []) + [f"finish: {why}"])
+            self.session_tail = None
+            self.stop_note = (self.stop_note + f" Session report incomplete ({why}).").strip()
         try:
             self._write_session_report()
             if crashed:
                 stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 basara4_report.write_atomic(CRASH_DIR / f"report-{stamp}.txt", self._masker()(
                     basara4_report.render_text(self.session_report, self.session_tail)))
-        except OSError as exc:
-            self.stop_note = (self.stop_note + f" Session report not saved ({exc.strerror or exc}).").strip()
+        except Exception as exc:  # disk full, access denied, ...: the launcher goes on
+            self.stop_note = (self.stop_note + f" Session report not saved ({basara4_report.reason(exc)}).").strip()
 
     def _newest_since(self, folder, pattern):
         """The newest file in folder matching pattern written during this session, or None."""
@@ -2007,26 +2037,43 @@ class Launcher(tk.Tk):
         return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
     def send_report(self, parent=None):
-        """"Kirim laporan": one zip with the session report, the masked logs, this session's crash dump
-        and newest capture; then open its folder so the user only attaches it. Returns the zip path."""
+        """"Kirim laporan": one zip with the session report, the masked logs and this session's newest
+        capture; then open its folder so the user only attaches it. Returns the zip path.
+        A crash dump never goes in the zip: a minidump holds the process environment (account and
+        computer names, every user variable, tokens included), which cannot be masked. It stays in
+        user\\crash; the report names it and its size so the team can ask for it privately."""
         report = self.session_report or basara4_report.unknown("no game session in this launcher run")
         if not isinstance(report, dict) or "schema" not in report:
+            errors = []
             report = {"schema": basara4_report.SCHEMA, "status": "no-session", "note": report,
-                      "launcher": {"version": VERSION}, "system": system_info(),
-                      "vulkan": vulkan_info(VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS))}
+                      "launcher": {"version": VERSION},
+                      "system": self._collected("system", system_info, errors),
+                      "vulkan": self._collected("vulkan", lambda: vulkan_info(
+                          VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)), errors),
+                      "collect_errors": errors}
+        report = dict(report)
         log = report.get("log") if isinstance(report.get("log"), dict) else {}
-        dump = Path(log["crash_dump"]) if log.get("crash_dump") else self._newest_since(CRASH_DIR, "*.dmp")
+        dump = Path(log["crash_dump"]) if log.get("crash_dump") else None
+        if dump is None or not dump.is_file():
+            dump = self._newest_since(CRASH_DIR, "*.dmp")
+        withheld = []
+        if dump:
+            try:
+                size = dump.stat().st_size
+            except OSError as exc:
+                size = basara4_report.unknown(basara4_report.reason(exc))
+            report["crash_dump_kept_on_pc"] = {"file": dump.name, "bytes": size, "folder": "user\\crash"}
+            withheld.append(f"crash/{dump.name} ({size} bytes): disimpan di PC, tidak ikut karena bisa berisi "
+                            "data pribadi; dikirim hanya bila tim meminta, lewat pesan pribadi")
         capture = self._newest_since(CAPTURES_DIR, "*")
-        binaries = [(f"crash/{dump.name}", dump)] if dump and dump.is_file() else []
-        if capture:
-            binaries.append((f"captures/{capture.name}", capture))
+        binaries = [(f"captures/{capture.name}", capture)] if capture else []
         logs = [(name, path) for name, path in (("last_run.log", LOG), ("audio_debug.log", AUDIO_LOG),
                                                 ("prepare.log", PREPARE_LOG)) if path.is_file()]
         target = REPORTS / f"laporan-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
         try:
             basara4_report.make_zip(target, report,
                                     basara4_report.render_text(report, getattr(self, "session_tail", None)),
-                                    self._masker(), logs=logs, binaries=binaries)
+                                    self._masker(), logs=logs, binaries=binaries, withheld=withheld)
         except OSError as exc:
             messagebox.showerror("Laporan tidak tersimpan",
                                  f"Laporan tidak bisa disimpan di folder user\\reports.\n\n{exc.strerror or exc}",
@@ -2041,7 +2088,10 @@ class Launcher(tk.Tk):
             "Laporan siap dikirim",
             f"Laporan tersimpan sebagai {target.name}.\n\n"
             "Folder-nya sudah dibuka. Lampirkan file itu ke Discord atau GitHub saat melapor.\n"
-            "Spek PC, setting, dan log sudah ada di dalamnya, jadi tidak perlu dijelaskan lagi." + opened,
+            "Isinya spek PC, setting, dan log. Nama akun dan folder kamu sudah disamarkan.\n\n"
+            "File crash dump (.dmp) tidak ikut, karena bisa berisi data pribadi. File itu tetap "
+            "disimpan di folder user\\crash. Kirim hanya kalau tim memintanya, lewat pesan pribadi (DM), "
+            "jangan di tempat umum." + opened,
             parent=parent or self)
         return target
 
@@ -2125,6 +2175,17 @@ class Launcher(tk.Tk):
                 bg=PANEL,
                 fg=FG,
                 font=("Consolas", 8),
+                wraplength=680,
+                justify="left"
+            ).pack(anchor="w", padx=6, pady=(4, 0))
+        if data["near_primary_stubs"]:
+            tk.Label(
+                header_frame,
+                text="Fungsi PS4 yang belum didukung, dipanggil tepat sebelum crash (tidak biasa):\n"
+                     + "\n".join(f"• {name}" for name in data["near_primary_stubs"][:6]),
+                bg=PANEL,
+                fg=GOLD,
+                font=("Consolas", 8, "bold"),
                 wraplength=680,
                 justify="left"
             ).pack(anchor="w", padx=6, pady=(4, 0))

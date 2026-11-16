@@ -38,6 +38,7 @@ FILE_TRACE = re.compile(r"^File trace: (.*) \((-?\d+) bytes\)$")
 # A stubbed PS4 call is logged at <Error> level every time the game makes it (sceAvPlayerDisableStream
 # in 40 of 48 healthy sessions). It is not what ends a session, so it is counted, not called fatal.
 STUB_CALL = re.compile(r"\(STUBBED\) called\s*$")
+STUB_NAME = re.compile(r"(\w+): \(STUBBED\) called\s*$")
 FAULT = re.compile(r"^Fault: (?:(read|write|execute) access to (?:0x)?([0-9a-fA-F]+)|exception 0x([0-9a-fA-F]+)) "
                    r"at (.*?) \(thread \d+\)")
 FRAME = re.compile(r"^\s+#(\d+) (.*)$")
@@ -82,6 +83,15 @@ def analyze_log(lines):
         else:
             hidden += 1
     unusual += [p for p in near_primary if not is_normal_not_found(p) and p not in unusual]
+    # Stubbed calls: every name is kept with its count; one made just before the fault is shown like a miss.
+    stubs, near_stubs = {}, []
+    for i, line in enumerate(lines):
+        if STUB_CALL.search(line):
+            m = STUB_NAME.search(line)
+            name = m.group(1) if m else line.strip()[:120]
+            stubs[name] = stubs.get(name, 0) + 1
+            if first is not None and first - NEAR_PRIMARY <= i < first and name not in near_stubs:
+                near_stubs.append(name)
     end = first if first is not None else len(lines)
     traced = [(m.group(1), int(m.group(2))) for line in lines[:end] for m in [FILE_TRACE.match(line)] if m]
     fault = None
@@ -109,7 +119,9 @@ def analyze_log(lines):
         "hidden_not_found": hidden,
         "last_files": [{"path": p, "bytes": b} for p, b in traced[-LAST_FILES:]],
         "files_traced": len(traced),
-        "stub_calls": sum(1 for line in lines if STUB_CALL.search(line)),
+        "stub_calls": sum(stubs.values()),
+        "stubs": stubs,
+        "near_primary_stubs": near_stubs,
         "crash_dump": dump,
         "present_summary": any(line.startswith("Present summary:") for line in lines),
         "gpu_used": next((line[len("GPU: using "):].strip() for line in lines if line.startswith("GPU: using ")), None),
@@ -135,8 +147,18 @@ def signature(exit_code, analysis, build, gpu_vendor):
         return f"exit={code} | {fault['kind']}:{address_class(fault['address'])} | top={top} | next={nxt} | {tail}"
     primary = (analysis or {}).get("primary") or []
     if primary:
-        return f"exit={code} | {re.sub(r'0x[0-9a-fA-F]+|[0-9]+', '#', primary[0])[:120]} | {tail}"
+        # No machine's folders in a line meant to match across machines: the message is cut where the first
+        # path starts (a folder name may hold spaces, so where a path ends cannot be told).
+        text = primary[0]
+        m = PATH_START.search(text)
+        if m:
+            text = text[:m.start()] + "<path>"
+        return f"exit={code} | {re.sub(r'0x[0-9a-fA-F]+|[0-9]+', '#', text)[:120]} | {tail}"
     return f"exit={code} | no fault | {tail}"
+
+
+# Where a path starts in a message: a drive ("D:\", "d:/"), a UNC or doubled separator, or "/app0/"-style.
+PATH_START = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}|(?<![\w])/[\w.-]+/")
 
 
 class Masker:
@@ -150,7 +172,9 @@ class Masker:
                 if len(text) > 3:
                     pairs.append((text, token))
         pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
-        self.paths = [(re.compile("".join(r"[\\/]" if ch in "\\/" else re.escape(ch) for ch in text), re.I), token)
+        # A separator matches one or more slashes of either kind: "D:\\Games\\x" as Python writes it in an
+        # error message (str(exc)), "D:/Games/x", and "D:\\\\Games" as escaped again in JSON, any case.
+        self.paths = [(re.compile("".join(r"[\\/]+" if ch in "\\/" else re.escape(ch) for ch in text), re.I), token)
                       for text, token in pairs]
         # A bare account or computer name is only masked when long enough not to hit ordinary words.
         # Longest first: a computer name often contains the account name ("PC-<account>").
@@ -213,7 +237,17 @@ def finish_report(report, exit_code, stopped_by_user, forced, log_lines, hints, 
 
 
 def _plain(value):
-    return f"unknown({value['unknown']})" if isinstance(value, dict) and "unknown" in value else value
+    """A build part for the signature: an unreadable value is the fixed word "unknown", never its reason
+    (the reason may hold a path, and differs between machines)."""
+    return "unknown" if isinstance(value, dict) and "unknown" in value else value
+
+
+def reason(exc):
+    """Why something could not be read, without the full path: the error and the file name only."""
+    if isinstance(exc, OSError):
+        name = Path(exc.filename).name if getattr(exc, "filename", None) else ""
+        return f"{type(exc).__name__}: {exc.strerror or exc}" + (f" ({name})" if name else "")
+    return f"{type(exc).__name__}: {exc}"
 
 
 def summary_line(report):
@@ -264,6 +298,11 @@ def render_text(report, tail_lines=None):
             out.append("  frames: " + ", ".join(log["fault"]["frames"]))
         out.append("--- File tidak ditemukan yang tidak biasa ---")
         out += [f"  * {p}" for p in log["unusual_not_found"]] or ["  (tidak ada)"]
+        if log.get("near_primary_stubs"):
+            out.append(f"--- Fungsi PS4 yang belum didukung (STUBBED), dipanggil tepat sebelum berhenti (tidak biasa) ---")
+            out += [f"  * {name}" for name in log["near_primary_stubs"]]
+        if log.get("stubs"):
+            out.append("  stub dipanggil: " + ", ".join(f"{name} x{count}" for name, count in log["stubs"].items()))
         if log["near_primary_not_found"]:
             out.append(f"--- File tidak ditemukan tepat sebelum berhenti ({NEAR_PRIMARY} baris terakhir; bisa wajar) ---")
             out += [f"  * {p}" for p in log["near_primary_not_found"]]
@@ -290,12 +329,13 @@ def tail_without_trace(lines, count=10):
     return [line for line in lines if not line.startswith("File trace: ")][-count:]
 
 
-def make_zip(target, report, report_text, masker, logs=(), binaries=(), max_file_bytes=64 << 20):
-    """One zip to send: report.json/.txt, masked text logs, and binary files (dump, capture) as they
-    are. Missing files are skipped; files over max_file_bytes are left out and listed."""
+def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld=(), max_file_bytes=64 << 20):
+    """One zip to send: report.json/.txt, masked text logs, and binary files (a capture) as they are.
+    Missing files are skipped; files over max_file_bytes are left out; both are listed, and so are the
+    `withheld` notes (files kept on the PC on purpose, such as a crash dump, named but not included)."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    skipped = []
+    skipped = list(withheld)
     tmp = target.with_name(target.name + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, path in logs:
