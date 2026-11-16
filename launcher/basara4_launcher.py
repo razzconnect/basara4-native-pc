@@ -544,16 +544,15 @@ DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless
                  ("Exclusive fullscreen", "fullscreen")]
 FPS_LIMITS = [("60 (game default)", 60), ("90", 90), ("120", 120), ("144", 144), ("165", 165),
               ("240", 240), ("Unlimited", 0)]
+NATIVE_SIZE = (1920, 1080)
+# The size shown is the render size (basara4_patches.RESOLUTION_SIZES), so the label always matches it.
 RESOLUTIONS = [
-    ("640 x 360  (360p - Ultra Kentang)", "360p"),
-    ("854 x 480  (480p - Super Kentang)", "480p"),
-    ("960 x 540  (540p - Spek Kentang)", "540p"),
-    ("1280 x 720  (720p HD)", "720p"),
-    ("1600 x 900  (900p HD+)", "900p"),
-    ("1920 x 1080  (1080p Native)", "native"),
-    ("2560 x 1440  (1440p 2K)", "1440p"),
-    ("3200 x 1800  (1800p QHD+)", "1800p"),
-    ("3840 x 2160  (4K UHD)", "4K"),
+    (f"{w} x {h}  ({desc})", key)
+    for key, desc in (("360p", "360p - Ultra Kentang"), ("480p", "480p - Super Kentang"),
+                      ("540p", "540p - Spek Kentang"), ("720p", "720p HD"), ("900p", "900p HD+"),
+                      ("native", "1080p Native"), ("1440p", "1440p 2K"), ("1800p", "1800p QHD+"),
+                      ("4K", "4K UHD"))
+    for w, h in [basara4_patches.RESOLUTION_SIZES.get(key, NATIVE_SIZE)]
 ]
 UPSCALERS = [("Off  (plain scaling)", "off"), ("FSR 1  (sharper)", "fsr1")]
 ANISO = [("Off", 0), ("2x", 2), ("4x", 4), ("8x", 8), ("16x", 16)]
@@ -1251,15 +1250,9 @@ class Launcher(tk.Tk):
 
         # Internal 3D render resolution scaling for potato PCs (sub-1080p only)
         res = self.cfg.get("resolution", "native")
-        sub_1080p_map = {
-            "360p": "640x360",
-            "480p": "854x480",
-            "540p": "960x540",
-            "720p": "1280x720",
-            "900p": "1600x900",
-        }
-        if res in sub_1080p_map:
-            env["SPARTAN_RENDER_RES"] = sub_1080p_map[res]
+        w, h = basara4_patches.RESOLUTION_SIZES.get(res, NATIVE_SIZE)
+        if w < NATIVE_SIZE[0] and h < NATIVE_SIZE[1]:  # the same render size the eboot patch sets
+            env["SPARTAN_RENDER_RES"] = f"{w}x{h}"
         else:
             env.pop("SPARTAN_RENDER_RES", None)
 

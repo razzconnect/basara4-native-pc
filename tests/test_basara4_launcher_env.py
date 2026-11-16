@@ -9,7 +9,8 @@ from unittest import mock
 
 from launcher_fixtures import bl, launcher_folders, launcher_like
 
-SUB_1080P = {"360p": "640x360", "480p": "854x480", "540p": "960x540", "720p": "1280x720", "900p": "1600x900"}
+# Render sizes are whole 20x20 motion blur tiles: 480p renders at 860x480 (854 blurred the right edge).
+SUB_1080P = {"360p": "640x360", "480p": "860x480", "540p": "960x540", "720p": "1280x720", "900p": "1600x900"}
 
 
 def env_of(cfg=None, commit_mb=None, gpus=None, environ=None, **attributes):
@@ -32,6 +33,15 @@ class UpscaleTests(unittest.TestCase):
                     self.assertEqual(env["SPARTAN_RENDER_RES"], SUB_1080P[name], name)
                 else:
                     self.assertNotIn("SPARTAN_RENDER_RES", env, name)
+
+    def test_resolution_labels_show_the_render_size(self):
+        # The launcher shows the size the game renders at, the one the eboot patch writes.
+        sizes = {**SUB_1080P, "native": "1920x1080", "1440p": "2560x1440", "1800p": "3200x1800",
+                 "4K": "3840x2160"}
+        self.assertEqual(sorted(v for _n, v in bl.RESOLUTIONS), sorted(sizes))
+        for label, name in bl.RESOLUTIONS:
+            self.assertTrue(label.startswith(sizes[name].replace("x", " x ") + "  ("), (label, name))
+        self.assertIn(("860 x 480  (480p - Super Kentang)", "480p"), bl.RESOLUTIONS)
 
     def test_the_game_runs_without_the_temporal_upscalers(self):
         # FSR 1 and RCAS reach the runtime through basara4.ini (fsr1=, rcas=); the environment

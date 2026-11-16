@@ -46,12 +46,30 @@ inline std::vector<std::string> ResolutionNames() {
     }
     return names;
 }
-/// The size in pixels of a resolution name: the built-in ones (as scripts/graphics_options.py SIZES)
-/// or a mod's "<width>x<height>"; anything else is native.
+/// The game's motion blur splits the render target into 20x20 pixel tiles and rounds the tile count up;
+/// a side that is not whole tiles reads motion past the image edge and blurs a band along it (854x480:
+/// every column from 820). Built-in render sizes are whole tiles: the target size rounded up per side,
+/// the same rule as launcher/basara4_patches.py render_size(), which sets the size the eboot renders at.
+inline constexpr int RenderTile = 20;
+constexpr std::pair<int, int> RenderSize(int width, int height) {
+    return {(width + RenderTile - 1) / RenderTile * RenderTile,
+            (height + RenderTile - 1) / RenderTile * RenderTile};
+}
+/// The size in pixels of a resolution name: the built-in ones (target sizes as scripts/graphics_options.py
+/// SIZES, rounded to whole tiles) or a mod's "<width>x<height>", which the mod's own patch renders at;
+/// anything else is native.
 inline constexpr std::array<std::pair<std::string_view, std::pair<int, int>>, 10> ResolutionSizes = {{
-    {"native", {1920, 1080}}, {"480p", {854, 480}}, {"720p", {1280, 720}},
-    {"900p", {1600, 900}}, {"1440p", {2560, 1440}}, {"1800p", {3200, 1800}}, {"4K", {3840, 2160}},
-    {"8K", {7680, 4320}}, {"540p", {960, 540}}, {"360p", {640, 360}}}};
+    {"native", RenderSize(1920, 1080)}, {"480p", RenderSize(854, 480)}, {"720p", RenderSize(1280, 720)},
+    {"900p", RenderSize(1600, 900)}, {"1440p", RenderSize(2560, 1440)}, {"1800p", RenderSize(3200, 1800)},
+    {"4K", RenderSize(3840, 2160)}, {"8K", RenderSize(7680, 4320)}, {"540p", RenderSize(960, 540)},
+    {"360p", RenderSize(640, 360)}}};
+constexpr bool WholeTiles() {
+    for (const auto& [name, size] : ResolutionSizes) {
+        if (size.first % RenderTile || size.second % RenderTile) return false;
+    }
+    return true;
+}
+static_assert(WholeTiles(), "every built-in render size is whole motion blur tiles");
 inline std::pair<int, int> ResolutionSize(std::string_view name) {
     for (const auto& [key, size] : ResolutionSizes) {
         if (key == name) return size;

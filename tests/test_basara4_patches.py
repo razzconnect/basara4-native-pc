@@ -4,6 +4,8 @@ The image is synthetic: each code pattern the patcher looks for is placed at a k
 int3 padding (wildcard bytes "??" filled with nops). No eboot or other game file is read.
 """
 import math
+import random
+import re
 import struct
 import sys
 import tempfile
@@ -399,6 +401,62 @@ class E2DNodePositionTests(unittest.TestCase):
             elf.write_bytes(synthetic_elf(image_with_e2d(three=2.5)))
             with self.assertRaises(ValueError):
                 bp.build(elf, out, False, resolution="720p")
+
+
+# The game's motion blur tile: uMotionBlurFilter sizes its tile grid (W + 19) / 20 x (H + 19) / 20.
+# Kept here as a literal so the test does not follow a wrong tile size in the patcher.
+MOTION_BLUR_TILE = 20
+
+
+class RenderSizeTests(unittest.TestCase):
+    """Every render size is whole motion blur tiles, at every preset and for any target size."""
+
+    def test_every_preset_renders_at_whole_tiles(self):
+        self.assertEqual(tuple(bp.RESOLUTION_TARGETS), PRESETS)
+        self.assertEqual(tuple(bp.RESOLUTION_SIZES), PRESETS)
+        for name in PRESETS:
+            (tw, th), (w, h) = bp.RESOLUTION_TARGETS[name], bp.RESOLUTION_SIZES[name]
+            with self.subTest(name=name):
+                self.assertEqual((w % MOTION_BLUR_TILE, h % MOTION_BLUR_TILE), (0, 0))
+                self.assertTrue(tw <= w < tw + MOTION_BLUR_TILE and th <= h < th + MOTION_BLUR_TILE)
+                # Within 1% of the target's aspect, so the movie picture still fills the screen.
+                self.assertLess(abs((w / h) / (tw / th) - 1), 0.01)
+
+    def test_only_480p_changes(self):
+        self.assertEqual(bp.RESOLUTION_SIZES, {
+            "360p": (640, 360), "480p": (860, 480), "540p": (960, 540), "720p": (1280, 720),
+            "900p": (1600, 900), "1440p": (2560, 1440), "1800p": (3200, 1800), "4K": (3840, 2160)})
+
+    def test_any_target_size_rounds_up_to_whole_tiles(self):
+        rng = random.Random(20261116)
+        sizes = [(1, 1), (19, 21), (20, 20), (854, 480), (1360, 768), (2048, 1536), (7680, 4320)]
+        sizes += [(rng.randint(1, 8192), rng.randint(1, 8192)) for _ in range(2000)]
+        for tw, th in sizes:
+            w, h = bp.render_size(tw, th)
+            self.assertEqual((w % MOTION_BLUR_TILE, h % MOTION_BLUR_TILE), (0, 0), (tw, th))
+            self.assertTrue(tw <= w < tw + MOTION_BLUR_TILE and th <= h < th + MOTION_BLUR_TILE, (tw, th))
+            if tw % MOTION_BLUR_TILE == 0 and th % MOTION_BLUR_TILE == 0:
+                self.assertEqual((w, h), (tw, th))
+
+    def test_480p_patch_writes_860_into_every_render_site(self):
+        image = synthetic_image()
+        writes = dict(bp.resolution_patches(image, "480p"))
+        self.assertEqual(writes[SITES["RENDER_PAT_1"] + 7], struct.pack("<I", 860))
+        self.assertEqual(writes[SITES["RENDER_PAT_1"] + 18], struct.pack("<I", 480))
+        self.assertEqual(writes[SITES["RENDER_PAT_2"] + 2], struct.pack("<II", 860, 480))
+        self.assertEqual(writes[SITES["RENDER_PAT_4"] + 6], struct.pack("<I", 860))
+
+    def test_the_runtime_uses_the_same_sizes(self):
+        # gpu/shim/spartanport_graphics.h sizes the window and the host scene from the same targets with
+        # the same rule; a drift between the two would render the guest and the host at different sizes.
+        header = (ROOT / "gpu/shim/spartanport_graphics.h").read_text(encoding="utf-8")
+        self.assertIn(f"RenderTile = {MOTION_BLUR_TILE};", header)
+        cpp = {name: (int(w), int(h)) for name, w, h in
+               re.findall(r'\{"(\w+)", RenderSize\((\d+), (\d+)\)\}', header)}
+        for name in PRESETS:
+            with self.subTest(name=name):
+                self.assertEqual(cpp[name], bp.RESOLUTION_TARGETS[name])
+        self.assertEqual(cpp["native"], (1920, 1080))
 
 
 if __name__ == "__main__":
