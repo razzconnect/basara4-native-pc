@@ -88,6 +88,12 @@ class HardwareHintTests(unittest.TestCase):
         self.assertIn("0xC0000409", hint_titles(-1073740791, [])[0])  # the signed form of 0xC0000409
         self.assertIn("0xC0000005", hint_titles(0xC0000005, [])[0])
         self.assertIn("0x17", hint_titles(0x17, [])[0])
+        self.assertEqual(hint_titles(0xC0000139, ["Log kosong (game berhenti sebelum inisialisasi)."]),
+                         ["🧩 Vulkan Tidak Ditemukan atau Terlalu Lama (Exit Code 0xC0000139):"])
+        self.assertEqual(hint_titles(-1073741511, []),  # the signed form of 0xC0000139
+                         ["🧩 Vulkan Tidak Ditemukan atau Terlalu Lama (Exit Code 0xC0000139):"])
+        self.assertEqual(hint_titles(0xC0000135, []), ["📁 File Game Tidak Lengkap (Exit Code 0xC0000135):"])
+        self.assertEqual(hint_titles(-1073741515, []), ["📁 File Game Tidak Lengkap (Exit Code 0xC0000135):"])
         self.assertEqual(hint_titles(1, []), [])
         self.assertEqual(hint_titles(None, []), [])
         # A recognised signature wins over the exit code.

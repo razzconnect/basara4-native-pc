@@ -9,6 +9,7 @@ Everything lives next to this program:
   out\\   the prepared game image, made automatically from eboot.bin
   user\\  saves, shader cache, settings, the log
 """
+import collections
 import datetime
 import hashlib
 import importlib.util
@@ -148,6 +149,20 @@ def explain_hardware_crash(exit_code, detected_errors, tail_context):
                 "⚠️ Kegagalan Inisialisasi / Assertion GPU (Exit Code 0x17):\n"
                 "Mesin grafis Vulkan menghentikan eksekusi karena batas resource GPU/VRAM atau fitur driver tidak terpenuhi.\n"
                 "👉 Solusi: Turunkan Resolution ke 540p/720p, matikan Upscaler, dan periksa driver Vulkan GPU Anda."
+            )
+        elif code_u32 == 0xC0000139:
+            hints.append(
+                "🧩 Vulkan Tidak Ditemukan atau Terlalu Lama (Exit Code 0xC0000139):\n"
+                "Windows gagal memuat game karena komponen Vulkan di PC tidak ada atau terlalu lama.\n"
+                "👉 Solusi: Perbarui driver kartu grafis (NVIDIA / AMD / Intel), lalu jalankan lagi. Kalau PC memakai "
+                "grafis lama yang tidak mendukung Vulkan, game belum bisa berjalan di PC ini."
+            )
+        elif code_u32 == 0xC0000135:
+            hints.append(
+                "📁 File Game Tidak Lengkap (Exit Code 0xC0000135):\n"
+                "Windows tidak menemukan salah satu file yang dibutuhkan game.\n"
+                "👉 Solusi: Ekstrak ZIP game sampai selesai ke folder baru, dan pastikan antivirus tidak mengarantina "
+                "file di dalamnya."
             )
 
     return hints
@@ -482,12 +497,40 @@ ACTION_DESCRIPTIONS = [
 ]
 
 
-def enumerate_gpus():
-    """Enumerate system Vulkan GPUs using vulkan-1.dll. Returns list of (index, display_name, is_discrete)."""
-    gpus = [(-1, "Auto (Prioritaskan GPU Diskrit)", True)]
+# The game needs Vulkan 1.3 from the loader (vk_platform.cpp) and from the GPU it renders on
+# (vk_instance.cpp; TargetVulkanApiVersion in vk_platform.h). Below that it stops before its first log
+# line, or Windows does not start it at all (0xC0000139: basara4-core.exe imports Vulkan 1.1 loader functions).
+VULKAN_REQUIRED = (1, 3)
+
+# What vulkan-1.dll reported: loaded (False: no vulkan-1.dll), loader ((major, minor), None when the
+# loader could not say), instance (a Vulkan instance could be made), devices [(name, deviceType,
+# (major, minor))] in the loader's order, error (why the probe stopped part-way, "" when it did not).
+VulkanProbe = collections.namedtuple("VulkanProbe", "loaded loader instance devices error")
+
+
+def vulkan_version(value):
+    """(major, minor) of a packed Vulkan API version."""
+    return ((value >> 22) & 0x7F, (value >> 12) & 0x3FF)
+
+
+def probe_vulkan(load=None):
+    """Ask vulkan-1.dll for its loader version and its GPUs (load: the DLL loader, for tests)."""
+    import ctypes
     try:
-        import ctypes
-        vulkan = ctypes.cdll.LoadLibrary("vulkan-1.dll")
+        vulkan = (load or ctypes.cdll.LoadLibrary)("vulkan-1.dll")
+    except OSError as exc:
+        return VulkanProbe(False, None, False, [], f"vulkan-1.dll: {exc}")
+    loader, instance, devices = None, False, []
+    try:
+        enumerate_version = getattr(vulkan, "vkEnumerateInstanceVersion", None)
+        if enumerate_version is None:
+            loader = (1, 0)  # a Vulkan 1.0 loader has no vkEnumerateInstanceVersion
+        else:
+            enumerate_version.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
+            enumerate_version.restype = ctypes.c_int32
+            version = ctypes.c_uint32(0)
+            if enumerate_version(ctypes.pointer(version)) == 0:
+                loader = vulkan_version(version.value)
         class VkApplicationInfo(ctypes.Structure):
             _fields_ = [
                 ("sType", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
@@ -520,26 +563,98 @@ def enumerate_gpus():
         vulkan.vkGetPhysicalDeviceProperties.argtypes = [ctypes.c_void_p, ctypes.POINTER(VkPhysicalDeviceProperties)]
 
         inst = ctypes.c_void_p()
-        if vulkan.vkCreateInstance(ctypes.byref(ci), None, ctypes.byref(inst)) == 0:
+        if vulkan.vkCreateInstance(ctypes.pointer(ci), None, ctypes.pointer(inst)) == 0:
+            instance = True
             count = ctypes.c_uint32(0)
-            vulkan.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None)
+            vulkan.vkEnumeratePhysicalDevices(inst, ctypes.pointer(count), None)
             if count.value > 0:
                 devs = (ctypes.c_void_p * count.value)()
-                vulkan.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), devs)
+                vulkan.vkEnumeratePhysicalDevices(inst, ctypes.pointer(count), devs)
                 for i in range(count.value):
                     p = VkPhysicalDeviceProperties()
-                    vulkan.vkGetPhysicalDeviceProperties(devs[i], ctypes.byref(p))
+                    vulkan.vkGetPhysicalDeviceProperties(devs[i], ctypes.pointer(p))
                     name = p.deviceName.decode("utf-8", errors="replace").strip("\x00")
-                    is_disc = (p.deviceType == 2)
-                    kind_tag = "dGPU" if is_disc else ("iGPU" if p.deviceType == 1 else "GPU")
-                    gpus.append((i, f"GPU {i}: {name} ({kind_tag})", is_disc))
+                    devices.append((name, p.deviceType, vulkan_version(p.apiVersion)))
             vulkan.vkDestroyInstance(inst, None)
-    except Exception:
-        pass
+    except Exception as exc:  # a driver or ctypes surprise: keep what was read; the crash report shows why
+        return VulkanProbe(True, loader, instance, devices, f"{type(exc).__name__}: {exc}")
+    return VulkanProbe(True, loader, instance, devices, "")
+
+
+def gpu_choices(probe):
+    """The Graphics card list: Auto, then each GPU as (index, display_name, is_discrete)."""
+    gpus = [(-1, "Auto (Prioritaskan GPU Diskrit)", True)]
+    for i, (name, kind, _api) in enumerate(probe.devices):
+        is_disc = (kind == 2)
+        kind_tag = "dGPU" if is_disc else ("iGPU" if kind == 1 else "GPU")
+        gpus.append((i, f"GPU {i}: {name} ({kind_tag})", is_disc))
     return gpus
 
 
-SYSTEM_GPUS = enumerate_gpus()
+def game_gpu_id(gpu_index, gpus):
+    """The GPU the game is started on (SPARTAN_GPU_ID), or None to let the game choose: the user's
+    choice, else for Auto the first discrete GPU."""
+    if gpu_index != -1:
+        return gpu_index
+    return next((idx for idx, _, is_disc in gpus if is_disc and idx >= 0), None)
+
+
+def vulkan_problem(probe, gpu_id):
+    """Why the game will not start on this Vulkan, or None: "missing" (no vulkan-1.dll), "old" (the
+    loader, or the GPU the game uses, is below VULKAN_REQUIRED) or "no_gpu" (no Vulkan GPU at all).
+    gpu_id is game_gpu_id(): a GPU outside the list, or None, is the game's own choice, which takes a
+    GPU with VULKAN_REQUIRED when there is one (vk_instance.cpp). A probe that stopped part-way gives
+    None: nothing is certain then, and the warning must not stop a PC that works."""
+    if not probe.loaded:
+        return "missing"
+    if probe.error:
+        return None
+    if probe.loader is not None and probe.loader < VULKAN_REQUIRED:
+        return "old"
+    if not probe.devices:
+        return "no_gpu"
+    if gpu_id is not None and 0 <= gpu_id < len(probe.devices):
+        apis = [probe.devices[gpu_id][2]]
+    else:
+        apis = [api for _, _, api in probe.devices]
+    return None if any(api >= VULKAN_REQUIRED for api in apis) else "old"
+
+
+VULKAN_WARNING_OPENING = {
+    "no_gpu": "Launcher tidak menemukan kartu grafis yang mendukung Vulkan di PC ini.",
+    "missing": "File Vulkan bawaan Windows (vulkan-1.dll) tidak ditemukan di PC ini.",
+    "old": "Komponen Vulkan di PC ini terlalu lama untuk game ini.",
+}
+
+
+def vulkan_warning(problem):
+    """The "Vulkan Belum Siap" question shown before the game starts, for a vulkan_problem()."""
+    return (
+        f"{VULKAN_WARNING_OPENING[problem]} Game ini membutuhkan GPU dan driver dengan dukungan Vulkan.\n\n"
+        "Yang bisa dicoba:\n"
+        "1. Perbarui driver kartu grafis dari situs NVIDIA, AMD, atau Intel, atau lewat Windows Update. "
+        "Lalu buka launcher lagi.\n"
+        "2. Kalau PC punya kartu grafis terpisah, pastikan drivernya terpasang, bukan hanya driver bawaan Windows.\n"
+        "3. Beberapa kartu grafis lama memang tidak mendukung Vulkan. Kalau sudah diperbarui dan pesan ini "
+        "tetap muncul, kemungkinan PC ini belum bisa menjalankan game.\n\n"
+        "Tetap jalankan game?")
+
+
+def describe_vulkan(probe):
+    """One line for the crash report: the loader and each GPU's Vulkan version against the requirement."""
+    need = "%d.%d" % VULKAN_REQUIRED
+    if not probe.loaded:
+        return f"not found ({probe.error}); needs {need}"
+    parts = ["loader " + ("%d.%d" % probe.loader if probe.loader else "unknown")]
+    parts += [f"GPU {i} {major}.{minor}" for i, (_, _, (major, minor)) in enumerate(probe.devices)] or [
+        "no GPU" if probe.instance else "no instance"]
+    if probe.error:
+        parts.append(f"probe stopped: {probe.error}")
+    return ", ".join(parts) + f"; needs {need}"
+
+
+VULKAN = probe_vulkan()
+SYSTEM_GPUS = gpu_choices(VULKAN)
 DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless"),
                  ("Exclusive fullscreen", "fullscreen")]
 FPS_LIMITS = [("60 (game default)", 60), ("90", 90), ("120", 120), ("144", 144), ("165", 165),
@@ -1190,16 +1305,12 @@ class Launcher(tk.Tk):
         env["SPARTAN_WINDOW_TITLE"] = f"Sengoku Basara 4 Sumeragi - {BRAND} by {AUTHOR}"
         # Disable problematic AMD switchable graphics layer that causes instant close / black screen on Ryzen & Radeon
         env["DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1"] = "1"
-        gpu_idx = self.cfg.get("gpu_index", -1)
-        if gpu_idx != -1:
-            env["SPARTAN_GPU_ID"] = str(gpu_idx)
+        # Auto: if a discrete GPU exists, prioritize it automatically
+        gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
+        if gpu_id is not None:
+            env["SPARTAN_GPU_ID"] = str(gpu_id)
         else:
-            # Auto: If discrete GPU exists, prioritize it automatically
-            disc_idx = next((idx for idx, _, is_disc in SYSTEM_GPUS if is_disc and idx >= 0), None)
-            if disc_idx is not None:
-                env["SPARTAN_GPU_ID"] = str(disc_idx)
-            else:
-                env.pop("SPARTAN_GPU_ID", None)
+            env.pop("SPARTAN_GPU_ID", None)
         res = self.cfg.get("resolution", "native")
         if res in ("1440p", "1800p", "4K"):
             env["SPARTAN_DMEM_MB"] = "4800"
@@ -1276,6 +1387,12 @@ class Launcher(tk.Tk):
             self._deiconify()
             messagebox.showerror("Cannot start", f"Runtime not found: {exe}")
             return
+        problem = vulkan_problem(VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS))
+        if problem:
+            self._deiconify()
+            if not messagebox.askyesno("Vulkan Belum Siap", vulkan_warning(problem), icon="warning",
+                                       default="no", parent=self):
+                return
         avail_mb = check_commit_limit_mb()
         if avail_mb is not None and avail_mb < 2560:
             if not messagebox.askyesno(
@@ -1740,6 +1857,7 @@ class Launcher(tk.Tk):
                 f"OS            : {platform.system()} {platform.release()} (Build {platform.version()})\n"
                 f"Architecture  : {platform.machine()} ({platform.processor()})\n"
                 f"RAM           : Total {ram_total} | Free {ram_avail} | Available Commit {commit_avail}\n"
+                f"Vulkan        : {describe_vulkan(VULKAN)}\n"
                 f"Vulkan GPUs   :\n{gpu_list}\n"
                 f"{hints_block}"
                 f"Detected Fatal Signatures:\n" + "\n".join(f"  * {e}" for e in data["detected_errors"]) + "\n\n"
