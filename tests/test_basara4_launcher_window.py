@@ -8,6 +8,7 @@ import contextlib
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -157,6 +158,135 @@ class RunLogAndPlayTests(unittest.TestCase):
         report = append.call_args.args[0]
         self.assertIn("Exit Code     : 0xc0000139\n", report)
         self.assertIn("Vulkan        : loader 1.0, no instance; needs 1.3\n", report)
+
+    # ---- the session report: written before the game starts, completed when it ends ----
+    def game_with_sfo(self, game, app_ver="01.02"):
+        from test_basara4_cheats import build_sfo
+        (game / "sce_sys").mkdir(exist_ok=True)
+        (game / "sce_sys" / "param.sfo").write_bytes(build_sfo({"TITLE_ID": "CUSA01159", "APP_VER": app_ver}))
+        bl.OUT.mkdir(parents=True, exist_ok=True)
+        bl.STAMP.write_text(json.dumps({"eboot_sha256": "1a2b3c4d" + "0" * 56, "game": str(game)}), encoding="utf-8")
+
+    def reports(self, paths):
+        return sorted((paths.user / "reports").glob("session-*.json"))
+
+    def test_report_exists_before_the_game_starts_and_is_completed_at_the_end(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, cfg={"resolution": "720p"}) as (app, paths, game, _):
+            self.game_with_sfo(game)
+            seen = {}
+
+            def popen(*args, **kwargs):
+                seen["reports"] = [json.loads(p.read_text(encoding="utf-8")) for p in self.reports(paths)]
+                return mock.Mock()
+            app.pending = (None, game, bl.CORE, [], "", "dlc")
+            with mock.patch.object(bl.subprocess, "Popen", side_effect=popen) as started:
+                app._wait_prepare()
+            started.call_args.kwargs["stdout"].close()
+            self.assertEqual(started.call_args.kwargs["env"]["SPARTAN_FILE_TRACE"], "1")
+            report, = seen["reports"]  # already on disk when the game was started
+            self.assertEqual(report["status"], "started")
+            self.assertEqual((report["game"]["app_ver"], report["game"]["title_id"], report["game"]["eboot_sha8"]),
+                             ("01.02", "CUSA01159", "1a2b3c4d"))
+            self.assertEqual(report["game"]["folder"], "<game>")
+            self.assertEqual((report["settings"]["resolution"], report["settings"]["render_size"]), ("720p", "1280x720"))
+            for key in ("os", "cpu"):
+                self.assertIn(key, report["system"])
+            self.assertIn(report["vulkan"]["check"], ("ok", "old", "missing", "no_gpu"))
+            self.assertEqual(report["launcher"]["version"], bl.VERSION)
+            # The game crashed: the report is completed and a copy of its text is kept in user\crash.
+            paths.log.write_text("\n".join([
+                "Runtime: open(/app0/nativePS4/actorParam/pl008/pl008.pmc) -> not found",
+                "File trace: /app0/nativePS4/rom/ui/pl/pl012/pl012.arc (4096 bytes)",
+                "Runtime: open(/app0/nativePS4/ui/gui/idrama/idrama00_ps4.gui) -> not found",
+                "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)"]), encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "finished")
+            self.assertTrue(report["end"]["crashed"])
+            self.assertEqual(report["log"]["unusual_not_found"], ["/app0/nativePS4/ui/gui/idrama/idrama00_ps4.gui"])
+            self.assertEqual(report["log"]["last_files"], [{"path": "/app0/nativePS4/rom/ui/pl/pl012/pl012.arc",
+                                                            "bytes": 4096}])
+            self.assertTrue(report["signature"].startswith("exit=C0000005 | read:null | top=g:0xaebfb7"))
+            self.assertIn("build=01.02/1a2b3c4d/", report["signature"])
+            crash_copy, = (paths.user / "crash").glob("report-*.txt")
+            self.assertIn("Crash: read null di g:0xaebfb7.", crash_copy.read_text(encoding="utf-8"))
+
+    def test_a_game_that_never_logs_still_has_a_full_report(self):
+        missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl, "VULKAN", missing), mock.patch.object(bl, "SYSTEM_GPUS", bl.gpu_choices(missing)):
+            self.game_with_sfo(game)
+            self.assertEqual(app._start_session_report(game), "")
+            paths.log.write_bytes(b"")  # 0xC0000139: Windows refused the program, it wrote nothing
+            app._finish_session_report(0xC0000139)
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual((report["log"]["lines"], report["end"]["exit_hex"]), (0, "0xC0000139"))
+            self.assertEqual(report["vulkan"]["check"], "missing")
+            self.assertEqual(report["game"]["app_ver"], "01.02")
+            self.assertTrue(any("0xC0000139" in hint for hint in report["hints"]))
+            text = self.reports(paths)[0].with_suffix(".txt").read_text(encoding="utf-8")
+            self.assertIn("Game berhenti sebelum menulis log (exit 0xC0000139).", text)
+
+    def test_unreadable_parts_are_written_with_the_reason(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            app._start_session_report(game)  # no param.sfo, no prepared.json
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertIn("param.sfo not readable", report["game"]["app_ver"]["unknown"])
+            self.assertIn("prepared.json not readable", report["game"]["eboot_sha8"]["unknown"])
+
+    def test_a_report_folder_that_cannot_be_written_does_not_stop_the_game(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.basara4_report, "write_atomic", side_effect=PermissionError(13, "Access is denied")):
+            self.assertIn("Session report not written (Access is denied)", app._start_session_report(game))
+            app._finish_session_report(1)
+            self.assertIn("Session report not saved (Access is denied)", app.stop_note)
+
+    def test_unfinished_sessions_are_marked_when_the_launcher_opens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with launcher(tmp) as (app, paths, game, _):
+                app._start_session_report(game)  # the launcher closes before the game ends
+            with launcher(tmp) as (app, paths, game, _):
+                self.assertEqual(json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))["status"], "unfinished")
+
+    def test_send_report_makes_one_zip_and_opens_its_folder(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.messagebox, "showinfo") as showinfo:
+            self.game_with_sfo(game)
+            app._start_session_report(game)
+            paths.log.write_text("Fault: write access to 0000000000000010 at guest offset 0x9c859c (thread 3)\n",
+                                 encoding="utf-8")
+            (paths.user / "crash").mkdir(exist_ok=True)
+            (paths.user / "crash" / "core-1.dmp").write_bytes(b"MDMP")
+            (paths.user / "captures").mkdir(exist_ok=True)
+            (paths.user / "captures" / "frame.png").write_bytes(b"\x89PNG")
+            app._finish_session_report(0xC0000005)
+            target = app.send_report()
+            startfile.assert_called_once_with(paths.user / "reports")
+            self.assertIn(target.name, showinfo.call_args.args[1])
+            with zipfile.ZipFile(target) as zf:
+                self.assertEqual(sorted(zf.namelist()), ["captures/frame.png", "crash/core-1.dmp", "last_run.log",
+                                                         "report.json", "report.txt"])
+                self.assertEqual(json.loads(zf.read("report.json"))["end"]["exit_hex"], "0xC0000005")
+
+    def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(bl.os.environ, {"USERNAME": "QA_LEAK_7f3a"}), \
+                mock.patch.object(bl.messagebox, "showinfo"), \
+                mock.patch.object(bl.Launcher, "clipboard_clear"), \
+                mock.patch.object(bl.Launcher, "clipboard_append") as append, \
+                mock.patch.object(bl.Launcher, "send_report") as send:
+            paths.log.write_text("Settings: C:\\Users\\QA_LEAK_7f3a\\b4\\user\\basara4.ini\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            buttons = [w for w in descendants(dialog) if isinstance(w, ttk.Button)]
+            self.assertEqual(str(buttons[0].cget("text")), "📦 Kirim laporan")  # the first, main action
+            buttons[0].invoke()
+            send.assert_called_once()
+            next(b for b in buttons if "Clipboard" in str(b.cget("text"))).invoke()
+        self.assertNotIn("qa_leak_7f3a", append.call_args.args[0].lower())
 
 
 class IconTests(unittest.TestCase):

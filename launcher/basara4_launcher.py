@@ -26,6 +26,7 @@ import threading
 import urllib.request
 from pathlib import Path
 from basara4_dlc import scan_extracted_dlc
+from basara4_dlc import _parse_sfo as parse_sfo
 
 FROZEN = getattr(sys, "frozen", False)
 ROOT = (Path(sys.executable) if FROZEN else Path(__file__)).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
@@ -55,7 +56,8 @@ FATAL_PATTERNS = [
     r"(VK_ERROR_\w+)",
     r"(GPU \[Render\.Vulkan\] <Error> .*)",
     r"(GPU \[Lib\.\w+\] <Error> .*)",
-    r"(Runtime: open\(.*?\) -> not found)",
+    # Not "Runtime: open(...) -> not found": healthy sessions log dozens of optional misses. Misses are
+    # split into usual, unusual and those just before a fault by basara4_report.analyze_log.
     r"(guest raised debug exception .*)",
     r"(cannot create \d+ MiB of guest memory .*)",
     r"(error 1455.*)",
@@ -168,32 +170,39 @@ def explain_hardware_crash(exit_code, detected_errors, tail_context):
     return hints
 
 
-def extract_crash_summary(log_path, max_context_lines=10):
-    """Parses log from bottom-up and extracts fatal signatures and tail context."""
+def extract_crash_summary(log_path, max_context_lines=10, max_signatures=4):
+    """The fatal signatures of a log, newest first with Fault/STOP/ASSERT always on top, the unusual
+    not-found misses, and the last lines (File trace lines left out so they do not crowd them)."""
+    empty = {"unusual_not_found": [], "near_primary_not_found": [], "hidden_not_found": 0}
     if not log_path.is_file():
-        return {"detected_errors": ["File log tidak ditemukan (game belum sempat menulis log)."], "tail_context": ""}
+        return dict(empty, detected_errors=["File log tidak ditemukan (game belum sempat menulis log)."],
+                    tail_context="")
     try:
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception as e:
-        return {"detected_errors": [f"Gagal membaca log: {e}"], "tail_context": ""}
+        return dict(empty, detected_errors=[f"Gagal membaca log: {e}"], tail_context="")
     if not lines:
-        return {"detected_errors": ["Log kosong (game berhenti sebelum inisialisasi)."], "tail_context": ""}
+        return dict(empty, detected_errors=["Log kosong (game berhenti sebelum inisialisasi)."], tail_context="")
 
-    tail_lines = lines[-max_context_lines:]
-    detected = []
+    primary, other = [], []
     for line in reversed(lines):
+        if basara4_report.STUB_CALL.search(line):  # counted in the session report, not a fatal signature
+            continue
         for pat in FATAL_PATTERNS:
             m = re.search(pat, line)
             if m:
                 matched_str = m.group(1).strip()
-                if matched_str not in detected:
-                    detected.append(matched_str)
-        if len(detected) >= 4:
-            break
+                if matched_str not in primary and matched_str not in other:
+                    (primary if basara4_report.PRIMARY.search(matched_str) else other).append(matched_str)
+    detected = (primary + other)[:max_signatures]
+    analysis = basara4_report.analyze_log(lines)
     return {
         "detected_errors": detected if detected else ["Tidak ada fatal signature terdaftar (game keluar mendadak)."],
-        "tail_context": "\n".join(tail_lines),
-        "total_lines": len(lines)
+        "tail_context": "\n".join(basara4_report.tail_without_trace(lines, max_context_lines)),
+        "total_lines": len(lines),
+        "unusual_not_found": analysis["unusual_not_found"],
+        "near_primary_not_found": analysis["near_primary_not_found"],
+        "hidden_not_found": analysis["hidden_not_found"],
     }
 
 
@@ -369,6 +378,111 @@ def request_window_close(pid):
     return asked
 
 
+REPORTS = USER / "reports"  # session-<time>.json/.txt per game start, laporan-<time>.zip per "Kirim laporan"
+CRASH_DIR = USER / "crash"  # the game's core-<time>.dmp, and the launcher's report-<time>.txt per crash
+
+
+def cpu_name():
+    """The CPU as Windows names it ("Intel(R) Core(TM) i3-5005U CPU @ 2.00GHz")."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+            return str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+    except (ImportError, OSError) as exc:
+        return {"unknown": f"CPU name not readable: {exc}"}
+
+
+def memory_info():
+    """Physical memory and the free commit charge (RAM + page file), in MB."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+        mem = MEMORYSTATUSEX()
+        mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+            raise OSError(f"GlobalMemoryStatusEx failed (error {ctypes.GetLastError()})")
+        mb = 1024 * 1024
+        return {"ram_total_mb": mem.ullTotalPhys // mb, "ram_free_mb": mem.ullAvailPhys // mb,
+                "commit_free_mb": mem.ullAvailPageFile // mb}
+    except (AttributeError, OSError) as exc:
+        return {"memory": {"unknown": f"not readable: {exc}"}}
+
+
+def system_info():
+    import platform
+    return dict({"os": f"{platform.system()} {platform.release()} (build {platform.version()})",
+                 "cpu": cpu_name(), "cpu_id": platform.processor() or {"unknown": "platform.processor() empty"}},
+                **memory_info())
+
+
+def file_sha8(path):
+    try:
+        return file_sha256(path)[:8]
+    except OSError as exc:
+        return {"unknown": f"{Path(path).name}: {exc.strerror or exc}"}
+
+
+def game_info(game):
+    """APP_VER and title of the game folder, and the eboot hash the prepared image was made from."""
+    info = {}
+    try:
+        values = parse_sfo((Path(game) / "sce_sys" / "param.sfo").read_bytes())
+        info["title_id"] = values.get("TITLE_ID") or {"unknown": "param.sfo has no TITLE_ID"}
+        info["app_ver"] = values.get("APP_VER") or {"unknown": "param.sfo has no APP_VER"}
+    except Exception as exc:  # a missing or damaged param.sfo is reported, not fatal: the game may still start
+        info["title_id"] = info["app_ver"] = {"unknown": f"param.sfo not readable: {exc}"}
+    try:
+        stamp = json.loads(STAMP.read_text(encoding="utf-8-sig"))
+        info["eboot_sha8"] = (stamp.get("eboot_sha256") or "")[:8] or {"unknown": "prepared.json has no hash"}
+    except (OSError, ValueError) as exc:
+        info["eboot_sha8"] = {"unknown": f"prepared.json not readable: {exc}"}
+    info["folder"] = str(game)
+    return info
+
+
+def vulkan_info(probe, gpu_id):
+    types = {1: "iGPU", 2: "dGPU", 3: "virtual", 4: "CPU"}
+    gpus = []
+    for i, (name, kind, api) in enumerate(probe.devices):
+        vendor, raw = probe.drivers[i] if i < len(probe.drivers) else (None, None)
+        gpus.append({"index": i, "name": name, "type": types.get(kind, str(kind)), "vulkan": "%d.%d" % api,
+                     "vendor": basara4_report.VENDORS.get(vendor, f"0x{vendor:04X}" if vendor is not None else None),
+                     "driver": driver_version_text(vendor, raw) if raw is not None else None})
+    return {"summary": describe_vulkan(probe),
+            "loader": "%d.%d" % probe.loader if probe.loader else {"unknown": "loader did not say"},
+            "dll": probe.dll or {"unknown": probe.error or "not loaded"},
+            "dll_version": file_version(probe.dll) if probe.dll else {"unknown": probe.error or "not loaded"},
+            "gpus": gpus,
+            "gpu_for_game": gpu_id if gpu_id is not None else "auto (the game chooses)",
+            "check": vulkan_problem(probe, gpu_id) or "ok",
+            "gpu_vendor_for_game": gpu_vendor_for_game(probe, gpu_id),
+            "probe_error": probe.error or None}
+
+
+def gpu_vendor_for_game(probe, gpu_id):
+    """The vendor of the GPU the game uses, as far as the launcher can tell (for the signature)."""
+    index = gpu_id if gpu_id is not None and 0 <= gpu_id < len(probe.drivers) else (0 if probe.drivers else None)
+    if index is None:
+        return "none"
+    return basara4_report.VENDORS.get(probe.drivers[index][0], f"0x{probe.drivers[index][0]:04X}")
+
+
+def content_info(cfg):
+    try:
+        profile = json.loads((OUT / "content-profile.json").read_text(encoding="utf-8"))
+        dlc = [addon.get("label") for addon in profile.get("mounted_addons", [])]
+    except (OSError, ValueError) as exc:
+        dlc = {"unknown": f"content-profile.json not readable: {exc}"}
+    return {"dlc": dlc, "cheats": list(cfg.get("cheats", [])), "dlc_dir": cfg.get("dlc_dir")}
+
+
 def render_trace_report():
     """Crash-report section: the newest render trace log tail and captures, or why they are missing."""
     text = ""
@@ -450,6 +564,7 @@ except ImportError:  # still works, just without artwork
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import basara4_patches  # noqa: E402
 import basara4_cheats  # noqa: E402
+import basara4_report  # noqa: E402
 
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
             "display_mode": "borderless", "vsync": True, "fps_limit": 60, "rcas": False,
@@ -504,8 +619,10 @@ VULKAN_REQUIRED = (1, 3)
 
 # What vulkan-1.dll reported: loaded (False: no vulkan-1.dll), loader ((major, minor), None when the
 # loader could not say), instance (a Vulkan instance could be made), devices [(name, deviceType,
-# (major, minor))] in the loader's order, error (why the probe stopped part-way, "" when it did not).
-VulkanProbe = collections.namedtuple("VulkanProbe", "loaded loader instance devices error")
+# (major, minor))] in the loader's order, error (why the probe stopped part-way, "" when it did not),
+# drivers [(vendorID, driverVersion)] in the same order as devices, dll (the vulkan-1.dll file loaded).
+VulkanProbe = collections.namedtuple("VulkanProbe", "loaded loader instance devices error drivers dll",
+                                     defaults=((), None))
 
 
 def vulkan_version(value):
@@ -520,7 +637,8 @@ def probe_vulkan(load=None):
         vulkan = (load or ctypes.cdll.LoadLibrary)("vulkan-1.dll")
     except OSError as exc:
         return VulkanProbe(False, None, False, [], f"vulkan-1.dll: {exc}")
-    loader, instance, devices = None, False, []
+    loader, instance, devices, drivers = None, False, [], []
+    dll = loaded_module_path(getattr(vulkan, "_handle", None))
     try:
         enumerate_version = getattr(vulkan, "vkEnumerateInstanceVersion", None)
         if enumerate_version is None:
@@ -575,10 +693,52 @@ def probe_vulkan(load=None):
                     vulkan.vkGetPhysicalDeviceProperties(devs[i], ctypes.pointer(p))
                     name = p.deviceName.decode("utf-8", errors="replace").strip("\x00")
                     devices.append((name, p.deviceType, vulkan_version(p.apiVersion)))
+                    drivers.append((p.vendorID, p.driverVersion))
             vulkan.vkDestroyInstance(inst, None)
     except Exception as exc:  # a driver or ctypes surprise: keep what was read; the crash report shows why
-        return VulkanProbe(True, loader, instance, devices, f"{type(exc).__name__}: {exc}")
-    return VulkanProbe(True, loader, instance, devices, "")
+        return VulkanProbe(True, loader, instance, devices, f"{type(exc).__name__}: {exc}", drivers, dll)
+    return VulkanProbe(True, loader, instance, devices, "", drivers, dll)
+
+
+def loaded_module_path(handle):
+    """The file a loaded DLL came from (GetModuleFileNameW), or None."""
+    if not handle or os.name != "nt":
+        return None
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetModuleFileNameW(ctypes.c_void_p(handle), buffer, len(buffer))
+    return buffer.value if length else None
+
+
+def file_version(path):
+    """The FileVersion of a Windows file ("1.4.309.0"), or an unknown() with the reason."""
+    if not path:
+        return basara4_report.unknown("no file")
+    if os.name != "nt":
+        return basara4_report.unknown("not Windows")
+    import ctypes
+    from ctypes import wintypes
+    ver = ctypes.windll.version
+    size = ver.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return basara4_report.unknown(f"no version resource (error {ctypes.GetLastError()})")
+    data = ctypes.create_string_buffer(size)
+    if not ver.GetFileVersionInfoW(str(path), 0, size, data):
+        return basara4_report.unknown(f"GetFileVersionInfoW failed (error {ctypes.GetLastError()})")
+    info, length = ctypes.c_void_p(), wintypes.UINT()
+    if not ver.VerQueryValueW(data, "\\", ctypes.byref(info), ctypes.byref(length)) or length.value < 52:
+        return basara4_report.unknown("no fixed file info")
+    ms, ls = ctypes.cast(info, ctypes.POINTER(ctypes.c_uint32))[2:4]
+    return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+
+
+def driver_version_text(vendor, raw):
+    """A GPU driver version as its vendor writes it (NVIDIA and Intel pack it their own way)."""
+    if vendor == 0x10DE:
+        return f"{raw >> 22}.{(raw >> 14) & 0xFF}.{(raw >> 6) & 0xFF}.{raw & 0x3F}"
+    if vendor == 0x8086 and os.name == "nt":
+        return f"{raw >> 14}.{raw & 0x3FFF}"
+    return f"{raw >> 22}.{(raw >> 12) & 0x3FF}.{raw & 0xFFF}"
 
 
 def gpu_choices(probe):
@@ -903,6 +1063,11 @@ class Launcher(tk.Tk):
         self.closing_launcher = False  # the launcher closes once the game has exited
         self.stop_note = ""  # how the game was stopped, for the status line
         self.trace_session = None  # user\render_traces\<stamp> of the running traced game
+        self.forced_stop = False  # the running game was killed (Force stop, closing the launcher)
+        self.session_report = None  # the report of the running or last game session (basara4_report)
+        self.session_report_path = None
+        self.session_started_at = None
+        basara4_report.mark_unfinished(REPORTS)  # sessions whose launcher closed before their game ended
         self.stop = ttk.Button(left, text="Stop game", command=self.on_stop, state="disabled")
         self.stop.pack(fill="x")
         mark = ttk.Frame(left, style="Panel.TFrame")
@@ -1317,6 +1482,9 @@ class Launcher(tk.Tk):
         env["SPARTAN_WINDOW_TITLE"] = f"Sengoku Basara 4 Sumeragi - {BRAND} by {AUTHOR}"
         # Disable problematic AMD switchable graphics layer that causes instant close / black screen on Ryzen & Radeon
         env["DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1"] = "1"
+        # One "File trace:" line per game file opened (210-647 per session in 33 logs), so a report
+        # names the files the game read last before it stopped.
+        env["SPARTAN_FILE_TRACE"] = "1"
         # Auto: if a discrete GPU exists, prioritize it automatically
         gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
         if gpu_id is not None:
@@ -1387,6 +1555,7 @@ class Launcher(tk.Tk):
             return
         self.user_stopped = False
         self.close_requested = False
+        self.forced_stop = False
         self.stop_note = ""
         self._collect()
         game = Path(self.cfg["game"]) if self.cfg["game"] else None
@@ -1501,6 +1670,7 @@ class Launcher(tk.Tk):
         if isa_table.is_file():
             extra_args = ["--isa-rewrite", str(isa_table)]
 
+        notice += self._start_session_report(game)
         log = open(LOG, "wb")
         self.proc = subprocess.Popen(
             [str(exe), str(OUT / "boot-linked.bin"), "--content-profile", str(OUT / "content.bin"),
@@ -1750,13 +1920,130 @@ class Launcher(tk.Tk):
         self.user_stopped = True
         if self.close_requested:  # second click: the game did not close by itself
             self.stop_note = "Game stopped by force (its logs end without session.summary)."
+            self.forced_stop = True
             self.proc.kill()
             return
         if self._request_game_close():
             self.status.config(text="Closing the game (it writes its logs)... "
                                     "Click \"Force stop\" if it does not close.")
         else:
+            self.forced_stop = True
             self.proc.kill()
+
+    # ---- session report (basara4_report): written before the game starts, completed when it ends ----
+    def _masker(self):
+        return basara4_report.Masker.from_environment(game_dir=self.cfg.get("game") or None, app_dir=ROOT)
+
+    def _write_session_report(self):
+        masker = self._masker()
+        report = self.session_report
+        basara4_report.write_atomic(self.session_report_path,
+                                    json.dumps(masker.data(report), indent=2, ensure_ascii=False))
+        basara4_report.write_atomic(self.session_report_path.with_suffix(".txt"),
+                                    masker(basara4_report.render_text(report, getattr(self, "session_tail", None))))
+
+    def _start_session_report(self, game):
+        """Write this session's report just before the game starts, so it exists even when the game
+        never writes a log line. Returns a status notice when it could not be written."""
+        now = datetime.datetime.now()
+        self.session_started_at = now.timestamp()
+        self.session_tail = None
+        gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
+        settings = {key: value for key, value in self.cfg.items() if key != "keymap"}
+        settings["keymap_custom"] = bool(self.cfg.get("keymap"))
+        settings["render_size"] = "%dx%d" % basara4_patches.RESOLUTION_SIZES.get(self.cfg.get("resolution"), NATIVE_SIZE)
+        settings["ini"] = read_ini(self._ini())  # {} when the file does not exist yet
+        self.session_report = basara4_report.new_report(
+            now.isoformat(timespec="seconds"), {"version": VERSION, "core_sha8": file_sha8(CORE), "frozen": FROZEN},
+            game_info(game), system_info(), vulkan_info(VULKAN, gpu_id), settings, content_info(self.cfg))
+        name, n = f"session-{now:%Y%m%d-%H%M%S}", 1
+        while (REPORTS / f"{name}.json").exists():
+            n += 1
+            name = f"session-{now:%Y%m%d-%H%M%S}-{n}"
+        self.session_report_path = REPORTS / f"{name}.json"
+        try:
+            self._write_session_report()
+            basara4_report.prune(REPORTS)
+        except OSError as exc:
+            return f"Session report not written ({exc.strerror or exc}).  "
+        return ""
+
+    def _finish_session_report(self, code):
+        """Complete the running session's report with how it ended and what the log says; on a crash,
+        also keep the report text in user\\crash."""
+        report, self.session_report = self.session_report, None
+        if report is None or report.get("status") != "started":
+            self.session_report = report
+            return
+        try:
+            lines = LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = None
+        crashed = isinstance(code, int) and code != 0 and not self.user_stopped
+        hints = []
+        if crashed:
+            data = extract_crash_summary(LOG)
+            hints = explain_hardware_crash(code, data["detected_errors"], data["tail_context"])
+        vendor = report.get("vulkan", {}).get("gpu_vendor_for_game", "none")
+        self.session_report = basara4_report.finish_report(report, code, self.user_stopped, self.forced_stop,
+                                                          lines, hints, vendor)
+        self.session_tail = basara4_report.tail_without_trace(lines or [], 10)
+        try:
+            self._write_session_report()
+            if crashed:
+                stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                basara4_report.write_atomic(CRASH_DIR / f"report-{stamp}.txt", self._masker()(
+                    basara4_report.render_text(self.session_report, self.session_tail)))
+        except OSError as exc:
+            self.stop_note = (self.stop_note + f" Session report not saved ({exc.strerror or exc}).").strip()
+
+    def _newest_since(self, folder, pattern):
+        """The newest file in folder matching pattern written during this session, or None."""
+        since = (self.session_started_at or 0) - 2
+        try:
+            files = [p for p in Path(folder).glob(pattern) if p.is_file() and p.stat().st_mtime >= since]
+        except OSError:
+            return None
+        return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+    def send_report(self, parent=None):
+        """"Kirim laporan": one zip with the session report, the masked logs, this session's crash dump
+        and newest capture; then open its folder so the user only attaches it. Returns the zip path."""
+        report = self.session_report or basara4_report.unknown("no game session in this launcher run")
+        if not isinstance(report, dict) or "schema" not in report:
+            report = {"schema": basara4_report.SCHEMA, "status": "no-session", "note": report,
+                      "launcher": {"version": VERSION}, "system": system_info(),
+                      "vulkan": vulkan_info(VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS))}
+        log = report.get("log") if isinstance(report.get("log"), dict) else {}
+        dump = Path(log["crash_dump"]) if log.get("crash_dump") else self._newest_since(CRASH_DIR, "*.dmp")
+        capture = self._newest_since(CAPTURES_DIR, "*")
+        binaries = [(f"crash/{dump.name}", dump)] if dump and dump.is_file() else []
+        if capture:
+            binaries.append((f"captures/{capture.name}", capture))
+        logs = [(name, path) for name, path in (("last_run.log", LOG), ("audio_debug.log", AUDIO_LOG),
+                                                ("prepare.log", PREPARE_LOG)) if path.is_file()]
+        target = REPORTS / f"laporan-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
+        try:
+            basara4_report.make_zip(target, report,
+                                    basara4_report.render_text(report, getattr(self, "session_tail", None)),
+                                    self._masker(), logs=logs, binaries=binaries)
+        except OSError as exc:
+            messagebox.showerror("Laporan tidak tersimpan",
+                                 f"Laporan tidak bisa disimpan di folder user\\reports.\n\n{exc.strerror or exc}",
+                                 parent=parent or self)
+            return None
+        opened = ""
+        try:
+            os.startfile(REPORTS)
+        except OSError as exc:
+            opened = f"\n\n(Folder tidak bisa dibuka otomatis: {exc.strerror or exc}. Buka sendiri: user\\reports)"
+        messagebox.showinfo(
+            "Laporan siap dikirim",
+            f"Laporan tersimpan sebagai {target.name}.\n\n"
+            "Folder-nya sudah dibuka. Lampirkan file itu ke Discord atau GitHub saat melapor.\n"
+            "Spek PC, setting, dan log sudah ada di dalamnya, jadi tidak perlu dijelaskan lagi." + opened,
+            parent=parent or self)
+        return target
 
     def _show_crash_dialog(self, code):
         data = extract_crash_summary(LOG)
@@ -1784,6 +2071,16 @@ class Launcher(tk.Tk):
             fg=RED,
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w")
+        tk.Label(
+            header_frame,
+            text="Untuk melapor, cukup tekan 📦 Kirim laporan lalu lampirkan file zip yang muncul ke Discord "
+                 "atau GitHub. Spek PC, setting, dan log sudah ikut di dalamnya.",
+            bg=PANEL,
+            fg=FG,
+            font=("Segoe UI", 9),
+            wraplength=690,
+            justify="left"
+        ).pack(anchor="w", pady=(4, 0))
 
         if hw_hints:
             hint_box = tk.Frame(header_frame, bg="#221915", highlightbackground=GOLD, highlightthickness=1, padx=10, pady=8)
@@ -1817,6 +2114,20 @@ class Launcher(tk.Tk):
                 wraplength=680,
                 justify="left"
             ).pack(anchor="w", padx=6)
+        missing = data["unusual_not_found"] + [p for p in data["near_primary_not_found"]
+                                               if p not in data["unusual_not_found"]]
+        if missing or data["hidden_not_found"]:
+            tk.Label(
+                header_frame,
+                text=(("File game yang dicari tapi tidak ada (tidak biasa, atau tepat sebelum crash):\n"
+                       + "\n".join(f"• {p}" for p in missing[:6]) + "\n") if missing else "")
+                + f"({data['hidden_not_found']} file opsional yang wajar tidak ada, disembunyikan)",
+                bg=PANEL,
+                fg=FG,
+                font=("Consolas", 8),
+                wraplength=680,
+                justify="left"
+            ).pack(anchor="w", padx=6, pady=(4, 0))
 
         # Center Body Frame
         body_frame = ttk.Frame(win, style="TFrame")
@@ -1880,10 +2191,12 @@ class Launcher(tk.Tk):
             if audio_tail:
                 clip_text += f"\n--- [Recent Audio Log (audio_debug.log)] ---\n{audio_tail}\n"
             clip_text += render_trace_report()
+            if isinstance(self.session_report, dict) and self.session_report.get("status") == "finished":
+                clip_text += "\n" + basara4_report.render_text(self.session_report)
 
             clip_text += "\n=== End of Report ==="
             self.clipboard_clear()
-            self.clipboard_append(clip_text)
+            self.clipboard_append(self._masker()(clip_text))
             messagebox.showinfo(
                 "Tersalin ke Clipboard",
                 "Laporan crash lengkap (spek hardware, GPU, log error, dan audio log) berhasil disalin!\n"
@@ -1895,6 +2208,7 @@ class Launcher(tk.Tk):
             import webbrowser
             webbrowser.open("https://discord.gg/UBZc57bBMa")
 
+        ttk.Button(btn_bar, text="📦 Kirim laporan", command=lambda: self.send_report(win)).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="📋 Copy Error ke Clipboard", command=copy_details).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="📁 Buka File Log", command=self.open_log).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="📸 Buka Captures", command=self.open_captures).pack(side="left", padx=4)
@@ -2109,6 +2423,7 @@ class Launcher(tk.Tk):
         if self.proc and self.proc.poll() is not None:
             code = self.proc.returncode
             self.proc = None
+            self._finish_session_report(code)
             trace_notice = self._finish_trace_session()
             self.play.config(state="normal")
             self.stop.config(state="disabled", text="Stop game")
@@ -2202,8 +2517,10 @@ class Launcher(tk.Tk):
                                             "launcher... Close again to force.")
                     return
             # Closed again while waiting, or the game could not be asked: stop it by force.
+            self.forced_stop = True
             self.proc.kill()
-            self.proc.wait()  # the process has ended, so its last_run.log is complete
+            code = self.proc.wait()  # the process has ended, so its last_run.log is complete
+            self._finish_session_report(code)
             trace_notice = self._finish_trace_session()
             if trace_notice:
                 messagebox.showwarning("Render trace", trace_notice)

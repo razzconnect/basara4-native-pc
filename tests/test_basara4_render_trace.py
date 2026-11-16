@@ -288,6 +288,7 @@ class Basara4StopGameTest(unittest.TestCase):
             stop_note="", status=mock.Mock(), stop=mock.Mock(), trace_session=None)
         launcher._request_game_close = lambda: bl.Launcher._request_game_close(launcher)
         launcher._finish_trace_session = mock.Mock(return_value="")
+        launcher._finish_session_report = mock.Mock()
         launcher._close_launcher = mock.Mock()
         return launcher
 
@@ -333,6 +334,9 @@ class Basara4StopGameTest(unittest.TestCase):
         launcher.proc.wait.assert_called_once()
         launcher._finish_trace_session.assert_called_once()
         launcher._close_launcher.assert_called_once()
+        # The session report is completed with the forced exit before the launcher closes.
+        launcher._finish_session_report.assert_called_once_with(launcher.proc.wait.return_value)
+        self.assertTrue(launcher.forced_stop)
 
 
 if __name__ == "__main__":

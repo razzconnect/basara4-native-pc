@@ -32,12 +32,29 @@ class CrashSummaryTests(unittest.TestCase):
         lines = ["Runtime: started"] + [f"STOP: reason {i}" for i in range(6)] + [
             "STOP: reason 5", "GPU [Render.Vulkan] <Error> vk::Result=ErrorDeviceLost", "Runtime: exit"]
         summary = summary_of("\n".join(lines))
-        # Several signatures on one line come in FATAL_PATTERNS order.
-        self.assertEqual(summary["detected_errors"][:2],
-                         ["vk::Result=ErrorDeviceLost", "GPU [Render.Vulkan] <Error> vk::Result=ErrorDeviceLost"])
-        self.assertEqual(summary["detected_errors"][2:], ["STOP: reason 5", "STOP: reason 4"])
+        # Fault/STOP/ASSERT come first, newest first, without duplicates, at most four lines in all.
+        self.assertEqual(summary["detected_errors"],
+                         ["STOP: reason 5", "STOP: reason 4", "STOP: reason 3", "STOP: reason 2"])
         self.assertEqual(summary["total_lines"], len(lines))
         self.assertEqual(summary["tail_context"].splitlines(), lines[-10:])
+        # Several signatures on one line come in FATAL_PATTERNS order.
+        self.assertEqual(summary_of("GPU [Render.Vulkan] <Error> vk::Result=ErrorDeviceLost")["detected_errors"],
+                         ["vk::Result=ErrorDeviceLost", "GPU [Render.Vulkan] <Error> vk::Result=ErrorDeviceLost"])
+
+    def test_a_fault_is_never_pushed_out_by_later_errors(self):
+        lines = ["Fault: write access to 0000000000000010 at guest offset 0x9c859c (thread 7)"] + [
+            f"GPU [Lib.Pad] <Error> late error {i}" for i in range(8)] + [
+            "Runtime: open(/app0/nativePS4/actorParam/pl008/pl008.pmc) -> not found"] * 100
+        detected = summary_of("\n".join(lines))["detected_errors"]
+        self.assertEqual(detected[0], lines[0][:lines[0].index(" (thread")] + " (thread 7)")
+        self.assertEqual(len(detected), 4)
+
+    def test_not_found_is_not_fatal_but_unusual_ones_are_listed(self):
+        summary = summary_of("Runtime: open(/app0/x) -> not found")
+        self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak)."])
+        self.assertEqual(summary["unusual_not_found"], ["/app0/x"])
+        normal = summary_of("Runtime: open(/app0/nativePS4/actorParam/pl008/pl008.pmc) -> not found")
+        self.assertEqual((normal["unusual_not_found"], normal["hidden_not_found"]), ([], 1))
 
     def test_tail_context_length_and_no_signature(self):
         lines = [f"Runtime: line {i}" for i in range(30)]
@@ -49,7 +66,7 @@ class CrashSummaryTests(unittest.TestCase):
         samples = ["STOP: reserving failed", "Fault: at 0x10", "GPU [Debug] <Critical> boom",
                    "Failed to create graphics pipeline x", "ASSERT_MSG failed", "vk::Result=ErrorUnknown",
                    "VK_ERROR_DEVICE_LOST", "GPU [Render.Vulkan] <Error> x", "GPU [Lib.Pad] <Error> x",
-                   "Runtime: open(/app0/x) -> not found", "guest raised debug exception 3",
+                   "guest raised debug exception 3",
                    "cannot create 3200 MiB of guest memory (1455)", "error 1455 at commit",
                    "ERROR_COMMITMENT_LIMIT", "no rewrite table matches the image",
                    "missing MOVBE, BMI1, LZCNT", "Failed allocating image with error x",
