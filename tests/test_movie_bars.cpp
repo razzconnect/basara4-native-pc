@@ -31,8 +31,9 @@ int main() {
     assert(Is(MovieBars::Picture(3440, 1440), 440.0f / 3440, 0.0f, 3000.0f / 3440, 1.0f));
     // Taller than 16:9 (16:10): full width, 1440 of 1600 rows, 80 rows of bar above and below.
     assert(Is(MovieBars::Picture(2560, 1600), 0.0f, 0.05f, 1.0f, 0.95f));
-    // 16:9 and the built-in sizes (480p is 854x480, 0.07% off 16:9) have no bars.
+    // 16:9 and the built-in sizes (480p renders at 860x480, 0.8% off 16:9) have no bars.
     assert(Is(MovieBars::Picture(1920, 1080), 0.0f, 0.0f, 1.0f, 1.0f));
+    assert(Is(MovieBars::Picture(860, 480), 0.0f, 0.0f, 1.0f, 1.0f));
     assert(Is(MovieBars::Picture(854, 480), 0.0f, 0.0f, 1.0f, 1.0f));
     assert(Is(MovieBars::Picture(3840, 2160), 0.0f, 0.0f, 1.0f, 1.0f));
     assert(Is(MovieBars::Picture(0, 0), 0.0f, 0.0f, 1.0f, 1.0f));

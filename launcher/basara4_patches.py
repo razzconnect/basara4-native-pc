@@ -190,7 +190,20 @@ def e2d_node_pos_patch(image):
     return [(a, code)]
 
 
-RESOLUTION_SIZES = {
+# The game's motion blur (uMotionBlurFilter) splits the render target into 20x20 pixel tiles and
+# rounds the tile count up, (W + 19) / 20 x (H + 19) / 20: a side that is not a whole number of tiles
+# leaves the last tile partly outside the image, where it reads motion that is not there and blurs a
+# band along that edge (854x480: every column from 820). Every render size is therefore whole tiles.
+RENDER_TILE = 20
+
+
+def render_size(width, height):
+    """The render size for a target screen size: each side rounded up to whole RENDER_TILE tiles."""
+    return (-(-width // RENDER_TILE) * RENDER_TILE, -(-height // RENDER_TILE) * RENDER_TILE)
+
+
+# The screen size each preset aims at; the render size is that rounded to whole motion blur tiles.
+RESOLUTION_TARGETS = {
     "360p": (640, 360),
     "480p": (854, 480),
     "540p": (960, 540),
@@ -200,6 +213,7 @@ RESOLUTION_SIZES = {
     "1800p": (3200, 1800),
     "4K": (3840, 2160),
 }
+RESOLUTION_SIZES = {name: render_size(w, h) for name, (w, h) in RESOLUTION_TARGETS.items()}
 
 
 def resolution_patches(image, res_name):

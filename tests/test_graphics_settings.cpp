@@ -56,6 +56,24 @@ int main() {
     assert(G::ResolutionSize("8K") == std::make_pair(7680, 4320));
     assert(G::ParseResolution("invalid") == 0);
     for (const auto name : G::Resolutions) assert(G::ResolutionSize(name).first > 0);
+    // Built-in render sizes are whole 20x20 motion blur tiles: 480p renders at 860x480 (854 left a
+    // partial tile past the right edge that blurred a band from column 820); the others are unchanged.
+    assert(G::ResolutionSize("480p") == std::make_pair(860, 480));
+    assert(G::ResolutionSize("360p") == std::make_pair(640, 360));
+    assert(G::ResolutionSize("540p") == std::make_pair(960, 540));
+    assert(G::ResolutionSize("1800p") == std::make_pair(3200, 1800));
+    for (const auto& [name, size] : G::ResolutionSizes) {
+        assert(size.first % G::RenderTile == 0 && size.second % G::RenderTile == 0);
+    }
+    // RenderSize rounds each side up to whole tiles and keeps whole-tile sizes as they are.
+    for (int side = 1; side <= 8192; side += 7) {
+        const auto [w, h] = G::RenderSize(side, side + 3);
+        assert(w % G::RenderTile == 0 && w >= side && w < side + G::RenderTile);
+        assert(h % G::RenderTile == 0 && h >= side + 3 && h < side + 3 + G::RenderTile);
+    }
+    assert(G::RenderSize(1920, 1080) == std::make_pair(1920, 1080));
+    // A mod's size is what the mod's own patch renders at: not rounded here.
+    assert(G::ResolutionSize("1360x768") == std::make_pair(1360, 768));
     assert(G::ParseEngineFps(240) == 240 && G::ParseEngineFps(144) == 144 && G::ParseEngineFps(180) == 180 && G::ParseEngineFps(100) == 100 && G::ParseEngineFps(90) == 120);
     // R3 + L1 + R1 / F9: the next rate this launch supports, back to 60 after the last.
     assert(G::NextEngineFps(60, 240) == 100 && G::NextEngineFps(100, 240) == 120);

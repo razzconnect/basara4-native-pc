@@ -20,7 +20,7 @@ struct Rect {
 constexpr Rect Whole{0.0f, 0.0f, 1.0f, 1.0f};
 
 // The 16:9 picture centered in a width x height display buffer; the whole buffer when it is
-// 16:9 within 1% (the built-in sizes: 480p is 854x480).
+// 16:9 within 1% (the built-in sizes: 480p renders at 860x480).
 inline Rect Picture(uint32_t width, uint32_t height) {
     if (!width || !height) {
         return Whole;
