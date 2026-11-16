@@ -120,6 +120,76 @@ GUI_SCALE_UNCLAMP = (
     b'\x0f\x1f\x84\x00\x00\x00\x00\x00'  # 8-byte nop padding
 )
 
+# uBasaraGUI's helper that places a 2D effect on a GUI node (the pause menu cursor glow, and the
+# highlights of the restart sub-menu, confirmation popup, gallery tabs, game over and setup menus)
+# converts the node's screen position to the effect's 1280x720 space as (x + x) / 3.0 and
+# (y + y) / 3.0, i.e. x 1280/1920: right only on a 1920x1080 screen. Elsewhere the effect lands at
+# position x W/1920 (720p: 0.67, 1440p: 1.33). The site, 56 bytes:
+#   vmovss xmm0,[rbx+40h]; vmovss xmm1,[rbx+44h]; vaddss xmm0,xmm0,xmm0; vmovss xmm2,[rip+3.0];
+#   vdivss xmm0,xmm0,xmm2; vmovd eax,xmm0; vaddss xmm0,xmm1,xmm1; vdivss xmm0,xmm0,xmm2;
+#   vmovd ecx,xmm0; shl rcx,20h; or rax,rcx; mov [r14+148h],rax        (then pop rbx)
+E2D_NODE_POS_PAT = ("c5 fa 10 43 40 c5 fa 10 4b 44 c5 fa 58 c0 c5 fa 10 15 ?? ?? ?? ?? c5 fa 5e c2 "
+                    "c5 f9 7e c0 c5 f2 58 c1 c5 fa 5e c2 c5 f9 7e c1 48 c1 e1 20 48 09 c8 "
+                    "49 89 86 48 01 00 00")
+E2D_NODE_POS_LEN = 56
+# uBasaraGUI's own 1280x720-to-screen scale, only read: lea rax,[rip+viewport pointer];
+# mov rax,[rax]; vcvtdq2ps xmm0,[rax+0D30h] (the screen rect the render size patches fill);
+# vmovhlps xmm1,xmm0,xmm0; vdivss xmm1,xmm1,[rip+1280.0] (720.0 follows it); vmovss [rdi],xmm1.
+UBGUI_SCALE_PAT = ("48 8d 05 ?? ?? ?? ?? 48 8b 00 c5 f8 5b 80 30 0d 00 00 c5 f8 12 c8 "
+                   "c5 f2 5e 0d ?? ?? ?? ?? c5 fa 11 0f")
+
+
+def _rip_target(image, disp_at, next_ip):
+    """The image offset a rip-relative operand points at (its rel32 at disp_at)."""
+    return next_ip + struct.unpack_from('<i', image, disp_at)[0]
+
+
+def _f32_at(image, at):
+    if not 0 <= at <= len(image) - 4:
+        raise ValueError(f'2D effect position patch: constant at {at + EBOOT_BASE:#x} outside the image')
+    return struct.unpack_from('<f', image, at)[0]
+
+
+def e2d_node_pos_patch(image):
+    """[(image offset, bytes)] that place 2D effects on GUI nodes with the screen's real size:
+    effect = node / (W / 1280, H / 720), W x H from the screen rect, per axis. [] when this eboot
+    does not have the code; ValueError when it has it but not as expected (nothing is written)."""
+    sites = find(image, E2D_NODE_POS_PAT)
+    if not sites:
+        return []
+    if len(sites) > 1:
+        raise ValueError(f'2D effect position code found {len(sites)} times')
+    scales = find(image, UBGUI_SCALE_PAT)
+    if len(scales) != 1:
+        raise ValueError(f'GUI screen scale code found {len(scales)} times (need 1)')
+    a, u = sites[0], scales[0]
+    if _f32_at(image, _rip_target(image, a + 18, a + 22)) != 3.0:
+        raise ValueError(f'2D effect position code at {a + EBOOT_BASE:#x} does not divide by 3.0')
+    viewport = _rip_target(image, u + 3, u + 7)  # a pointer in .bss, filled at run time
+    rect = image[u + 14:u + 18]  # the game's own displacement of the screen rect (vcvtdq2ps)
+    const = _rip_target(image, u + 26, u + 30)
+    if (_f32_at(image, const), _f32_at(image, const + 4)) != (1280.0, 720.0):
+        raise ValueError(f'GUI screen scale code at {u + EBOOT_BASE:#x} does not divide by 1280/720')
+    if a + E2D_NODE_POS_LEN >= len(image) or image[a + E2D_NODE_POS_LEN] != 0x5b:
+        raise ValueError(f'2D effect position code at {a + EBOOT_BASE:#x} is not followed by pop rbx')
+
+    def rel32(target, next_ip):
+        return struct.pack('<i', target - next_ip)
+
+    code = (b'\x48\x8d\x05' + rel32(viewport, a + 7) +                 # lea rax,[rip+viewport ptr]
+            b'\x48\x8b\x00' +                                          # mov rax,[rax]
+            b'\xc5\xf8\x5b\x90' + rect +                               # vcvtdq2ps xmm2,[rax+rect]
+            b'\xc5\xe8\x12\xd2' +                                      # vmovhlps xmm2,xmm2,xmm2: W, H
+            b'\xc5\xe8\x5e\x15' + rel32(const, a + 30) +               # vdivps xmm2,xmm2,[1280, 720]
+            b'\xc5\xfa\x7e\x43\x40' +                                  # vmovq xmm0,[rbx+40h]: x, y
+            b'\xc5\xf8\x5e\xc2' +                                      # vdivps xmm0,xmm0,xmm2
+            b'\xc4\xc1\x79\xd6\x86\x48\x01\x00\x00' +                  # vmovq [r14+148h],xmm0
+            b'\xc4\xe1\xf9\x7e\xc0' +                                  # vmovq rax,xmm0 (as before)
+            b'\x0f\x1f\x00')                                           # 3-byte nop
+    assert len(code) == E2D_NODE_POS_LEN
+    return [(a, code)]
+
+
 RESOLUTION_SIZES = {
     "360p": (640, 360),
     "480p": (854, 480),
@@ -192,6 +262,10 @@ def resolution_patches(image, res_name):
             writes.append((off + 5, b'\xeb'))
         for off in find(image, GARLIC_PAT):
             writes.append((off + 6, struct.pack('<I', 0xE0000000)))
+
+    # 10. 2D effects on GUI nodes (pause menu cursor glow and the other menu highlights) follow the
+    #     node at every screen size: the effect position is computed from the real screen size.
+    writes += e2d_node_pos_patch(image)
 
     return writes
 
