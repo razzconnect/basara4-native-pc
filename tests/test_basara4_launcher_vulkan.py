@@ -170,6 +170,33 @@ class ReportTests(unittest.TestCase):
                                                                           ("B", IGPU, (1, 2))])[0]),
                          "loader 1.4, GPU 0 1.4, GPU 1 1.2; needs 1.3")
 
+    def test_session_report_names_every_gpu_with_its_driver(self):
+        # Driver versions as the game itself writes them in "GPU driver:" (NVIDIA and Intel pack their own way).
+        nvidia, amd, intel = 621 << 22 | 1 << 14, 2 << 22 | 353, 101 << 14 | 6979
+        result = bl.VulkanProbe(True, (1, 4), True, [("RTX", DGPU, (1, 4)), ("Radeon", IGPU, (1, 4)),
+                                                     ("Arc", DGPU, (1, 3))], "",
+                                [(0x10DE, nvidia), (0x1002, amd), (0x8086, intel)], None)
+        info = bl.vulkan_info(result, 2)
+        self.assertEqual([(g["name"], g["type"], g["vulkan"], g["vendor"], g["driver"]) for g in info["gpus"]], [
+            ("RTX", "dGPU", "1.4", "NVIDIA", "621.1.0.0"), ("Radeon", "iGPU", "1.4", "AMD", "2.0.353"),
+            ("Arc", "dGPU", "1.3", "Intel", "101.6979" if bl.os.name == "nt" else "0.405.3395")])
+        self.assertEqual((info["loader"], info["check"], info["gpu_for_game"], info["gpu_vendor_for_game"]),
+                         ("1.4", "ok", 2, "Intel"))
+        self.assertEqual(info["dll_version"], {"unknown": "not loaded"})
+
+    def test_a_missing_vulkan_is_still_described(self):
+        info = bl.vulkan_info(bl.probe_vulkan(load=missing), None)
+        self.assertEqual(info["check"], "missing")
+        self.assertIn("vulkan-1.dll", info["dll"]["unknown"])
+        self.assertEqual((info["gpus"], info["gpu_vendor_for_game"]), ([], "none"))
+
+    @unittest.skipUnless(bl.os.name == "nt", "file versions are read with the Windows version API")
+    def test_file_version_of_a_windows_dll(self):
+        kernel32 = bl.Path(bl.os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "kernel32.dll"
+        self.assertRegex(bl.file_version(kernel32), r"^\d+\.\d+\.\d+\.\d+$")
+        self.assertIn("unknown", bl.file_version(None))
+        self.assertIn("no version resource", bl.file_version(kernel32.with_name("no-such-file.dll"))["unknown"])
+
 
 class WarningTextTests(unittest.TestCase):
     def test_wording(self):
