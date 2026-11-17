@@ -48,7 +48,12 @@ static SDL_Joystick *joy;
 static int axis_count;
 static int ui_mode;                     /* --ui: JSON events out, commands in */
 static void (*mapper_poll_hook)(void);  /* tests: drives a virtual joystick before every poll */
+#ifdef MAPPER_NO_MAIN  /* built into tests/test_gamepad_mapper.c, which reads this count */
 static int stick_rejections;            /* stick pushes asked again (rotated or two axes) */
+#define COUNT_STICK_REJECTION() (++stick_rejections)
+#else
+#define COUNT_STICK_REJECTION() ((void)0)
+#endif
 static int joy_axis(int a) { return SDL_GetJoystickAxis(joy, a); }
 static int axes_known(void) { return axis_count < MAX_AXES ? axis_count : MAX_AXES; }
 
@@ -455,7 +460,7 @@ static int find_stick(int target, char *out, size_t size) {
     }
     const StickVerdict verdict = stick_verdict(range, axes_known(), free_axis, trigger, negative);
     if (verdict != STICK_OK) {
-        ++stick_rejections;
+        COUNT_STICK_REJECTION();
         if (ui_mode) emit("warn", targets[target].sdl, "reason", verdict == STICK_ROTATED ? "stick_rotated" : "stick_two_axes");
         else printf(verdict == STICK_ROTATED ? "[stick diputar atau didorong balik; dorong lurus sekali] "
                                              : "[stick bergerak ke dua arah; dorong lurus sekali] ");
