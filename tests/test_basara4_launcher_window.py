@@ -236,12 +236,8 @@ class ControlsTests(unittest.TestCase):
             app.map_pad(["--second"])
             showerror.assert_called_once()  # the mapper is missing: nothing starts
             popen.assert_not_called()
-            paths.bin.mkdir()
-            mapper = paths.bin / "basara4-pad-mapper.exe"
-            mapper.write_bytes(b"MZ")
-            app.map_pad(["--second"])
-            self.assertEqual(popen.call_args.args[0], [str(mapper), str(paths.mapping), "--second"])
-            self.assertTrue(popen.call_args.kwargs["env"]["PATH"].startswith(str(paths.bin)))
+            # With the mapper present the buttons open the Controller window, which starts it without a
+            # console: test_basara4_controller.LauncherButtonTests.
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, _game, _):
             paths.mapping.write_text("mapping", encoding="utf-8")
             with mock.patch.object(bl.messagebox, "askyesno", return_value=False):
