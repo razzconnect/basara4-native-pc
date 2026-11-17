@@ -317,7 +317,7 @@ def summary_line(report):
         return bilingual_line(f"Game berhenti sebelum menulis log (exit {end.get('exit_hex')}).",
                               f"The game stopped before writing a log (exit {end.get('exit_hex')}).")
     return bilingual_line(f"Game keluar dengan exit {end.get('exit_hex')} tanpa pesan error di log.",
-                          f"The game exited with exit {end.get('exit_hex')} and no error message in the log.")
+                          f"The game exited with code {end.get('exit_hex')} and no error message in the log.")
 
 
 def render_text(report, tail_lines=None):

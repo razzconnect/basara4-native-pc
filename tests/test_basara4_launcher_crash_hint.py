@@ -54,7 +54,7 @@ class CrashSummaryTests(unittest.TestCase):
     def test_not_found_is_not_fatal_but_unusual_ones_are_listed(self):
         summary = summary_of("Runtime: open(/app0/x) -> not found")
         self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
-                         "No known fatal signature (the game exited suddenly)."])
+                         "No known error pattern in the log (the game closed suddenly)."])
         self.assertEqual(summary["unusual_not_found"], ["/app0/x"])
         normal = summary_of("Runtime: open(/app0/nativePS4/actorParam/pl008/pl008.pmc) -> not found")
         self.assertEqual((normal["unusual_not_found"], normal["hidden_not_found"]), ([], 1))
@@ -63,7 +63,7 @@ class CrashSummaryTests(unittest.TestCase):
         lines = [f"Runtime: line {i}" for i in range(30)]
         summary = summary_of("\n".join(lines), max_context_lines=3)
         self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
-                         "No known fatal signature (the game exited suddenly)."])
+                         "No known error pattern in the log (the game closed suddenly)."])
         self.assertEqual(summary["tail_context"].splitlines(), lines[-3:])
 
     def test_every_fatal_pattern_is_recognised(self):
@@ -164,6 +164,55 @@ class BilingualTests(unittest.TestCase):
                 rp.bilingual(*args)
             with self.assertRaises(ValueError):
                 rp.bilingual_line(*args)
+
+class GoldenHintTests(unittest.TestCase):
+    """The full text of every crash hint, word for word: the Indonesian part as it has been since before the
+    English was added, then the English part."""
+    GOLDEN = [
+        ('ERROR_COMMITMENT_LIMIT', 0x1,
+         "💾 Memori Virtual Windows (RAM / Pagefile) Habis [Error 1455]:\nKapasitas RAM + Paging File Windows tidak cukup untuk mengalokasikan memori permainan.\n👉 Solusi: Buka Windows Settings -> Advanced System Settings -> Performance -> Advanced -> Virtual Memory, centang 'Automatically manage paging file size for all drives', tutup aplikasi berat (Chrome/Discord), lalu restart PC.",
+         "💾 Windows Virtual Memory (RAM / Page File) Ran Out [Error 1455]:\nRAM plus the Windows page file is not enough to allocate the game's memory.\n👉 Fix: open Windows Settings -> Advanced System Settings -> Performance -> Advanced -> Virtual Memory, tick 'Automatically manage paging file size for all drives', close heavy apps (Chrome/Discord), then restart the PC."),
+        ('vk::Result=ErrorOutOfDeviceMemory', 0x1,
+         '🎮 Memori Kartu Grafis (VRAM / Shared GPU Memory) Tidak Cukup:\nGPU kehabisan VRAM atau memori sistem saat memuat tekstur/buffer.\n👉 Solusi: Turunkan pengaturan Resolution di Launcher ke 540p atau 720p, matikan Upscaler (pilih Off), dan tutup aplikasi lain yang menggunakan akselerasi GPU.',
+         '🎮 Not Enough Graphics Memory (VRAM / Shared GPU Memory):\nThe GPU ran out of VRAM or system memory while loading textures/buffers.\n👉 Fix: lower Resolution in the launcher to 540p or 720p, turn the Upscaler Off, and close other apps that use GPU acceleration.'),
+        ('Vulkan 1.3 is required', 0x1,
+         '⚠️ Kartu Grafis (GPU) atau Driver Belum Mendukung Vulkan 1.3:\nGPU yang dipilih tidak memiliki fitur Vulkan 1.3 yang wajib untuk merender grafis game.\n👉 Solusi: Update driver kartu grafis (Intel / AMD Adrenalin / NVIDIA GeForce) ke versi terbaru. Jika laptop/PC memiliki 2 GPU, pastikan memilih GPU diskrit (NVIDIA/AMD) pada menu GPU di Launcher.',
+         "⚠️ Graphics Card (GPU) or Driver Does Not Support Vulkan 1.3 Yet:\nThe selected GPU lacks the Vulkan 1.3 features the game needs to render.\n👉 Fix: update the graphics driver (Intel / AMD Adrenalin / NVIDIA GeForce) to the latest version. If the laptop/PC has 2 GPUs, choose the dedicated GPU (NVIDIA/AMD) in the launcher's GPU menu."),
+        ('VK_ERROR_DEVICE_LOST', 0x1,
+         '🔌 Koneksi Kartu Grafis Terputus (GPU Device Lost / Driver Timeout):\nDriver GPU berhenti merespons akibat beban render berlebih atau driver tidak stabil.\n👉 Solusi: Turunkan Resolution ke 720p, matikan Upscaler, dan pastikan driver GPU sudah versi terbaru.',
+         '🔌 Graphics Card Connection Lost (GPU Device Lost / Driver Timeout):\nThe GPU driver stopped responding because of heavy rendering load or an unstable driver.\n👉 Fix: lower Resolution to 720p, turn the Upscaler off, and make sure the GPU driver is up to date.'),
+        ('Failed to create graphics pipeline', 0x1,
+         '🛠️ Gagal Kompilasi Shader / Pipeline Vulkan:\nDriver GPU gagal mengompilasi pipeline grafis.\n👉 Solusi: Perbarui driver Vulkan GPU Anda atau matikan fitur Async Shaders di Launcher.',
+         "🛠️ Vulkan Shader / Pipeline Compilation Failed:\nThe GPU driver failed to compile a graphics pipeline.\n👉 Fix: update your GPU's Vulkan driver or turn off Async Shaders in the launcher."),
+        ('missing MOVBE, BMI1, LZCNT', 0x1,
+         "🖥️ Instruksi CPU (x86-64-v3 / AVX2 / BMI1) Tidak Cocok:\nProsesor membutuhkan tabel translasi instruksi (isa-rewrite.bin).\n👉 Solusi: Klik tombol 'Re-prepare' di bagian bawah Launcher agar file isa-rewrite.bin dibuat ulang.",
+         "🖥️ CPU Instructions (x86-64-v3 / AVX2 / BMI1) Do Not Match:\nThe processor needs an instruction translation table (isa-rewrite.bin).\n👉 Fix: click 'Re-prepare' at the bottom of the launcher so isa-rewrite.bin is made again."),
+        ('', 0xc0000409,
+         '💥 Crash Driver Grafis / Batas Memori Sistem (Exit Code 0xC0000409):\nProses dihentikan paksa oleh Windows/Driver GPU (umum terjadi pada PC dengan RAM 8 GB atau iGPU seperti Intel UHD / AMD Radeon Graphics ketika memori sistem/VRAM penuh atau fitur driver tidak didukung).\n👉 Solusi: Gunakan Resolution 540p atau 720p, matikan Upscaler (Off), aktifkan Windows Paging File (Virtual Memory), dan perbarui driver kartu grafis Anda.',
+         '💥 Graphics Driver Crash / System Memory Limit (Exit Code 0xC0000409):\nWindows or the GPU driver force-stopped the process (common on PCs with 8 GB RAM or an iGPU such as Intel UHD / AMD Radeon Graphics when system memory/VRAM is full or a driver feature is not supported).\n👉 Fix: use Resolution 540p or 720p, turn the Upscaler Off, enable the Windows Paging File (Virtual Memory), and update your graphics driver.'),
+        ('', 0xc0000005,
+         "💥 Pelanggaran Akses Memori (Access Violation 0xC0000005):\nTerjadi konflik akses memori pada driver GPU atau data game.\n👉 Solusi: Turunkan Resolution ke 720p, pastikan driver GPU terbaru, atau klik 'Re-prepare' jika file eboot baru diubah.",
+         "💥 Memory Access Violation (0xC0000005):\nA memory access conflict happened in the GPU driver or the game data.\n👉 Fix: lower Resolution to 720p, make sure the GPU driver is up to date, or click 'Re-prepare' if the eboot file was changed."),
+        ('', 0x17,
+         '⚠️ Kegagalan Inisialisasi / Assertion GPU (Exit Code 0x17):\nMesin grafis Vulkan menghentikan eksekusi karena batas resource GPU/VRAM atau fitur driver tidak terpenuhi.\n👉 Solusi: Turunkan Resolution ke 540p/720p, matikan Upscaler, dan periksa driver Vulkan GPU Anda.',
+         "⚠️ GPU Initialization / Assertion Failure (Exit Code 0x17):\nThe Vulkan renderer stopped because a GPU/VRAM resource limit or a driver feature was not met.\n👉 Fix: lower Resolution to 540p/720p, turn the Upscaler off, and check your GPU's Vulkan driver."),
+        ('', 0xc0000139,
+         '🧩 Vulkan Tidak Ditemukan atau Terlalu Lama (Exit Code 0xC0000139):\nWindows gagal memuat game karena komponen Vulkan di PC tidak ada atau terlalu lama.\n👉 Solusi: Perbarui driver kartu grafis (NVIDIA / AMD / Intel), lalu jalankan lagi. Kalau PC memakai grafis lama yang tidak mendukung Vulkan, game belum bisa berjalan di PC ini.',
+         "🧩 Vulkan Not Found or Too Old (Exit Code 0xC0000139):\nWindows could not load the game because the PC's Vulkan components are missing or too old.\n👉 Fix: update the graphics driver (NVIDIA / AMD / Intel), then start again. If the PC has old graphics without Vulkan support, the game cannot run on this PC yet."),
+        ('', 0xc0000135,
+         '📁 File Game Tidak Lengkap (Exit Code 0xC0000135):\nWindows tidak menemukan salah satu file yang dibutuhkan game.\n👉 Solusi: Ekstrak ZIP game sampai selesai ke folder baru, dan pastikan antivirus tidak mengarantina file di dalamnya.',
+         '📁 Game Files Incomplete (Exit Code 0xC0000135):\nWindows could not find one of the files the game needs.\n👉 Fix: extract the port ZIP (not the game files) completely into a new folder, and make sure the antivirus did not quarantine any file in it.'),
+    ]
+
+    def test_every_hint_word_for_word(self):
+        for signature, code, indonesian, english in self.GOLDEN:
+            with self.subTest(signature=signature, code=hex(code)):
+                errors = [signature] if signature else []
+                self.assertEqual(bl.explain_hardware_crash(code, errors, ""), [indonesian + "\n\n" + english])
+
+    def test_the_golden_list_covers_every_hint(self):
+        source = Path(bl.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count("hints.append(basara4_report.bilingual("), len(self.GOLDEN))
 
 if __name__ == "__main__":
     unittest.main()

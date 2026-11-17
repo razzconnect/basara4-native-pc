@@ -299,6 +299,8 @@ class RunLogAndPlayTests(unittest.TestCase):
             self.assertIn("File crash dump (.dmp) tidak ikut", text)
             self.assertIn("pesan pribadi (DM)", text)
             self.assertIn("The crash dump (.dmp) is not included", text)
+            self.assertIn("Its folder has been opened. Attach that file in Discord or the GitHub issue when you "
+                          "report.", text)
             self.assertIn("in a private message (DM)", text)
             self.assertIn("Laporan siap dikirim / Report ready to send", showinfo.call_args.args[0])
             self.assertNotIn("tidak perlu dijelaskan lagi", text)
@@ -306,7 +308,7 @@ class RunLogAndPlayTests(unittest.TestCase):
     def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
                 mock.patch.dict(bl.os.environ, {"USERNAME": "QA_LEAK_7f3a"}), \
-                mock.patch.object(bl.messagebox, "showinfo"), \
+                mock.patch.object(bl.messagebox, "showinfo") as showinfo, \
                 mock.patch.object(bl.Launcher, "clipboard_clear"), \
                 mock.patch.object(bl.Launcher, "clipboard_append") as append, \
                 mock.patch.object(bl.Launcher, "send_report") as send:
@@ -322,13 +324,74 @@ class RunLogAndPlayTests(unittest.TestCase):
                 self.assertTrue(indonesian and english and indonesian != english, english)
             labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label))
             for english in ("The Game Stopped Unexpectedly", "press 📦 Kirim laporan (Send report)",
-                            "Technical signs found in the game log", "👉 Fix", "Last 10 Log Lines"):
+                            "What the game log shows", "👉 Fix", "Last 10 Log Lines"):
                 self.assertIn(english, labels + "\n" + "\n".join(
                     str(w.cget("text")) for w in descendants(dialog) if isinstance(w, ttk.Label)))
             buttons[0].invoke()
             send.assert_called_once()
             next(b for b in buttons if "Clipboard" in str(b.cget("text"))).invoke()
         self.assertNotIn("qa_leak_7f3a", append.call_args.args[0].lower())
+        self.assertEqual(showinfo.call_args.args[:2], (
+            "Tersalin ke Clipboard / Copied to the Clipboard",
+            "Laporan crash lengkap (spek hardware, GPU, log error, dan audio log) berhasil disalin!\n"
+            "Anda tinggal Paste (Ctrl+V) langsung ke Discord untuk bantuan teknis.\n\n"
+            "The full crash report (hardware specs, GPU, error log and audio log) was copied!\n"
+            "Just paste it (Ctrl+V) on Discord for technical help."))
+
+    DENSE_CRASH = ("".join(f"Runtime: open(/app0/nativePS4/ui/gui/f{i}.arc) -> not found\n" for i in range(8))
+                   + "GPU [Lib.SaveData] <Error> savedata.cpp:12 sceSaveDataMount5: (STUBBED) called\n"
+                   "error 1455\nVK_ERROR_DEVICE_LOST\n"
+                   "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n")
+    # Screens as the launcher sees them: it is not DPI aware, so with Windows scaling it gets the scaled size
+    # (1366x768 at 125% is 1093x614). Windows 11 keeps 48 px for the taskbar, a title bar takes about 31.
+    SCREENS = [(1366, 768), (1280, 720), (1920, 1080), (1093, 614), (911, 512)]
+
+    def test_crash_window_size_follows_the_screen(self):
+        self.assertEqual(bl.crash_dialog_geometry(1920, 1080), (820, 720, 550, 135))
+        self.assertEqual(bl.crash_dialog_geometry(1366, 768)[:2], (820, 678))
+        for width, height in self.SCREENS:
+            w, h, left, top = bl.crash_dialog_geometry(width, height)
+            self.assertLessEqual(top + h + 31, height - 48, (width, height))  # above the taskbar
+            self.assertLessEqual(left + w, width, (width, height))
+
+    def test_crash_window_keeps_title_and_buttons_on_every_screen(self):
+        for width, height in self.SCREENS:
+            with self.subTest(screen=f"{width}x{height}"), tempfile.TemporaryDirectory() as tmp, \
+                    launcher(tmp) as (app, paths, game, _), \
+                    mock.patch.object(bl.Launcher, "winfo_screenwidth", return_value=width), \
+                    mock.patch.object(bl.Launcher, "winfo_screenheight", return_value=height):
+                paths.log.write_text(self.DENSE_CRASH, encoding="utf-8")
+                app._show_crash_dialog(0xC0000005)
+                dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+                dialog.update()
+                size, left, top = dialog.geometry().split("+")[:3]
+                w, h = map(int, size.split("x"))
+                self.assertLessEqual(int(top) + h + 31, height - 48)  # the whole window is above the taskbar
+                self.assertLessEqual(int(left) + w, width)
+                inside_top, inside_bottom = dialog.winfo_rooty(), dialog.winfo_rooty() + dialog.winfo_height()
+                buttons = [b for b in descendants(dialog) if isinstance(b, ttk.Button)]
+                self.assertEqual(len(buttons), 6)
+                for button in buttons:  # every button is drawn inside the window
+                    self.assertTrue(button.winfo_ismapped(), button.cget("text"))
+                    self.assertGreater(button.winfo_height(), 1)
+                    self.assertGreaterEqual(button.winfo_rooty(), inside_top)
+                    self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), inside_bottom)
+                labels = [w for w in descendants(dialog) if isinstance(w, tk.Label)]
+                title = next(w for w in labels if "The Game Stopped Unexpectedly" in str(w.cget("text")))
+                self.assertGreaterEqual(title.winfo_rooty(), inside_top)
+                self.assertLessEqual(title.winfo_rooty() + title.winfo_height(), inside_bottom)
+                # What does not fit scrolls: the stub list can be scrolled fully into view.
+                canvas = dialog.crash_scroll
+                stub = next(w for w in labels if "sceSaveDataMount5" in str(w.cget("text")))
+                content = canvas.bbox("all")[3] - canvas.bbox("all")[1]
+                canvas.yview_moveto(stub.winfo_y() / content)
+                dialog.update()
+                self.assertGreaterEqual(stub.winfo_rooty(), canvas.winfo_rooty())
+                self.assertLessEqual(stub.winfo_rooty() + stub.winfo_height(),
+                                     canvas.winfo_rooty() + canvas.winfo_height() + 1)
+                region = canvas.bbox("all")
+                self.assertGreater(region[3] - region[1], canvas.winfo_height())  # this crash needs the scroll
+                dialog.destroy()
 
     def test_crash_dialog_names_a_stub_called_just_before_the_crash(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):

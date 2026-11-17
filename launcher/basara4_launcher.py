@@ -181,7 +181,7 @@ def explain_hardware_crash(exit_code, detected_errors, tail_context):
                 "⚠️ Kegagalan Inisialisasi / Assertion GPU (Exit Code 0x17):\n"
                 "Mesin grafis Vulkan menghentikan eksekusi karena batas resource GPU/VRAM atau fitur driver tidak terpenuhi.\n"
                 "👉 Solusi: Turunkan Resolution ke 540p/720p, matikan Upscaler, dan periksa driver Vulkan GPU Anda.",
-                "⚠️ GPU Initialisation / Assertion Failure (Exit Code 0x17):\n"
+                "⚠️ GPU Initialization / Assertion Failure (Exit Code 0x17):\n"
                 "The Vulkan renderer stopped because a GPU/VRAM resource limit or a driver feature was not met.\n"
                 "👉 Fix: lower Resolution to 540p/720p, turn the Upscaler off, and check your GPU's Vulkan driver.")
             )
@@ -204,8 +204,8 @@ def explain_hardware_crash(exit_code, detected_errors, tail_context):
                 "file di dalamnya.",
                 "📁 Game Files Incomplete (Exit Code 0xC0000135):\n"
                 "Windows could not find one of the files the game needs.\n"
-                "👉 Fix: extract the game ZIP completely into a new folder, and make sure the antivirus did not quarantine "
-                "any file in it.")
+                "👉 Fix: extract the port ZIP (not the game files) completely into a new folder, and make sure the "
+                "antivirus did not quarantine any file in it.")
             )
 
     return hints
@@ -244,7 +244,7 @@ def extract_crash_summary(log_path, max_context_lines=10, max_signatures=4):
     return {
         "detected_errors": detected if detected else [basara4_report.bilingual_line(
             "Tidak ada fatal signature terdaftar (game keluar mendadak).",
-            "No known fatal signature (the game exited suddenly).")],
+            "No known error pattern in the log (the game closed suddenly).")],
         "tail_context": "\n".join(basara4_report.tail_without_trace(lines, max_context_lines)),
         "total_lines": len(lines),
         "unusual_not_found": analysis["unusual_not_found"],
@@ -805,6 +805,22 @@ def game_gpu_id(gpu_index, gpus):
     if gpu_index != -1:
         return gpu_index
     return next((idx for idx, _, is_disc in gpus if is_disc and idx >= 0), None)
+
+
+# The crash window is 820x720 where the screen allows it and smaller otherwise: room for the taskbar
+# (48 px on Windows 11) and the title bar (about 31 px) is kept free, so its buttons are never under the
+# taskbar, also on a 1366x768 laptop or with Windows scaling (the launcher sees the scaled size).
+CRASH_DIALOG_SIZE = (820, 720)
+SCREEN_KEEP_FREE = (40, 90)
+
+
+def crash_dialog_geometry(screen_width, screen_height):
+    """(width, height, left, top) of the crash window on a screen of this size."""
+    width = min(CRASH_DIALOG_SIZE[0], screen_width - SCREEN_KEEP_FREE[0])
+    height = min(CRASH_DIALOG_SIZE[1], screen_height - SCREEN_KEEP_FREE[1])
+    left = max(0, (screen_width - width) // 2)
+    top = max(0, (screen_height - SCREEN_KEEP_FREE[1] - height) // 2)
+    return width, height, left, top
 
 
 def vulkan_problem(probe, gpu_id):
@@ -2172,7 +2188,7 @@ class Launcher(tk.Tk):
                 "disimpan di folder user\\crash. Kirim hanya kalau tim memintanya, lewat pesan pribadi (DM), "
                 "jangan di tempat umum.",
                 f"The report was saved as {target.name}.\n"
-                "Its folder is open. Attach that file on Discord or GitHub when you report.\n"
+                "Its folder has been opened. Attach that file in Discord or the GitHub issue when you report.\n"
                 "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
                 "The crash dump (.dmp) is not included because it can hold personal data. It stays in "
                 "user\\crash. Send it only when the team asks for it, in a private message (DM), "
@@ -2186,29 +2202,45 @@ class Launcher(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Basara 4 PC — Crash Diagnostic")
         win.configure(bg=BG)
-        win.geometry("820x720")  # every text is Indonesian and English
-        win.minsize(680, 520)
+        width, height, left, top = crash_dialog_geometry(self.winfo_screenwidth(), self.winfo_screenheight())
+        win.geometry(f"{width}x{height}+{left}+{top}")
+        win.minsize(min(560, width), min(400, height))
         win.grab_set()
+        wrap = width - 130  # label width inside the scrollable area
 
         # Bottom Button Bar dipack DULUAN dengan side="bottom" agar TIDAK TERDORONG KELUAR LAYAR
         btn_bar = ttk.Frame(win, style="TFrame", padding=12)
         btn_bar.pack(side="bottom", fill="x")
 
-        # Top Header Frame
-        header_frame = ttk.Frame(win, style="Panel.TFrame", padding=14)
-        header_frame.pack(side="top", fill="x", padx=12, pady=(12, 6))
-
+        # The title stays at the top; everything else scrolls between it and the buttons, so on a small
+        # screen or a crash with many findings nothing is cut off without a way to reach it.
+        title_frame = ttk.Frame(win, style="Panel.TFrame", padding=(14, 10))
+        title_frame.pack(side="top", fill="x", padx=12, pady=(12, 0))
         exit_hex = f"{code & 0xFFFFFFFF:#x}" if isinstance(code, int) else "Unknown"
         tk.Label(
-            header_frame,
+            title_frame,
             text="⚠️ " + basara4_report.bilingual_line("Game Berhenti Mendadak", "The Game Stopped Unexpectedly")
                  + f" (Exit Code {exit_hex})",
             bg=PANEL,
             fg=RED,
             font=("Segoe UI", 12, "bold"),
-            wraplength=740,
+            wraplength=width - 80,
             justify="left"
         ).pack(anchor="w")
+
+        scroll_area = ttk.Frame(win, style="TFrame")
+        scroll_area.pack(side="top", fill="both", expand=True, padx=12, pady=(0, 6))
+        canvas = tk.Canvas(scroll_area, bg=PANEL, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(scroll_area, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        header_frame = ttk.Frame(canvas, style="Panel.TFrame", padding=(14, 4, 14, 14))
+        inner = canvas.create_window((0, 0), window=header_frame, anchor="nw")
+        header_frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner, width=e.width))
+        win.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        win.crash_scroll = canvas  # for tests: the scrollable area of this window
         tk.Label(
             header_frame,
             text=basara4_report.bilingual(
@@ -2219,7 +2251,7 @@ class Launcher(tk.Tk):
             bg=PANEL,
             fg=FG,
             font=("Segoe UI", 9),
-            wraplength=690,
+            wraplength=wrap,
             justify="left"
         ).pack(anchor="w", pady=(4, 0))
 
@@ -2233,14 +2265,14 @@ class Launcher(tk.Tk):
                     bg="#221915",
                     fg="#f5e6c8",
                     font=("Segoe UI", 9, "bold"),
-                    wraplength=690,
+                    wraplength=wrap,
                     justify="left"
                 ).pack(anchor="w", pady=2)
 
         tk.Label(
             header_frame,
             text=basara4_report.bilingual_line("Terdeteksi indikasi teknis dari log permainan",
-                                               "Technical signs found in the game log") + ":",
+                                               "What the game log shows") + ":",
             bg=PANEL,
             fg=FG,
             font=("Segoe UI", 9)
@@ -2253,7 +2285,7 @@ class Launcher(tk.Tk):
                 bg=PANEL,
                 fg=GOLD,
                 font=("Consolas", 9, "bold"),
-                wraplength=680,
+                wraplength=wrap - 10,
                 justify="left"
             ).pack(anchor="w", padx=6)
         missing = data["unusual_not_found"] + [p for p in data["near_primary_not_found"]
@@ -2271,7 +2303,7 @@ class Launcher(tk.Tk):
                 bg=PANEL,
                 fg=FG,
                 font=("Consolas", 8),
-                wraplength=680,
+                wraplength=wrap - 10,
                 justify="left"
             ).pack(anchor="w", padx=6, pady=(4, 0))
         if data["near_primary_stubs"]:
@@ -2284,19 +2316,20 @@ class Launcher(tk.Tk):
                 bg=PANEL,
                 fg=GOLD,
                 font=("Consolas", 8, "bold"),
-                wraplength=680,
+                wraplength=wrap - 10,
                 justify="left"
             ).pack(anchor="w", padx=6, pady=(4, 0))
 
-        # Center Body Frame
-        body_frame = ttk.Frame(win, style="TFrame")
-        body_frame.pack(side="top", fill="both", expand=True, padx=12, pady=6)
+        # The last log lines, inside the scrollable area
+        body_frame = ttk.Frame(header_frame, style="Panel.TFrame")
+        body_frame.pack(side="top", fill="x", pady=(10, 0))
 
         ttk.Label(body_frame, text=basara4_report.bilingual_line("Cuplikan 10 Baris Log Terakhir", "Last 10 Log Lines") + " (Raw Context):", style="Panel.TLabel").pack(anchor="w", pady=(0, 4))
-        txt = tk.Text(body_frame, bg="#0d0b0a", fg="#d6cfc7", relief="flat", wrap="none", font=("Consolas", 9), padx=8, pady=8)
+        txt = tk.Text(body_frame, bg="#0d0b0a", fg="#d6cfc7", relief="flat", wrap="none", font=("Consolas", 9), padx=8, pady=8,
+                      height=10)
         txt.insert("1.0", data["tail_context"])
         txt.config(state="disabled")
-        txt.pack(fill="both", expand=True)
+        txt.pack(fill="x")
 
         def copy_details():
             try:

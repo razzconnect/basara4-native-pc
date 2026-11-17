@@ -69,7 +69,7 @@ class HealthySessionTests(unittest.TestCase):
     def test_healthy_lines_are_never_fatal(self):
         s = summary(self.corpus())
         self.assertEqual(s["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
-                         "No known fatal signature (the game exited suddenly)."])
+                         "No known error pattern in the log (the game closed suddenly)."])
         self.assertEqual(s["unusual_not_found"], [])
         self.assertEqual(s["hidden_not_found"], sum("-> not found" in line for line in self.corpus()))
 
@@ -220,6 +220,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(line(1, True, False), "Dihentikan user. / Stopped by the user.")
         self.assertIn("tanpa pesan error", line(5, False, False))
         self.assertIn("no error message in the log", line(5, False, False))
+        self.assertIn("The game exited with code 0x00000005 and no error message in the log.", line(5, False, False))
         self.assertIn("sesi belum selesai", rp.summary_line(self.started()).lower())
         self.assertIn("the session had not ended", rp.summary_line(self.started()).lower())
 
