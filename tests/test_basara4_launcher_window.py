@@ -25,6 +25,16 @@ def assert_english(test, text):
     test.assertIsNone(INDONESIAN.search(text), text)
 
 
+def report_saved_window(app):
+    """The newest "Report saved" window (step 2 of reporting a crash)."""
+    wins = [w for w in descendants(app) if isinstance(w, tk.Toplevel) and w.title() == "Report saved"]
+    return wins[-1] if wins else None
+
+
+def button_texts(window):
+    return [str(w.cget("text")) for w in descendants(window) if isinstance(w, ttk.Button)]
+
+
 def descendants(widget):
     for child in widget.winfo_children():
         yield child
@@ -173,18 +183,14 @@ class RunLogAndPlayTests(unittest.TestCase):
     def test_crash_report_carries_the_vulkan_line(self):
         vulkan = bl.VulkanProbe(True, (1, 0), False, [], "")
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, _paths, _game, _iconify), \
-                mock.patch.object(bl, "VULKAN", vulkan), \
-                mock.patch.object(bl.messagebox, "showinfo"), \
-                mock.patch.object(bl.Launcher, "clipboard_clear"), \
-                mock.patch.object(bl.Launcher, "clipboard_append") as append:  # the user's clipboard stays as it is
+                mock.patch.object(bl, "VULKAN", vulkan):
             app._show_crash_dialog(0xC0000139)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
-            copy = next(w for w in descendants(dialog)
-                        if isinstance(w, ttk.Button) and "clipboard" in str(w.cget("text")))
-            copy.invoke()
-        report = append.call_args.args[0]
-        self.assertIn("Exit Code     : 0xc0000139\n", report)
-        self.assertIn("Vulkan        : loader 1.0, no instance; needs 1.3\n", report)
+            labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label))
+            self.assertIn("(Exit Code 0xc0000139)", labels)
+            with zipfile.ZipFile(app.send_report(dialog)) as zf:
+                report = zf.read("report.txt").decode("utf-8")
+        self.assertIn("summary: loader 1.0, no instance; needs 1.3", report)
 
     # ---- the session report: written before the game starts, completed when it ends ----
     def game_with_sfo(self, game, app_ver="01.02"):
@@ -276,10 +282,11 @@ class RunLogAndPlayTests(unittest.TestCase):
             with launcher(tmp) as (app, paths, game, _):
                 self.assertEqual(json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))["status"], "unfinished")
 
-    def test_send_report_makes_one_zip_and_opens_its_folder(self):
+    def test_save_report_makes_one_zip_then_offers_open_discord_and_close(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
                 mock.patch.object(bl.os, "startfile", create=True) as startfile, \
-                mock.patch.object(bl.messagebox, "showinfo") as showinfo:
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen") as popen:
             self.game_with_sfo(game)
             app._start_session_report(game)
             paths.log.write_text("Fault: write access to 0000000000000010 at guest offset 0x9c859c (thread 3)\n",
@@ -290,9 +297,8 @@ class RunLogAndPlayTests(unittest.TestCase):
             (paths.user / "captures" / "frame.png").write_bytes(b"\x89PNG")
             app._finish_session_report(0xC0000005)
             target = app.send_report()
-            startfile.assert_called_once_with(paths.user / "reports")
-            self.assertIn(target.name, showinfo.call_args.args[1])
             self.assertRegex(target.name, r"^report-\d{8}-\d{6}\.zip$")
+            self.assertEqual(target.parent, paths.user / "reports")
             with zipfile.ZipFile(target) as zf:
                 # The crash dump holds the process environment and is never zipped: named, sized, kept on the PC.
                 self.assertEqual(sorted(zf.namelist()), ["captures/frame.png", "last_run.log",
@@ -306,44 +312,109 @@ class RunLogAndPlayTests(unittest.TestCase):
                 self.assertIn("crash/core-1.dmp (4 bytes): kept on the PC, not included because it can hold "
                               "personal data", note)
             self.assertTrue((paths.user / "crash" / "core-1.dmp").is_file())  # the dump itself stays
-            text = showinfo.call_args.args[1]
-            self.assertIn("The crash dump (.dmp) is not included", text)
-            self.assertIn("Its folder has been opened. Attach that file in Discord or the GitHub issue when you "
-                          "report.", text)
-            self.assertIn("in a private message (DM)", text)
-            self.assertIn("Report ready to send", showinfo.call_args.args[0])
-            assert_english(self, showinfo.call_args.args[0] + text)
+            # Saving opens nothing by itself: no folder, no browser, no Explorer.
+            startfile.assert_not_called()
+            browser.assert_not_called()
+            popen.assert_not_called()
+            # Step 2: where the zip is, and exactly two buttons.
+            step2 = report_saved_window(app)
+            self.assertIsNotNone(step2)
+            self.assertEqual(button_texts(step2), ["Open Discord", "Close"])
+            message = next(str(w.cget("text")) for w in descendants(step2) if isinstance(w, tk.Label))
+            self.assertEqual(message, bl.report_saved_text(target.name))
+            self.assertEqual(message,
+                             f"The report was saved as {target.name}.\n"
+                             f"You can find it next to the launcher in user\\reports\\{target.name}\n\n"
+                             "To report the problem, press Open Discord: Discord opens in your browser and the file "
+                             "is shown in a folder window. Drag the file into your post on Discord.\n\n"
+                             "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
+                             "The crash dump (.dmp) is not included because it can hold personal data. It stays in "
+                             "user\\crash. Send it only when the team asks for it, in a private message (DM), never "
+                             "in a public place.")
+            assert_english(self, step2.title() + message + " ".join(button_texts(step2)))
+            # Close only closes.
+            next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Close").invoke()
+            browser.assert_not_called()
+            popen.assert_not_called()
+            startfile.assert_not_called()
+            self.assertFalse(step2.winfo_exists())
 
-    def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
+    def test_open_discord_opens_the_bug_channel_and_shows_the_zip(self):
+        self.assertEqual(bl.BUG_REPORT_URL, "https://discord.gg/uZzSPr3Xjq")
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen") as popen:
+            target = app.send_report()
+            step2 = report_saved_window(app)
+            next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Open Discord").invoke()
+            browser.assert_called_once_with("https://discord.gg/uZzSPr3Xjq")
+            popen.assert_called_once_with(["explorer.exe", "/select,", str(target)])  # the zip, selected
+            startfile.assert_not_called()
+
+    def test_open_discord_falls_back_to_the_reports_folder(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen", side_effect=OSError("no explorer")), \
+                mock.patch.object(bl.messagebox, "showerror") as showerror:
+            target = app.send_report()
+            app.open_bug_report(target)
+            browser.assert_called_once_with(bl.BUG_REPORT_URL)
+            startfile.assert_called_once_with(paths.user / "reports")
+            showerror.assert_not_called()
+            startfile.side_effect = OSError(5, "Access is denied")
+            app.open_bug_report(target)  # neither works: the player is told where the file is
+            self.assertEqual(showerror.call_args.args[0], "Folder not opened")
+            self.assertIn(f"user\\reports\\{target.name}", showerror.call_args.args[1])
+
+    def test_crash_window_has_save_report_and_close_and_no_clipboard_path(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
                 mock.patch.dict(bl.os.environ, {"USERNAME": "QA_LEAK_7f3a"}), \
-                mock.patch.object(bl.messagebox, "showinfo") as showinfo, \
-                mock.patch.object(bl.Launcher, "clipboard_clear"), \
+                mock.patch.object(bl.Launcher, "clipboard_clear") as clear, \
                 mock.patch.object(bl.Launcher, "clipboard_append") as append, \
-                mock.patch.object(bl.Launcher, "send_report") as send:
+                mock.patch.object(bl.os, "startfile", create=True), \
+                mock.patch.object(bl.webbrowser, "open"), mock.patch.object(bl.subprocess, "Popen"):
             paths.log.write_text("Settings: C:\\Users\\QA_LEAK_7f3a\\b4\\user\\basara4.ini\n"
                                  "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
                                  encoding="utf-8")
             app._show_crash_dialog(0xC0000005)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
-            buttons = [w for w in descendants(dialog) if isinstance(w, ttk.Button)]
-            self.assertEqual(str(buttons[0].cget("text")), "📦 Send report")  # the first, main action
-            self.assertEqual([str(b.cget("text")) for b in buttons],
-                             ["📦 Send report", "📋 Copy error to clipboard", "📁 Open log file", "📸 Open captures",
-                              "🌐 Report on Discord", "Close"])
-            labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label))
-            for english in ("The Game Stopped Unexpectedly", "press 📦 Send report",
-                            "What the game log shows", "👉 Fix", "Last 10 Log Lines"):
-                self.assertIn(english, labels + "\n" + "\n".join(
-                    str(w.cget("text")) for w in descendants(dialog) if isinstance(w, ttk.Label)))
-            buttons[0].invoke()
-            send.assert_called_once()
-            next(b for b in buttons if "clipboard" in str(b.cget("text"))).invoke()
-        self.assertNotIn("qa_leak_7f3a", append.call_args.args[0].lower())
-        self.assertEqual(showinfo.call_args.args[:2], (
-            "Copied to the Clipboard",
-            "The full crash report (hardware specs, GPU, error log and audio log) was copied!\n"
-            "Just paste it (Ctrl+V) on Discord for technical help."))
+            self.assertEqual(button_texts(dialog), ["Save report", "Close"])
+            labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, (tk.Label, ttk.Label)))
+            for english in ("The Game Stopped Unexpectedly", "press Save report", "What the game log shows",
+                            "👉 Fix", "Last 10 Log Lines"):
+                self.assertIn(english, labels)
+            everything = labels + " ".join(button_texts(dialog))
+            for gone in ("Send", "Copy", "clipboard", "Clipboard", "Open log", "Open captures", "Report on Discord"):
+                self.assertNotIn(gone, everything)
+            next(b for b in descendants(dialog) if isinstance(b, ttk.Button) and b.cget("text") == "Save report").invoke()
+            step2 = report_saved_window(app)
+            for button in [b for b in descendants(step2) if isinstance(b, ttk.Button)]:
+                button.invoke() if button.winfo_exists() else None
+            # Nothing reaches the clipboard on the whole path: no copy of names or paths can leak that way.
+            clear.assert_not_called()
+            append.assert_not_called()
+        source = Path(bl.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("clipboard_append", source)
+
+    def test_close_on_the_crash_window_only_closes(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen") as popen, \
+                mock.patch.object(bl.Launcher, "send_report") as send:
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            next(b for b in descendants(dialog) if isinstance(b, ttk.Button) and b.cget("text") == "Close").invoke()
+            self.assertFalse(dialog.winfo_exists())
+            for called in (startfile, browser, popen, send):
+                called.assert_not_called()
+
+    def test_credits_keep_the_community_server_link(self):
+        source = Path(bl.__file__).read_text(encoding="utf-8")
+        self.assertIn('webbrowser.open("https://discord.gg/UBZc57bBMa")', source)
+        self.assertEqual(source.count("https://discord.gg/uZzSPr3Xjq"), 1)  # one named constant
 
     DENSE_CRASH = ("".join(f"Runtime: open(/app0/nativePS4/ui/gui/f{i}.arc) -> not found\n" for i in range(8))
                    + "GPU [Lib.SaveData] <Error> savedata.cpp:12 sceSaveDataMount5: (STUBBED) called\n"
@@ -377,7 +448,7 @@ class RunLogAndPlayTests(unittest.TestCase):
                 self.assertLessEqual(int(left) + w, width)
                 inside_top, inside_bottom = dialog.winfo_rooty(), dialog.winfo_rooty() + dialog.winfo_height()
                 buttons = [b for b in descendants(dialog) if isinstance(b, ttk.Button)]
-                self.assertEqual(len(buttons), 6)
+                self.assertEqual(len(buttons), 2)
                 for button in buttons:  # every button is drawn inside the window
                     self.assertTrue(button.winfo_ismapped(), button.cget("text"))
                     self.assertGreater(button.winfo_height(), 1)
@@ -402,6 +473,18 @@ class RunLogAndPlayTests(unittest.TestCase):
                 for widget in descendants(dialog):
                     if isinstance(widget, (tk.Label, ttk.Label, ttk.Button)):
                         assert_english(self, str(widget.cget("text")))
+                # step 2 also fits above the taskbar, with both buttons drawn inside it
+                with mock.patch.object(bl.os, "startfile", create=True):
+                    app.send_report(dialog)
+                step2 = report_saved_window(app)
+                step2.update()
+                self.assertLessEqual(step2.winfo_height() + 31, height - 48)
+                self.assertLessEqual(step2.winfo_width(), width)
+                bottom = step2.winfo_rooty() + step2.winfo_height()
+                for button in [b for b in descendants(step2) if isinstance(b, ttk.Button)]:
+                    self.assertTrue(button.winfo_ismapped())
+                    self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), bottom)
+                step2.destroy()
                 dialog.destroy()
 
     def test_crash_dialog_names_a_stub_called_just_before_the_crash(self):
@@ -516,8 +599,7 @@ class RunLogAndPlayTests(unittest.TestCase):
 
     def test_a_dlc_folder_chosen_by_the_user_never_reaches_any_report(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
-                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"), \
-                mock.patch.object(bl.Launcher, "clipboard_clear"), \
+                mock.patch.object(bl.os, "startfile", create=True), \
                 mock.patch.object(bl.Launcher, "clipboard_append") as append:
             dlc = Path(tmp) / "GAMES QAPRIV 9c2e" / "Sengoku Basara 4 DLC"  # outside the game and program folders
             dlc.mkdir(parents=True)
@@ -531,17 +613,20 @@ class RunLogAndPlayTests(unittest.TestCase):
             paths.prepare_log.write_text(f"prepare: dlc {dlc}\n", encoding="utf-8")
             app._finish_session_report(0xC0000005)
             zip_path = app.send_report()
+            step2 = report_saved_window(app)
             app._show_crash_dialog(0xC0000005)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
-            next(w for w in descendants(dialog)
-                 if isinstance(w, ttk.Button) and "clipboard" in str(w.cget("text"))).invoke()
             texts = {p.name: p.read_text(encoding="utf-8") for p in (paths.user / "reports").glob("session-*")}
             texts.update({p.name: p.read_text(encoding="utf-8") for p in (paths.user / "crash").glob("report-*.txt")})
             with zipfile.ZipFile(zip_path) as zf:
                 texts.update({f"zip:{name}": zf.read(name).decode("utf-8") for name in zf.namelist()})
-            texts["Copy Error"] = append.call_args.args[0]
+            texts["Report saved"] = "\n".join(str(w.cget("text")) for w in descendants(step2)
+                                               if isinstance(w, tk.Label))
+            texts["Crash window"] = "\n".join(str(w.cget("text")) for w in descendants(dialog)
+                                               if isinstance(w, (tk.Label, ttk.Label)))
+            append.assert_not_called()  # nothing goes to the clipboard any more
             self.assertTrue({"zip:last_run.log", "zip:prepare.log", "zip:report.json", "zip:report.txt",
-                             "Copy Error"} <= set(texts))
+                             "Report saved", "Crash window"} <= set(texts))
             self.assertEqual(len([n for n in texts if n.startswith("session-")]), 2)
             self.assertEqual(len([n for n in texts if n.startswith("report-")]), 1)
             for name, text in texts.items():

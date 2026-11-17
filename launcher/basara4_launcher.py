@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import urllib.request
+import webbrowser
 from pathlib import Path
 from basara4_dlc import scan_extracted_dlc
 from basara4_dlc import _parse_sfo as parse_sfo
@@ -379,7 +380,10 @@ def request_window_close(pid):
     return asked
 
 
-REPORTS = USER / "reports"  # session-<time>.json/.txt per game start, report-<time>.zip per "Send report"
+REPORTS = USER / "reports"  # session-<time>.json/.txt per game start, report-<time>.zip per "Save report"
+# Where players report bugs: the bug-reports forum channel of the community Discord server (an invite that
+# does not expire). "Open Discord" opens it after a report is saved; the Credits window keeps its own link.
+BUG_REPORT_URL = "https://discord.gg/uZzSPr3Xjq"
 CRASH_DIR = USER / "crash"  # the game's core-<time>.dmp, and the launcher's report-<time>.txt per crash
 
 
@@ -765,6 +769,17 @@ def game_gpu_id(gpu_index, gpus):
 # taskbar, also on a 1366x768 laptop or with Windows scaling (the launcher sees the scaled size).
 CRASH_DIALOG_SIZE = (820, 720)
 SCREEN_KEEP_FREE = (40, 90)
+
+
+def report_saved_text(name):
+    """What the player reads after Save report: where the zip is and how to post it."""
+    return (f"The report was saved as {name}.\n"
+            f"You can find it next to the launcher in user\\reports\\{name}\n\n"
+            "To report the problem, press Open Discord: Discord opens in your browser and the file is shown in a "
+            "folder window. Drag the file into your post on Discord.\n\n"
+            "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
+            "The crash dump (.dmp) is not included because it can hold personal data. It stays in user\\crash. "
+            "Send it only when the team asks for it, in a private message (DM), never in a public place.")
 
 
 def crash_dialog_geometry(screen_width, screen_height):
@@ -2103,22 +2118,39 @@ class Launcher(tk.Tk):
                                                           "folder.") + f"\n\n{exc.strerror or exc}",
                                  parent=parent or self)
             return None
-        opened = ""
-        try:
-            os.startfile(REPORTS)
-        except OSError as exc:
-            opened = "\n\n(" + (f"The folder could not be opened automatically: {exc.strerror or exc}. Open it yourself: "
-                "user\\reports") + ")"
-        messagebox.showinfo(
-            "Report ready to send",
-            (f"The report was saved as {target.name}.\n"
-                "Its folder has been opened. Attach that file in Discord or the GitHub issue when you report.\n"
-                "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
-                "The crash dump (.dmp) is not included because it can hold personal data. It stays in "
-                "user\\crash. Send it only when the team asks for it, in a private message (DM), "
-                "never in a public place.") + opened,
-            parent=parent or self)
+        self._show_report_saved(target, parent or self)
         return target
+
+    def _show_report_saved(self, target, parent):
+        """Step 2 of reporting a crash: where the zip is, and two buttons, Open Discord and Close."""
+        win = tk.Toplevel(parent)
+        win.title("Report saved")
+        win.configure(bg=BG)
+        win.transient(parent)
+        win.resizable(False, False)
+        tk.Label(win, text=report_saved_text(target.name), bg=BG, fg=FG, font=("Segoe UI", 10),
+                 wraplength=520, justify="left").pack(padx=18, pady=(16, 10), anchor="w")
+        buttons = ttk.Frame(win, style="TFrame", padding=(14, 0, 14, 14))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Open Discord", style="Play.TButton",
+                   command=lambda: self.open_bug_report(target, win)).pack(side="left")
+        ttk.Button(buttons, text="Close", command=win.destroy).pack(side="right")
+        win.grab_set()
+        return win
+
+    def open_bug_report(self, target, parent=None):
+        """Opens the bug-reports channel in the browser and shows the saved zip in Explorer, so the player only
+        drags it into a post. Nothing is uploaded. When Explorer cannot select the file, its folder is opened."""
+        webbrowser.open(BUG_REPORT_URL)
+        try:
+            subprocess.Popen(["explorer.exe", "/select,", str(target)])
+        except OSError:
+            try:
+                os.startfile(REPORTS)
+            except OSError as exc:
+                messagebox.showerror("Folder not opened",
+                                     f"Open it yourself: user\\reports\\{target.name}\n\n{exc.strerror or exc}",
+                                     parent=parent or self)
 
     def _show_crash_dialog(self, code):
         data = extract_crash_summary(LOG)
@@ -2167,8 +2199,8 @@ class Launcher(tk.Tk):
         win.crash_scroll = canvas  # for tests: the scrollable area of this window
         tk.Label(
             header_frame,
-            text=("To report it, press 📦 Send report and attach the zip it makes on Discord or "
-                "GitHub. Your PC specs, settings and logs are already inside."),
+            text=("To report it, press Save report: it saves one zip file with your PC specs, settings and "
+                  "logs, then shows you where to post it."),
             bg=PANEL,
             fg=FG,
             font=("Segoe UI", 9),
@@ -2245,85 +2277,9 @@ class Launcher(tk.Tk):
         txt.config(state="disabled")
         txt.pack(fill="x")
 
-        def copy_details():
-            try:
-                import platform
-                import ctypes
-                from ctypes import wintypes
-                k = ctypes.windll.kernel32
-                class MEMORYSTATUSEX(ctypes.Structure):
-                    _fields_ = [
-                        ("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
-                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
-                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
-                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
-                        ("ullAvailExtendedVirtual", ctypes.c_uint64),
-                    ]
-                mem = MEMORYSTATUSEX()
-                mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-                k.GlobalMemoryStatusEx(ctypes.byref(mem))
-                ram_total = f"{mem.ullTotalPhys // (1024*1024)} MB"
-                ram_avail = f"{mem.ullAvailPhys // (1024*1024)} MB"
-                commit_avail = f"{mem.ullAvailPageFile // (1024*1024)} MB"
-            except Exception:
-                ram_total = ram_avail = commit_avail = "N/A"
-
-            gpu_list = "\n".join(f"  - {name}" for _, name, _ in SYSTEM_GPUS) if SYSTEM_GPUS else "  - None detected"
-
-            audio_tail = ""
-            if AUDIO_LOG.is_file():
-                try:
-                    a_lines = AUDIO_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-                    if a_lines:
-                        audio_tail = "\n".join(a_lines[-6:])
-                except Exception:
-                    pass
-
-            hints_block = ("\nHardware / Memory Diagnosis:\n" + "\n".join(f"  {h}" for h in hw_hints) + "\n") if hw_hints else ""
-            clip_text = (
-                f"=== Sengoku Basara 4 PC — Crash Diagnostic Report ===\n"
-                f"Version       : v{VERSION}\n"
-                f"Exit Code     : {exit_hex}\n"
-                f"OS            : {platform.system()} {platform.release()} (Build {platform.version()})\n"
-                f"Architecture  : {platform.machine()} ({platform.processor()})\n"
-                f"RAM           : Total {ram_total} | Free {ram_avail} | Available Commit {commit_avail}\n"
-                f"Vulkan        : {describe_vulkan(VULKAN)}\n"
-                f"Vulkan GPUs   :\n{gpu_list}\n"
-                f"{hints_block}"
-                f"Detected Fatal Signatures:\n" + "\n".join(f"  * {e}" for e in data["detected_errors"]) + "\n\n"
-                f"--- [Last 10 Log Lines (last_run.log)] ---\n"
-                f"{data['tail_context']}\n"
-            )
-            if audio_tail:
-                clip_text += f"\n--- [Recent Audio Log (audio_debug.log)] ---\n{audio_tail}\n"
-            clip_text += render_trace_report()
-            if isinstance(self.session_report, dict) and self.session_report.get("status") == "finished":
-                clip_text += "\n" + basara4_report.render_text(self.session_report)
-
-            clip_text += "\n=== End of Report ==="
-            self.clipboard_clear()
-            self.clipboard_append(self._masker()(clip_text))
-            messagebox.showinfo(
-                "Copied to the Clipboard",
-                ("The full crash report (hardware specs, GPU, error log and audio log) was copied!\n"
-                    "Just paste it (Ctrl+V) on Discord for technical help."),
-                parent=win
-            )
-
-        def open_discord():
-            import webbrowser
-            webbrowser.open("https://discord.gg/UBZc57bBMa")
-
-        # Two rows, so the six buttons also fit a narrow window.
-        top_row, bottom_row = ttk.Frame(btn_bar, style="TFrame"), ttk.Frame(btn_bar, style="TFrame")
-        top_row.pack(side="top", fill="x")
-        bottom_row.pack(side="top", fill="x", pady=(6, 0))
-        ttk.Button(top_row, text="📦 Send report", command=lambda: self.send_report(win)).pack(side="left", padx=4)
-        ttk.Button(top_row, text="📋 Copy error to clipboard", command=copy_details).pack(side="left", padx=4)
-        ttk.Button(top_row, text="📁 Open log file", command=self.open_log).pack(side="left", padx=4)
-        ttk.Button(bottom_row, text="📸 Open captures", command=self.open_captures).pack(side="left", padx=4)
-        ttk.Button(bottom_row, text="🌐 Report on Discord", command=open_discord).pack(side="left", padx=4)
-        ttk.Button(bottom_row, text="Close", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btn_bar, text="Save report", style="Play.TButton",
+                   command=lambda: self.send_report(win)).pack(side="left", padx=4)
+        ttk.Button(btn_bar, text="Close", command=win.destroy).pack(side="right", padx=4)
 
     # ---- keyboard & mouse mapping dialog ----
     def open_keymap_ui(self):
