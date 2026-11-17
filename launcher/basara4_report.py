@@ -303,8 +303,9 @@ def summary_line(report):
     return f"The game exited with code {end.get('exit_hex')} and no error message in the log."
 
 
-def render_text(report, tail_lines=None):
-    """The report as text for people: the clipboard, the crash folder and the zip."""
+def render_text(report, tail_lines=None, sections=()):
+    """The report as text for people: the session report, the crash folder and the zip. `sections` are
+    extra (title, text) parts placed before the end, such as the render trace summary in the zip."""
     def value(v):
         if isinstance(v, dict) and "unknown" in v:
             return f"unknown: {v['unknown']}"
@@ -361,6 +362,9 @@ def render_text(report, tail_lines=None):
     if tail_lines:
         out.append("--- Last lines of last_run.log ---")
         out += tail_lines
+    for title, body in sections:
+        out.append(f"--- {title} ---")
+        out += body.splitlines()
     out.append("=== End of report ===")
     return "\n".join(out) + "\n"
 

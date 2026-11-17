@@ -516,6 +516,13 @@ def render_trace_report():
     return text
 
 
+def render_trace_summary():
+    """The render trace part of the report in the zip: render_trace_report(), or one line saying why there is
+    nothing (it is masked with the rest of report.txt)."""
+    text = render_trace_report().strip("\n")
+    return text or "  (none: Render debug trace was off, or it left no log or captures)"
+
+
 def check_commit_limit_mb():
     """Returns available virtual memory (page file commit limit) in MB, or None if unavailable."""
     try:
@@ -2115,7 +2122,8 @@ class Launcher(tk.Tk):
         target = REPORTS / f"report-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
         try:
             basara4_report.make_zip(target, report,
-                                    basara4_report.render_text(report, getattr(self, "session_tail", None)),
+                                    basara4_report.render_text(report, getattr(self, "session_tail", None),
+                                                               sections=[("Render trace", render_trace_summary())]),
                                     self._masker(), logs=logs, binaries=binaries, withheld=withheld)
         except OSError as exc:
             messagebox.showerror("Report not saved",
@@ -2149,9 +2157,10 @@ class Launcher(tk.Tk):
     def open_bug_report(self, target, parent=None):
         """Opens the bug-reports channel in the browser and shows the saved zip in Explorer, so the player only
         drags it into a post. Nothing is uploaded. When Explorer cannot select the file, its folder is opened."""
-        webbrowser.open(BUG_REPORT_URL)
+        browser_opened = webbrowser.open(BUG_REPORT_URL)
         try:
-            subprocess.Popen(["explorer.exe", "/select,", str(target)])
+            # one quoted argument, so a path with commas or spaces selects the right file
+            subprocess.Popen(f'explorer.exe /select,"{target}"')
         except OSError:
             try:
                 os.startfile(REPORTS)
@@ -2159,6 +2168,10 @@ class Launcher(tk.Tk):
                 messagebox.showerror("Folder not opened",
                                      f"Open it yourself: user\\reports\\{target.name}\n\n{exc.strerror or exc}",
                                      parent=parent or self)
+        if not browser_opened:
+            messagebox.showwarning("Browser not opened",
+                                   f"Could not open your browser. Open Discord yourself: {BUG_REPORT_URL} and drag "
+                                   "the file into your post.", parent=parent or self)
 
     def _show_crash_dialog(self, code):
         data = extract_crash_summary(LOG)

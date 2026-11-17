@@ -349,15 +349,42 @@ class RunLogAndPlayTests(unittest.TestCase):
             step2 = report_saved_window(app)
             next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Open Discord").invoke()
             browser.assert_called_once_with("https://discord.gg/uZzSPr3Xjq")
-            popen.assert_called_once_with(["explorer.exe", "/select,", str(target)])  # the zip, selected
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')  # the zip, selected
             startfile.assert_not_called()
+
+    def test_explorer_selects_a_zip_whose_path_has_commas_spaces_and_unicode(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.webbrowser, "open", return_value=True), \
+                mock.patch.object(bl.subprocess, "Popen") as popen:
+            target = Path(tmp) / "Games, Basara 4 ünï" / "report-20261118-000000.zip"
+            app.open_bug_report(target)
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')  # one quoted argument
+
+    def test_open_discord_without_a_browser_says_so_and_still_shows_the_zip(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.webbrowser, "open", return_value=False), \
+                mock.patch.object(bl.subprocess, "Popen") as popen, \
+                mock.patch.object(bl.messagebox, "showwarning") as warning, \
+                mock.patch.object(bl.messagebox, "showerror") as error, \
+                mock.patch.object(bl.messagebox, "showinfo"):
+            target = Path(tmp) / "report-20261118-000000.zip"
+            app.open_bug_report(target)
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')
+            error.assert_not_called()
+            self.assertEqual(warning.call_args.args, (
+                "Browser not opened",
+                "Could not open your browser. Open Discord yourself: https://discord.gg/uZzSPr3Xjq and drag the "
+                "file into your post."))
 
     def test_open_discord_falls_back_to_the_reports_folder(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
                 mock.patch.object(bl.os, "startfile", create=True) as startfile, \
                 mock.patch.object(bl.webbrowser, "open") as browser, \
                 mock.patch.object(bl.subprocess, "Popen", side_effect=OSError("no explorer")), \
-                mock.patch.object(bl.messagebox, "showerror") as showerror:
+                mock.patch.object(bl.messagebox, "showerror") as showerror, \
+                mock.patch.object(bl.messagebox, "showwarning") as showwarning, \
+                mock.patch.object(bl.messagebox, "showinfo") as showinfo, \
+                mock.patch.object(bl.messagebox, "askyesno") as askyesno:
             target = app.send_report()
             app.open_bug_report(target)
             browser.assert_called_once_with(bl.BUG_REPORT_URL)
@@ -366,7 +393,57 @@ class RunLogAndPlayTests(unittest.TestCase):
             startfile.side_effect = OSError(5, "Access is denied")
             app.open_bug_report(target)  # neither works: the player is told where the file is
             self.assertEqual(showerror.call_args.args[0], "Folder not opened")
+            for other in (showwarning, showinfo, askyesno):  # every dialog is mocked: a wrong one fails, not hangs
+                other.assert_not_called()
             self.assertIn(f"user\\reports\\{target.name}", showerror.call_args.args[1])
+
+    PRIVATE = ("qauser7c1", "qapc7c1", "qadlc7c1", "qashare7c1", "ünï7c1")
+
+    def zip_report_text(self, app):
+        with mock.patch.object(bl.os, "startfile", create=True):
+            target = app.send_report()
+        with zipfile.ZipFile(target) as zf:
+            return zf.read("report.txt").decode("utf-8"), zf.read("report.json").decode("utf-8")
+
+    def test_render_trace_summary_goes_into_the_zip_masked(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(bl.os.environ, {"USERNAME": "QAUSER7c1", "COMPUTERNAME": "QAPC7c1",
+                                                "USERPROFILE": "C:\\Users\\QAUSER7c1"}):
+            app.cfg["dlc_dir"] = "D:\\QADLC7c1 ünï7c1\\DLC"  # another drive, Unicode
+            app.cfg["mods_dir"] = "\\\\qaserver\\QASHARE7c1\\mods"  # UNC
+            session = paths.user / "render_traces" / "20261118-000000"
+            session.mkdir(parents=True)
+            (session / "render_trace.log").write_text(
+                "trace: start\n"
+                "open C:\\Users\\QAUSER7c1\\AppData\\Local\\Temp\\x.bin\n"
+                f"game {game}\\eboot.bin and {str(game).replace(chr(92), '/')}/sce_sys\n"
+                "dlc D:\\QADLC7c1 ünï7c1\\DLC\\CUSA01159-AOC\n"
+                "mods \\\\qaserver\\QASHARE7c1\\mods\\a.txt\n"
+                "host QAPC7c1 ready\n"
+                "anomaly: tex.overlap_view_lost frame=812\n", encoding="utf-8")
+            (paths.user / "captures").mkdir(exist_ok=True)
+            (paths.user / "captures" / "frame812.png").write_bytes(b"\x89PNG")
+            report_txt, report_json = self.zip_report_text(app)
+        section = report_txt.split("--- Render trace ---\n", 1)[1].split("=== End of report ===")[0]
+        self.assertIn("anomaly: tex.overlap_view_lost frame=812", section)  # the log tail
+        self.assertIn("frame812.png", section)  # and the captures
+        self.assertIn("render_traces\\20261118-000000\\render_trace.log", section)
+        for name in self.PRIVATE + (Path(game).parent.name.lower(), str(game).lower()):
+            self.assertNotIn(name, section.lower(), name)
+            self.assertNotIn(name, report_txt.lower(), name)
+        self.assertNotIn("Render trace", report_json)  # report.json keeps its structure
+
+    def test_without_a_render_trace_the_zip_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            report_txt, _json = self.zip_report_text(app)
+        self.assertIn("--- Render trace ---\n  (none: Render debug trace was off, or it left no log or captures)\n"
+                      "=== End of report ===", report_txt)
+
+    def test_session_reports_keep_their_text_without_the_render_trace_part(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            app._start_session_report(game)
+            text = app.session_report_path.with_suffix(".txt").read_text(encoding="utf-8")
+        self.assertNotIn("--- Render trace ---", text)
 
     def test_crash_window_has_save_report_and_close_and_no_clipboard_path(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
