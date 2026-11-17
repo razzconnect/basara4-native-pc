@@ -16,22 +16,8 @@ import zipfile
 from pathlib import Path
 
 SCHEMA = 1
-
-
-# What people read on the error path (crash window, report, warnings before the game starts) is Indonesian
-# first and English after it, so players outside Indonesia can read it too.
-def bilingual(indonesian, english):
-    """A message of one or more lines: the Indonesian text, an empty line, then the English text."""
-    if not indonesian or not english or indonesian == english:
-        raise ValueError("a message needs an Indonesian text and a different English text")
-    return f"{indonesian}\n\n{english}"
-
-
-def bilingual_line(indonesian, english):
-    """A title, label or one-line message: "Indonesian / English"."""
-    if not indonesian or not english or indonesian == english:
-        raise ValueError("a message needs an Indonesian text and a different English text")
-    return f"{indonesian} / {english}"
+# What people read on the error path (crash window, report, warnings before the game starts) is in English
+# only, so players anywhere can read it and share it.
 
 # The game probes for optional files and logs every miss. These are the misses healthy sessions show
 # (50 session logs: optional character params, *_ex mission archives, stage .mic, sound banks,
@@ -298,26 +284,23 @@ def summary_line(report):
     end = report.get("end") or {}
     log = report.get("log") if isinstance(report.get("log"), dict) and "unknown" not in report.get("log") else {}
     if report.get("status") != "finished":
-        return bilingual_line("Sesi belum selesai saat laporan dibuat (launcher ditutup atau game masih jalan).",
-                              "The session had not ended when the report was made (launcher closed or game "
+        return ("The session had not ended when the report was made (launcher closed or game "
                               "still running).")
     if end.get("stopped_by_user"):
         if end.get("forced"):
-            return bilingual_line("Dihentikan user (paksa).", "Stopped by the user (forced).")
-        return bilingual_line("Dihentikan user.", "Stopped by the user.")
+            return "Stopped by the user (forced)."
+        return "Stopped by the user."
     if not end.get("crashed"):
-        return bilingual_line("Game ditutup normal.", "The game closed normally.")
+        return "The game closed normally."
     if log.get("fault"):
         fault = log["fault"]
         what = f"{fault['kind']} {address_class(fault['address'])}"
-        return bilingual_line(f"Crash: {what} di {fault['where']}.", f"Crash: {what} at {fault['where']}.")
+        return f"Crash: {what} at {fault['where']}."
     if log.get("primary"):
-        return bilingual_line("Berhenti", "Stopped") + f": {log['primary'][0]}"
+        return "Stopped" + f": {log['primary'][0]}"
     if not log.get("lines"):
-        return bilingual_line(f"Game berhenti sebelum menulis log (exit {end.get('exit_hex')}).",
-                              f"The game stopped before writing a log (exit {end.get('exit_hex')}).")
-    return bilingual_line(f"Game keluar dengan exit {end.get('exit_hex')} tanpa pesan error di log.",
-                          f"The game exited with code {end.get('exit_hex')} and no error message in the log.")
+        return f"The game stopped before writing a log (exit {end.get('exit_hex')})."
+    return f"The game exited with code {end.get('exit_hex')} and no error message in the log."
 
 
 def render_text(report, tail_lines=None):
@@ -328,14 +311,14 @@ def render_text(report, tail_lines=None):
         if isinstance(v, (list, dict)):
             return json.dumps(v, ensure_ascii=False)
         return str(v)
-    out = ["=== Basara 4 PC - " + bilingual_line("Laporan sesi", "Session report") + " ===",
-           f"{bilingual_line('Ringkasan', 'Summary')} : {summary_line(report)}"]
+    out = ["=== Basara 4 PC - Session report ===",
+           f"Summary       : {summary_line(report)}"]
     if report.get("signature"):
         out.append(f"Signature     : {report['signature']}")
-    for title, key in (("Port", "launcher"), ("Game", "game"), (bilingual_line("Sistem", "System"), "system"),
-                       ("Vulkan", "vulkan"), (bilingual_line("Setting", "Settings"), "settings"),
-                       (bilingual_line("Konten", "Content"), "content"),
-                       (bilingual_line("Akhir sesi", "Session end"), "end")):
+    for title, key in (("Port", "launcher"), ("Game", "game"), ("System", "system"),
+                       ("Vulkan", "vulkan"), ("Settings", "settings"),
+                       ("Content", "content"),
+                       ("Session end", "end")):
         section = report.get(key)
         if section is None:
             continue
@@ -346,47 +329,39 @@ def render_text(report, tail_lines=None):
             out.append(f"  {value(section)}")
     log = report.get("log")
     if isinstance(log, dict) and "unknown" not in log:
-        none = "  (" + bilingual_line("tidak ada", "none") + ")"
-        out.append("--- " + bilingual_line("Yang paling penting di log", "Most important in the log") + " ---")
+        none = "  (none)"
+        out.append("--- Most important in the log ---")
         out += [f"  * {line}" for line in log["primary"]] or [
-            "  (" + bilingual_line("tidak ada Fault/STOP/ASSERT", "no Fault/STOP/ASSERT") + ")"]
+            "  (no Fault/STOP/ASSERT)"]
         if log["fault"] and log["fault"]["frames"]:
             out.append("  frames: " + ", ".join(log["fault"]["frames"]))
-        out.append("--- " + bilingual_line("File tidak ditemukan yang tidak biasa", "Unusual files not found") + " ---")
+        out.append("--- Unusual files not found ---")
         out += [f"  * {p}" for p in log["unusual_not_found"]] or [none]
         if log.get("near_primary_stubs"):
-            out.append("--- " + bilingual_line(
-                "Fungsi PS4 yang belum didukung (STUBBED), dipanggil tepat sebelum berhenti (tidak biasa)",
-                "Unsupported PS4 functions (STUBBED) called just before the stop (unusual)") + " ---")
+            out.append("--- Unsupported PS4 functions (STUBBED) called just before the stop (unusual) ---")
             out += [f"  * {name}" for name in log["near_primary_stubs"]]
         if log.get("stubs"):
-            out.append("  " + bilingual_line("stub dipanggil", "stubs called") + ": "
+            out.append("  stubs called: "
                        + ", ".join(f"{name} x{count}" for name, count in log["stubs"].items()))
         if log["near_primary_not_found"]:
-            out.append("--- " + bilingual_line(
-                f"File tidak ditemukan tepat sebelum berhenti ({NEAR_PRIMARY} baris terakhir; bisa wajar)",
-                f"Files not found just before the stop (last {NEAR_PRIMARY} lines; can be normal)") + " ---")
+            out.append(f"--- Files not found just before the stop (last {NEAR_PRIMARY} lines; can be normal) ---")
             out += [f"  * {p}" for p in log["near_primary_not_found"]]
-        out.append("  (" + bilingual_line(f"{log['hidden_not_found']} not-found wajar disembunyikan",
-                                          f"{log['hidden_not_found']} normal not-found hidden") + ")")
+        out.append(f"  ({log['hidden_not_found']} normal not-found hidden)")
         if log["last_files"]:
-            count = len(log["last_files"])
-            out.append("--- " + bilingual_line(f"{count} file terakhir dibuka sebelum berhenti",
-                                               f"last {count} files opened before the stop") + " ---")
+            out.append(f"--- last {len(log['last_files'])} files opened before the stop ---")
             out += [f"  {f['path']} ({f['bytes']} bytes)" for f in log["last_files"]]
-        present = (bilingual_line("ada", "yes") if log["present_summary"]
-                   else bilingual_line("tidak ada", "no"))
-        out.append(f"  log: {log['lines']} " + bilingual_line("baris", "lines") + f", present summary: {present}"
+        present = "yes" if log["present_summary"] else "no"
+        out.append(f"  log: {log['lines']} lines, present summary: {present}"
                    + (f", dump: {log['crash_dump']}" if log["crash_dump"] else ""))
     elif log is not None:
         out.append(f"--- Log ---\n  {value(log)}")
     if report.get("hints"):
-        out.append("--- " + bilingual_line("Petunjuk", "Hints") + " ---")
+        out.append("--- Hints ---")
         out += [f"  {h}" for h in report["hints"]]
     if tail_lines:
-        out.append("--- " + bilingual_line("Baris terakhir last_run.log", "Last lines of last_run.log") + " ---")
+        out.append("--- Last lines of last_run.log ---")
         out += tail_lines
-    out.append("=== " + bilingual_line("Akhir laporan", "End of report") + " ===")
+    out.append("=== End of report ===")
     return "\n".join(out) + "\n"
 
 
@@ -421,7 +396,7 @@ def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld
                 skipped.append(f"{name}: {size} bytes, over the {max_file_bytes} byte limit")
                 continue
             zf.write(path, name)
-        note = report_text + ("\n" + bilingual_line("Tidak ikut", "Not included") + ":\n"
+        note = report_text + ("\nNot included:\n"
                               + "\n".join(f"  {s}" for s in skipped) + "\n" if skipped else "")
         zf.writestr("report.txt", masker(note))
         zf.writestr("report.json", json.dumps(masker.data(report), indent=2, ensure_ascii=False))
@@ -453,7 +428,8 @@ def prune(folder, keep=20):
     folder = Path(folder)
     if not folder.is_dir():
         return
-    for pattern in ("session-*.json", "session-*.txt", "laporan-*.zip"):
+    # laporan-*.zip: the name the zips had before the messages were English only
+    for pattern in ("session-*.json", "session-*.txt", "report-*.zip", "laporan-*.zip"):
         for old in sorted(folder.glob(pattern))[:-keep]:
             try:
                 old.unlink()

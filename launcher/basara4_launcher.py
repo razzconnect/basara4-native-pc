@@ -72,38 +72,29 @@ FATAL_PATTERNS = [
 
 
 def explain_hardware_crash(exit_code, detected_errors, tail_context):
-    """Translates raw exit codes and log signatures into clear hardware/memory diagnostics, each one
-    in Indonesian and then in English (basara4_report.bilingual)."""
+    """Translates raw exit codes and log signatures into clear hardware/memory diagnostics (English)."""
     joined = "\n".join(detected_errors) + "\n" + (tail_context or "")
     low = joined.lower()
     code_u32 = (exit_code & 0xFFFFFFFF) if isinstance(exit_code, int) else 0
     hints = []
 
     if "error_commitment_limit" in low or "error 1455" in low or "cannot create" in low and "guest memory" in low:
-        hints.append(basara4_report.bilingual(
-            "💾 Memori Virtual Windows (RAM / Pagefile) Habis [Error 1455]:\n"
-            "Kapasitas RAM + Paging File Windows tidak cukup untuk mengalokasikan memori permainan.\n"
-            "👉 Solusi: Buka Windows Settings -> Advanced System Settings -> Performance -> Advanced -> Virtual Memory, "
-            "centang 'Automatically manage paging file size for all drives', tutup aplikasi berat (Chrome/Discord), lalu restart PC.",
+        hints.append(
             "💾 Windows Virtual Memory (RAM / Page File) Ran Out [Error 1455]:\n"
             "RAM plus the Windows page file is not enough to allocate the game's memory.\n"
             "👉 Fix: open Windows Settings -> Advanced System Settings -> Performance -> Advanced -> Virtual Memory, "
-            "tick 'Automatically manage paging file size for all drives', close heavy apps (Chrome/Discord), then restart the PC.")
+            "tick 'Automatically manage paging file size for all drives', close heavy apps (Chrome/Discord), then restart the PC."
         )
 
     if ("erroroutofdevicememory" in low or "vk_error_out_of_device_memory" in low or
             "erroroutofhostmemory" in low or "vk_error_out_of_host_memory" in low or
             "failed allocating image" in low or "failed allocating buffer" in low or
             "failed allocating texture" in low):
-        hints.append(basara4_report.bilingual(
-            "🎮 Memori Kartu Grafis (VRAM / Shared GPU Memory) Tidak Cukup:\n"
-            "GPU kehabisan VRAM atau memori sistem saat memuat tekstur/buffer.\n"
-            "👉 Solusi: Turunkan pengaturan Resolution di Launcher ke 540p atau 720p, matikan Upscaler (pilih Off), "
-            "dan tutup aplikasi lain yang menggunakan akselerasi GPU.",
+        hints.append(
             "🎮 Not Enough Graphics Memory (VRAM / Shared GPU Memory):\n"
             "The GPU ran out of VRAM or system memory while loading textures/buffers.\n"
             "👉 Fix: lower Resolution in the launcher to 540p or 720p, turn the Upscaler Off, "
-            "and close other apps that use GPU acceleration.")
+            "and close other apps that use GPU acceleration."
         )
 
     if ("required vulkan extension unavailable" in low or
@@ -112,100 +103,68 @@ def explain_hardware_crash(exit_code, detected_errors, tail_context):
             "failed to create device" in low or
             "failed to create vulkan logical device" in low or
             "unable to find a suitable physical device" in low):
-        hints.append(basara4_report.bilingual(
-            "⚠️ Kartu Grafis (GPU) atau Driver Belum Mendukung Vulkan 1.3:\n"
-            "GPU yang dipilih tidak memiliki fitur Vulkan 1.3 yang wajib untuk merender grafis game.\n"
-            "👉 Solusi: Update driver kartu grafis (Intel / AMD Adrenalin / NVIDIA GeForce) ke versi terbaru. "
-            "Jika laptop/PC memiliki 2 GPU, pastikan memilih GPU diskrit (NVIDIA/AMD) pada menu GPU di Launcher.",
+        hints.append(
             "⚠️ Graphics Card (GPU) or Driver Does Not Support Vulkan 1.3 Yet:\n"
             "The selected GPU lacks the Vulkan 1.3 features the game needs to render.\n"
             "👉 Fix: update the graphics driver (Intel / AMD Adrenalin / NVIDIA GeForce) to the latest version. "
-            "If the laptop/PC has 2 GPUs, choose the dedicated GPU (NVIDIA/AMD) in the launcher's GPU menu.")
+            "If the laptop/PC has 2 GPUs, choose the dedicated GPU (NVIDIA/AMD) in the launcher's GPU menu."
         )
 
     if "device lost" in low or "eerrordevicelost" in low or "vk_error_device_lost" in low:
-        hints.append(basara4_report.bilingual(
-            "🔌 Koneksi Kartu Grafis Terputus (GPU Device Lost / Driver Timeout):\n"
-            "Driver GPU berhenti merespons akibat beban render berlebih atau driver tidak stabil.\n"
-            "👉 Solusi: Turunkan Resolution ke 720p, matikan Upscaler, dan pastikan driver GPU sudah versi terbaru.",
+        hints.append(
             "🔌 Graphics Card Connection Lost (GPU Device Lost / Driver Timeout):\n"
             "The GPU driver stopped responding because of heavy rendering load or an unstable driver.\n"
-            "👉 Fix: lower Resolution to 720p, turn the Upscaler off, and make sure the GPU driver is up to date.")
+            "👉 Fix: lower Resolution to 720p, turn the Upscaler off, and make sure the GPU driver is up to date."
         )
 
     if "failed to create graphics pipeline" in low or "failed to create compute pipeline" in low:
-        hints.append(basara4_report.bilingual(
-            "🛠️ Gagal Kompilasi Shader / Pipeline Vulkan:\n"
-            "Driver GPU gagal mengompilasi pipeline grafis.\n"
-            "👉 Solusi: Perbarui driver Vulkan GPU Anda atau matikan fitur Async Shaders di Launcher.",
+        hints.append(
             "🛠️ Vulkan Shader / Pipeline Compilation Failed:\n"
             "The GPU driver failed to compile a graphics pipeline.\n"
-            "👉 Fix: update your GPU's Vulkan driver or turn off Async Shaders in the launcher.")
+            "👉 Fix: update your GPU's Vulkan driver or turn off Async Shaders in the launcher."
         )
 
     if "missing movbe, bmi1, lzcnt" in low or "no rewrite table matches" in low:
-        hints.append(basara4_report.bilingual(
-            "🖥️ Instruksi CPU (x86-64-v3 / AVX2 / BMI1) Tidak Cocok:\n"
-            "Prosesor membutuhkan tabel translasi instruksi (isa-rewrite.bin).\n"
-            "👉 Solusi: Klik tombol 'Re-prepare' di bagian bawah Launcher agar file isa-rewrite.bin dibuat ulang.",
+        hints.append(
             "🖥️ CPU Instructions (x86-64-v3 / AVX2 / BMI1) Do Not Match:\n"
             "The processor needs an instruction translation table (isa-rewrite.bin).\n"
-            "👉 Fix: click 'Re-prepare' at the bottom of the launcher so isa-rewrite.bin is made again.")
+            "👉 Fix: click 'Re-prepare' at the bottom of the launcher so isa-rewrite.bin is made again."
         )
 
     if not hints:
         if code_u32 == 0xC0000409:
-            hints.append(basara4_report.bilingual(
-                "💥 Crash Driver Grafis / Batas Memori Sistem (Exit Code 0xC0000409):\n"
-                "Proses dihentikan paksa oleh Windows/Driver GPU (umum terjadi pada PC dengan RAM 8 GB atau iGPU seperti "
-                "Intel UHD / AMD Radeon Graphics ketika memori sistem/VRAM penuh atau fitur driver tidak didukung).\n"
-                "👉 Solusi: Gunakan Resolution 540p atau 720p, matikan Upscaler (Off), aktifkan Windows Paging File (Virtual Memory), "
-                "dan perbarui driver kartu grafis Anda.",
+            hints.append(
                 "💥 Graphics Driver Crash / System Memory Limit (Exit Code 0xC0000409):\n"
                 "Windows or the GPU driver force-stopped the process (common on PCs with 8 GB RAM or an iGPU such as "
                 "Intel UHD / AMD Radeon Graphics when system memory/VRAM is full or a driver feature is not supported).\n"
                 "👉 Fix: use Resolution 540p or 720p, turn the Upscaler Off, enable the Windows Paging File (Virtual Memory), "
-                "and update your graphics driver.")
+                "and update your graphics driver."
             )
         elif code_u32 == 0xC0000005:
-            hints.append(basara4_report.bilingual(
-                "💥 Pelanggaran Akses Memori (Access Violation 0xC0000005):\n"
-                "Terjadi konflik akses memori pada driver GPU atau data game.\n"
-                "👉 Solusi: Turunkan Resolution ke 720p, pastikan driver GPU terbaru, atau klik 'Re-prepare' jika file eboot baru diubah.",
+            hints.append(
                 "💥 Memory Access Violation (0xC0000005):\n"
                 "A memory access conflict happened in the GPU driver or the game data.\n"
-                "👉 Fix: lower Resolution to 720p, make sure the GPU driver is up to date, or click 'Re-prepare' if the eboot file was changed.")
+                "👉 Fix: lower Resolution to 720p, make sure the GPU driver is up to date, or click 'Re-prepare' if the eboot file was changed."
             )
         elif code_u32 == 0x17:
-            hints.append(basara4_report.bilingual(
-                "⚠️ Kegagalan Inisialisasi / Assertion GPU (Exit Code 0x17):\n"
-                "Mesin grafis Vulkan menghentikan eksekusi karena batas resource GPU/VRAM atau fitur driver tidak terpenuhi.\n"
-                "👉 Solusi: Turunkan Resolution ke 540p/720p, matikan Upscaler, dan periksa driver Vulkan GPU Anda.",
+            hints.append(
                 "⚠️ GPU Initialization / Assertion Failure (Exit Code 0x17):\n"
                 "The Vulkan renderer stopped because a GPU/VRAM resource limit or a driver feature was not met.\n"
-                "👉 Fix: lower Resolution to 540p/720p, turn the Upscaler off, and check your GPU's Vulkan driver.")
+                "👉 Fix: lower Resolution to 540p/720p, turn the Upscaler off, and check your GPU's Vulkan driver."
             )
         elif code_u32 == 0xC0000139:
-            hints.append(basara4_report.bilingual(
-                "🧩 Vulkan Tidak Ditemukan atau Terlalu Lama (Exit Code 0xC0000139):\n"
-                "Windows gagal memuat game karena komponen Vulkan di PC tidak ada atau terlalu lama.\n"
-                "👉 Solusi: Perbarui driver kartu grafis (NVIDIA / AMD / Intel), lalu jalankan lagi. Kalau PC memakai "
-                "grafis lama yang tidak mendukung Vulkan, game belum bisa berjalan di PC ini.",
+            hints.append(
                 "🧩 Vulkan Not Found or Too Old (Exit Code 0xC0000139):\n"
                 "Windows could not load the game because the PC's Vulkan components are missing or too old.\n"
                 "👉 Fix: update the graphics driver (NVIDIA / AMD / Intel), then start again. If the PC has "
-                "old graphics without Vulkan support, the game cannot run on this PC yet.")
+                "old graphics without Vulkan support, the game cannot run on this PC yet."
             )
         elif code_u32 == 0xC0000135:
-            hints.append(basara4_report.bilingual(
-                "📁 File Game Tidak Lengkap (Exit Code 0xC0000135):\n"
-                "Windows tidak menemukan salah satu file yang dibutuhkan game.\n"
-                "👉 Solusi: Ekstrak ZIP game sampai selesai ke folder baru, dan pastikan antivirus tidak mengarantina "
-                "file di dalamnya.",
+            hints.append(
                 "📁 Game Files Incomplete (Exit Code 0xC0000135):\n"
                 "Windows could not find one of the files the game needs.\n"
                 "👉 Fix: extract the port ZIP (not the game files) completely into a new folder, and make sure the "
-                "antivirus did not quarantine any file in it.")
+                "antivirus did not quarantine any file in it."
             )
 
     return hints
@@ -216,18 +175,14 @@ def extract_crash_summary(log_path, max_context_lines=10, max_signatures=4):
     not-found misses, and the last lines (File trace lines left out so they do not crowd them)."""
     empty = {"unusual_not_found": [], "near_primary_not_found": [], "near_primary_stubs": [], "hidden_not_found": 0}
     if not log_path.is_file():
-        return dict(empty, detected_errors=[basara4_report.bilingual_line(
-            "File log tidak ditemukan (game belum sempat menulis log).",
-            "Log file not found (the game stopped before writing a log).")], tail_context="")
+        return dict(empty, detected_errors=["Log file not found (the game stopped before writing a log)."], tail_context="")
     try:
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception as e:
-        return dict(empty, detected_errors=[basara4_report.bilingual_line("Gagal membaca log", "Cannot read the log")
+        return dict(empty, detected_errors=["Cannot read the log"
                                             + f": {e}"], tail_context="")
     if not lines:
-        return dict(empty, detected_errors=[basara4_report.bilingual_line(
-            "Log kosong (game berhenti sebelum inisialisasi).",
-            "Log is empty (the game stopped before it started up).")], tail_context="")
+        return dict(empty, detected_errors=["Log is empty (the game stopped before it started up)."], tail_context="")
 
     primary, other = [], []
     for line in reversed(lines):
@@ -242,9 +197,7 @@ def extract_crash_summary(log_path, max_context_lines=10, max_signatures=4):
     detected = (primary + other)[:max_signatures]
     analysis = basara4_report.analyze_log(lines)
     return {
-        "detected_errors": detected if detected else [basara4_report.bilingual_line(
-            "Tidak ada fatal signature terdaftar (game keluar mendadak).",
-            "No known error pattern in the log (the game closed suddenly).")],
+        "detected_errors": detected if detected else ["No known error pattern in the log (the game closed suddenly)."],
         "tail_context": "\n".join(basara4_report.tail_without_trace(lines, max_context_lines)),
         "total_lines": len(lines),
         "unusual_not_found": analysis["unusual_not_found"],
@@ -426,7 +379,7 @@ def request_window_close(pid):
     return asked
 
 
-REPORTS = USER / "reports"  # session-<time>.json/.txt per game start, laporan-<time>.zip per "Kirim laporan"
+REPORTS = USER / "reports"  # session-<time>.json/.txt per game start, report-<time>.zip per "Send report"
 CRASH_DIR = USER / "crash"  # the game's core-<time>.dmp, and the launcher's report-<time>.txt per crash
 
 
@@ -844,7 +797,7 @@ def vulkan_problem(probe, gpu_id):
     return None if any(api >= VULKAN_REQUIRED for api in apis) else "old"
 
 
-RUN_ANYWAY = basara4_report.bilingual_line("Tetap coba jalankan game?", "Start the game anyway?")
+RUN_ANYWAY = "Start the game anyway?"
 
 
 def vulkan_warning(problem, probe, gpu_id):
@@ -860,32 +813,21 @@ def vulkan_warning(problem, probe, gpu_id):
         else:
             have = max(api for _, _, api in probe.devices)
         gpus = "".join(f"  • {name} — Vulkan {major}.{minor}\n" for name, _, (major, minor) in probe.devices)
-        return basara4_report.bilingual_line("Vulkan Terlalu Lama", "Vulkan Too Old"), basara4_report.bilingual(
-            f"⚠️ Game ini membutuhkan Vulkan {need}, tetapi PC ini baru mendukung Vulkan {have[0]}.{have[1]}.\n\n"
-            + (f"Kartu grafis yang terdeteksi:\n{gpus}\n" if gpus else "")
-            + "👉 Solusi: pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update), "
-            "lalu restart PC.\n"
-            f"Kalau driver sudah yang terbaru, kartu grafis ini belum mendukung Vulkan {need}, sehingga game "
-            "tidak bisa berjalan di PC ini.",
-            f"⚠️ This game needs Vulkan {need}, but this PC only supports Vulkan {have[0]}.{have[1]}.\n"
-            "👉 Fix: install the latest driver from the NVIDIA, AMD or Intel website (not from Windows Update), "
+        return "Vulkan Too Old", (
+            f"⚠️ This game needs Vulkan {need}, but this PC only supports Vulkan {have[0]}.{have[1]}.\n\n"
+            + (f"Graphics cards found:\n{gpus}\n" if gpus else "")
+            + "👉 Fix: install the latest driver from the NVIDIA, AMD or Intel website (not from Windows Update), "
             "then restart the PC.\n"
             f"If the driver is already the latest, this graphics card does not support Vulkan {need}, so the game "
-            "cannot run on this PC.") + "\n\n" + RUN_ANYWAY
-    return basara4_report.bilingual_line("Vulkan Tidak Ditemukan", "Vulkan Not Found"), basara4_report.bilingual(
-        f"⚠️ Game ini membutuhkan Vulkan {need} untuk menampilkan grafis, tetapi Vulkan tidak ditemukan di PC ini.\n"
-        "Biasanya karena driver kartu grafis belum terpasang, sudah lama, atau masih driver bawaan Windows.\n\n"
-        "👉 Solusi:\n"
-        "1. Pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update).\n"
-        "2. Restart PC, lalu buka launcher lagi.\n\n"
-        f"Kalau pesan ini masih muncul, kemungkinan kartu grafis PC ini belum mendukung Vulkan {need}, sehingga "
-        "game tidak bisa berjalan.",
+            "cannot run on this PC.\n\n" + RUN_ANYWAY)
+    return "Vulkan Not Found", (
         f"⚠️ This game needs Vulkan {need} to show graphics, but Vulkan was not found on this PC.\n"
-        "Usually the graphics driver is not installed, is old, or is still the Windows default driver.\n"
-        "👉 Fix: 1. Install the latest driver from the NVIDIA, AMD or Intel website (not from Windows Update). "
-        "2. Restart the PC, then open the launcher again.\n"
+        "Usually the graphics driver is not installed, is old, or is still the Windows default driver.\n\n"
+        "👉 Fix:\n"
+        "1. Install the latest driver from the NVIDIA, AMD or Intel website (not from Windows Update).\n"
+        "2. Restart the PC, then open the launcher again.\n\n"
         f"If this message still appears, this PC's graphics card probably does not support Vulkan {need}, so "
-        "the game cannot run.") + "\n\n" + RUN_ANYWAY
+        "the game cannot run.\n\n" + RUN_ANYWAY)
 
 
 def describe_vulkan(probe):
@@ -1654,15 +1596,11 @@ class Launcher(tk.Tk):
         avail_mb = check_commit_limit_mb()
         if avail_mb is not None and avail_mb < 2560:
             if not messagebox.askyesno(
-                basara4_report.bilingual_line("Virtual Memory Sangat Rendah", "Virtual Memory Very Low"),
-                basara4_report.bilingual(
-                    f"Sisa alokasi memori virtual Windows Anda hanya ~{avail_mb} MB.\n"
-                    "Game membutuhkan setidaknya ~3584 MB (3.5 GB) virtual memory.\n\n"
-                    "Jika game crash dengan Error 1455, pastikan Virtual Memory (Paging File) aktif di Windows.",
-                    f"Windows has only ~{avail_mb} MB of virtual memory left.\n"
+                "Virtual Memory Very Low",
+                (f"Windows has only ~{avail_mb} MB of virtual memory left.\n"
                     "The game needs at least ~3584 MB (3.5 GB) of virtual memory.\n"
                     "If the game crashes with Error 1455, make sure Virtual Memory (Paging File) is on in Windows.")
-                + "\n\n" + basara4_report.bilingual_line("Tetap jalankan game?", "Start the game anyway?")):
+                + "\n\nStart the game anyway?"):
                 return
         self.busy = True
         self.play.config(state="disabled")
@@ -1923,9 +1861,8 @@ class Launcher(tk.Tk):
             except Exception as e:
                 win.after(0, lambda err=e: (
                     win.destroy(),
-                    messagebox.showerror(basara4_report.bilingual_line("Gagal Mengunduh", "Download Failed"),
-                                         basara4_report.bilingual_line("Pembaruan gagal diunduh",
-                                                                       "The update could not be downloaded")
+                    messagebox.showerror("Download Failed",
+                                         "The update could not be downloaded"
                                          + f":\n{err}")
                 ))
 
@@ -2149,24 +2086,20 @@ class Launcher(tk.Tk):
             except OSError as exc:
                 size = basara4_report.unknown(basara4_report.reason(exc))
             report["crash_dump_kept_on_pc"] = {"file": dump.name, "bytes": size, "folder": "user\\crash"}
-            withheld.append(f"crash/{dump.name} ({size} bytes): " + basara4_report.bilingual_line(
-                "disimpan di PC, tidak ikut karena bisa berisi data pribadi; dikirim hanya bila tim meminta, "
-                "lewat pesan pribadi",
-                "kept on the PC, not included because it can hold personal data; sent only when the team asks, "
+            withheld.append(f"crash/{dump.name} ({size} bytes): " + ("kept on the PC, not included because it can hold personal data; sent only when the team asks, "
                 "in a private message"))
         capture = self._newest_since(CAPTURES_DIR, "*")
         binaries = [(f"captures/{capture.name}", capture)] if capture else []
         logs = [(name, path) for name, path in (("last_run.log", LOG), ("audio_debug.log", AUDIO_LOG),
                                                 ("prepare.log", PREPARE_LOG)) if path.is_file()]
-        target = REPORTS / f"laporan-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
+        target = REPORTS / f"report-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
         try:
             basara4_report.make_zip(target, report,
                                     basara4_report.render_text(report, getattr(self, "session_tail", None)),
                                     self._masker(), logs=logs, binaries=binaries, withheld=withheld)
         except OSError as exc:
-            messagebox.showerror(basara4_report.bilingual_line("Laporan tidak tersimpan", "Report not saved"),
-                                 basara4_report.bilingual("Laporan tidak bisa disimpan di folder user\\reports.",
-                                                          "The report could not be saved in the user\\reports "
+            messagebox.showerror("Report not saved",
+                                 ("The report could not be saved in the user\\reports "
                                                           "folder.") + f"\n\n{exc.strerror or exc}",
                                  parent=parent or self)
             return None
@@ -2174,20 +2107,11 @@ class Launcher(tk.Tk):
         try:
             os.startfile(REPORTS)
         except OSError as exc:
-            opened = "\n\n(" + basara4_report.bilingual_line(
-                f"Folder tidak bisa dibuka otomatis: {exc.strerror or exc}. Buka sendiri: user\\reports",
-                f"The folder could not be opened automatically: {exc.strerror or exc}. Open it yourself: "
+            opened = "\n\n(" + (f"The folder could not be opened automatically: {exc.strerror or exc}. Open it yourself: "
                 "user\\reports") + ")"
         messagebox.showinfo(
-            basara4_report.bilingual_line("Laporan siap dikirim", "Report ready to send"),
-            basara4_report.bilingual(
-                f"Laporan tersimpan sebagai {target.name}.\n\n"
-                "Folder-nya sudah dibuka. Lampirkan file itu ke Discord atau GitHub saat melapor.\n"
-                "Isinya spek PC, setting, dan log. Nama akun dan folder kamu sudah disamarkan.\n\n"
-                "File crash dump (.dmp) tidak ikut, karena bisa berisi data pribadi. File itu tetap "
-                "disimpan di folder user\\crash. Kirim hanya kalau tim memintanya, lewat pesan pribadi (DM), "
-                "jangan di tempat umum.",
-                f"The report was saved as {target.name}.\n"
+            "Report ready to send",
+            (f"The report was saved as {target.name}.\n"
                 "Its folder has been opened. Attach that file in Discord or the GitHub issue when you report.\n"
                 "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
                 "The crash dump (.dmp) is not included because it can hold personal data. It stays in "
@@ -2219,7 +2143,7 @@ class Launcher(tk.Tk):
         exit_hex = f"{code & 0xFFFFFFFF:#x}" if isinstance(code, int) else "Unknown"
         tk.Label(
             title_frame,
-            text="⚠️ " + basara4_report.bilingual_line("Game Berhenti Mendadak", "The Game Stopped Unexpectedly")
+            text="⚠️ The Game Stopped Unexpectedly"
                  + f" (Exit Code {exit_hex})",
             bg=PANEL,
             fg=RED,
@@ -2243,10 +2167,7 @@ class Launcher(tk.Tk):
         win.crash_scroll = canvas  # for tests: the scrollable area of this window
         tk.Label(
             header_frame,
-            text=basara4_report.bilingual(
-                "Untuk melapor, cukup tekan 📦 Kirim laporan lalu lampirkan file zip yang muncul ke Discord "
-                "atau GitHub. Spek PC, setting, dan log sudah ikut di dalamnya.",
-                "To report it, press 📦 Kirim laporan (Send report) and attach the zip it makes on Discord or "
+            text=("To report it, press 📦 Send report and attach the zip it makes on Discord or "
                 "GitHub. Your PC specs, settings and logs are already inside."),
             bg=PANEL,
             fg=FG,
@@ -2271,8 +2192,7 @@ class Launcher(tk.Tk):
 
         tk.Label(
             header_frame,
-            text=basara4_report.bilingual_line("Terdeteksi indikasi teknis dari log permainan",
-                                               "What the game log shows") + ":",
+            text="What the game log shows:",
             bg=PANEL,
             fg=FG,
             font=("Segoe UI", 9)
@@ -2293,13 +2213,9 @@ class Launcher(tk.Tk):
         if missing or data["hidden_not_found"]:
             tk.Label(
                 header_frame,
-                text=((basara4_report.bilingual_line(
-                    "File game yang dicari tapi tidak ada (tidak biasa, atau tepat sebelum crash)",
-                    "Game files looked for but missing (unusual, or just before the crash)") + ":\n"
+                text=(("Game files looked for but missing (unusual, or just before the crash):\n"
                        + "\n".join(f"• {p}" for p in missing[:6]) + "\n") if missing else "")
-                + "(" + basara4_report.bilingual_line(
-                    f"{data['hidden_not_found']} file opsional yang wajar tidak ada, disembunyikan",
-                    f"{data['hidden_not_found']} optional files that are normally missing, hidden") + ")",
+                + f"({data['hidden_not_found']} optional files that are normally missing, hidden)",
                 bg=PANEL,
                 fg=FG,
                 font=("Consolas", 8),
@@ -2309,9 +2225,7 @@ class Launcher(tk.Tk):
         if data["near_primary_stubs"]:
             tk.Label(
                 header_frame,
-                text=basara4_report.bilingual_line(
-                    "Fungsi PS4 yang belum didukung, dipanggil tepat sebelum crash (tidak biasa)",
-                    "Unsupported PS4 functions called just before the crash (unusual)") + ":\n"
+                text="Unsupported PS4 functions called just before the crash (unusual):\n"
                      + "\n".join(f"• {name}" for name in data["near_primary_stubs"][:6]),
                 bg=PANEL,
                 fg=GOLD,
@@ -2324,7 +2238,7 @@ class Launcher(tk.Tk):
         body_frame = ttk.Frame(header_frame, style="Panel.TFrame")
         body_frame.pack(side="top", fill="x", pady=(10, 0))
 
-        ttk.Label(body_frame, text=basara4_report.bilingual_line("Cuplikan 10 Baris Log Terakhir", "Last 10 Log Lines") + " (Raw Context):", style="Panel.TLabel").pack(anchor="w", pady=(0, 4))
+        ttk.Label(body_frame, text="Last 10 Log Lines (Raw Context):", style="Panel.TLabel").pack(anchor="w", pady=(0, 4))
         txt = tk.Text(body_frame, bg="#0d0b0a", fg="#d6cfc7", relief="flat", wrap="none", font=("Consolas", 9), padx=8, pady=8,
                       height=10)
         txt.insert("1.0", data["tail_context"])
@@ -2365,8 +2279,7 @@ class Launcher(tk.Tk):
                 except Exception:
                     pass
 
-            hints_block = ("\n" + basara4_report.bilingual_line("Diagnosis Hardware / Memori",
-                                                                "Hardware / Memory Diagnosis") + ":\n" + "\n".join(f"  {h}" for h in hw_hints) + "\n") if hw_hints else ""
+            hints_block = ("\nHardware / Memory Diagnosis:\n" + "\n".join(f"  {h}" for h in hw_hints) + "\n") if hw_hints else ""
             clip_text = (
                 f"=== Sengoku Basara 4 PC — Crash Diagnostic Report ===\n"
                 f"Version       : v{VERSION}\n"
@@ -2391,11 +2304,8 @@ class Launcher(tk.Tk):
             self.clipboard_clear()
             self.clipboard_append(self._masker()(clip_text))
             messagebox.showinfo(
-                basara4_report.bilingual_line("Tersalin ke Clipboard", "Copied to the Clipboard"),
-                basara4_report.bilingual(
-                    "Laporan crash lengkap (spek hardware, GPU, log error, dan audio log) berhasil disalin!\n"
-                    "Anda tinggal Paste (Ctrl+V) langsung ke Discord untuk bantuan teknis.",
-                    "The full crash report (hardware specs, GPU, error log and audio log) was copied!\n"
+                "Copied to the Clipboard",
+                ("The full crash report (hardware specs, GPU, error log and audio log) was copied!\n"
                     "Just paste it (Ctrl+V) on Discord for technical help."),
                 parent=win
             )
@@ -2404,16 +2314,16 @@ class Launcher(tk.Tk):
             import webbrowser
             webbrowser.open("https://discord.gg/UBZc57bBMa")
 
-        # Two rows: with the English line under each label, six buttons do not fit in one.
+        # Two rows, so the six buttons also fit a narrow window.
         top_row, bottom_row = ttk.Frame(btn_bar, style="TFrame"), ttk.Frame(btn_bar, style="TFrame")
         top_row.pack(side="top", fill="x")
         bottom_row.pack(side="top", fill="x", pady=(6, 0))
-        ttk.Button(top_row, text="📦 Kirim laporan\nSend report", command=lambda: self.send_report(win)).pack(side="left", padx=4)
-        ttk.Button(top_row, text="📋 Copy Error ke Clipboard\nCopy error to clipboard", command=copy_details).pack(side="left", padx=4)
-        ttk.Button(top_row, text="📁 Buka File Log\nOpen log file", command=self.open_log).pack(side="left", padx=4)
-        ttk.Button(bottom_row, text="📸 Buka Captures\nOpen captures", command=self.open_captures).pack(side="left", padx=4)
-        ttk.Button(bottom_row, text="🌐 Lapor ke Discord\nReport on Discord", command=open_discord).pack(side="left", padx=4)
-        ttk.Button(bottom_row, text="Tutup\nClose", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(top_row, text="📦 Send report", command=lambda: self.send_report(win)).pack(side="left", padx=4)
+        ttk.Button(top_row, text="📋 Copy error to clipboard", command=copy_details).pack(side="left", padx=4)
+        ttk.Button(top_row, text="📁 Open log file", command=self.open_log).pack(side="left", padx=4)
+        ttk.Button(bottom_row, text="📸 Open captures", command=self.open_captures).pack(side="left", padx=4)
+        ttk.Button(bottom_row, text="🌐 Report on Discord", command=open_discord).pack(side="left", padx=4)
+        ttk.Button(bottom_row, text="Close", command=win.destroy).pack(side="right", padx=4)
 
     # ---- keyboard & mouse mapping dialog ----
     def open_keymap_ui(self):

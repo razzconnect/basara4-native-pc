@@ -68,8 +68,7 @@ class HealthySessionTests(unittest.TestCase):
 
     def test_healthy_lines_are_never_fatal(self):
         s = summary(self.corpus())
-        self.assertEqual(s["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
-                         "No known error pattern in the log (the game closed suddenly)."])
+        self.assertEqual(s["detected_errors"], ["No known error pattern in the log (the game closed suddenly)."])
         self.assertEqual(s["unusual_not_found"], [])
         self.assertEqual(s["hidden_not_found"], sum("-> not found" in line for line in self.corpus()))
 
@@ -99,7 +98,7 @@ class HealthySessionTests(unittest.TestCase):
             lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
             if any(rp.PRIMARY.search(line) for line in lines):
                 continue
-            self.assertEqual(bl.extract_crash_summary(log)["detected_errors"][0][:9], "Tidak ada", str(log))
+            self.assertEqual(bl.extract_crash_summary(log)["detected_errors"][0][:22], "No known error pattern", str(log))
 
 
 class CrashLogTests(unittest.TestCase):
@@ -200,7 +199,7 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(report["end"]["crashed"])
         self.assertEqual(report["end"]["exit_hex"], "0xC0000139")
         self.assertEqual(report["log"]["lines"], 0)
-        self.assertIn("sebelum menulis log", rp.summary_line(report))
+        self.assertIn("stopped before writing a log", rp.summary_line(report))
         text = rp.render_text(report)
         for needle in ("01.02", "i3-5005U", "loader: 1.0", "check: old", "resolution: 720p", "0xC0000139", "hint"):
             self.assertIn(needle, text)
@@ -215,13 +214,11 @@ class ReportTests(unittest.TestCase):
     def test_how_the_session_ended(self):
         def line(code, stopped, forced):
             return rp.summary_line(rp.finish_report(self.started(), code, stopped, forced, ["Runtime: ok"], [], "x"))
-        self.assertEqual(line(0, False, False), "Game ditutup normal. / The game closed normally.")
-        self.assertEqual(line(1, True, True), "Dihentikan user (paksa). / Stopped by the user (forced).")
-        self.assertEqual(line(1, True, False), "Dihentikan user. / Stopped by the user.")
-        self.assertIn("tanpa pesan error", line(5, False, False))
+        self.assertEqual(line(0, False, False), "The game closed normally.")
+        self.assertEqual(line(1, True, True), "Stopped by the user (forced).")
+        self.assertEqual(line(1, True, False), "Stopped by the user.")
         self.assertIn("no error message in the log", line(5, False, False))
         self.assertIn("The game exited with code 0x00000005 and no error message in the log.", line(5, False, False))
-        self.assertIn("sesi belum selesai", rp.summary_line(self.started()).lower())
         self.assertIn("the session had not ended", rp.summary_line(self.started()).lower())
 
     def test_write_is_atomic(self):
@@ -372,14 +369,13 @@ class StubTests(unittest.TestCase):
         self.assertTrue(s["detected_errors"][0].startswith("Fault: write"))  # still not called fatal
         self.assertNotIn(self.NEW, s["detected_errors"])
         text = rp.render_text(rp.finish_report({}, 0xC0000005, False, False, lines, [], "x"))
-        self.assertIn("dipanggil tepat sebelum berhenti (tidak biasa)", text)
         self.assertIn("called just before the stop (unusual)", text)
         self.assertIn("  * sceSaveDataMount5", text)
 
     def test_healthy_sessions_still_show_nothing(self):
         corpus = HealthySessionTests().corpus()
         self.assertEqual(rp.analyze_log(corpus)["near_primary_stubs"], [])
-        self.assertEqual(summary(corpus)["detected_errors"][0][:9], "Tidak ada")
+        self.assertEqual(summary(corpus)["detected_errors"][0][:22], "No known error pattern")
 
     # The three runtime stubs that log values after "called" (avplayer.cpp:156, :217, video_out.cpp:465),
     # in the runtime's log line format.
@@ -395,7 +391,7 @@ class StubTests(unittest.TestCase):
     def test_stubs_that_log_values_are_stubs_like_the_rest(self):
         for name, line in self.WITH_VALUES.items():
             healthy = HealthySessionTests().corpus() + [line, line]
-            self.assertEqual(summary(healthy)["detected_errors"][0][:9], "Tidak ada", name)  # not fatal
+            self.assertEqual(summary(healthy)["detected_errors"][0][:22], "No known error pattern", name)  # not fatal
             a = rp.analyze_log(healthy)
             self.assertEqual(a["stubs"][name], 2, name)  # counted under its name
             crash = [line, "Runtime: line"] + BUG_002_LINES
@@ -464,30 +460,37 @@ class OrderAndLimitTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), '{"old": 1}')
 
 
-class BilingualReportTests(unittest.TestCase):
-    def test_every_heading_of_the_report_text_has_english(self):
-        lines = BUG_002_LINES
+class EnglishReportTests(unittest.TestCase):
+    INDONESIAN = ("tidak", "Tidak", "yang", "Laporan", "laporan", "Ringkasan", "Sistem", "Konten", "Akhir",
+                  "Petunjuk", "baris", "berhenti", "Dihentikan", "ditutup", "Sesi", "ikut", "wajar")
+
+    def test_every_heading_of_the_report_text_is_english(self):
         report = rp.finish_report({"launcher": {}, "game": {}, "system": {}, "vulkan": {}, "settings": {},
-                                   "content": {}}, 0xC0000005, False, False, lines, [], "x")
+                                   "content": {}}, 0xC0000005, False, False, BUG_002_LINES, [], "x")
         report["hints"] = ["h"]
         text = rp.render_text(report, ["tail"])
         headings = [line for line in text.splitlines() if line.startswith(("---", "==="))]
         self.assertGreaterEqual(len(headings), 10)
         for heading in headings:
-            if heading.strip("-= ") in ("Port", "Game", "Vulkan"):
-                continue  # the same word in both languages
-            self.assertIn(" / ", heading, heading)
-        for english in ("Session report", "Summary", "Most important in the log", "Unusual files not found",
-                        "Session end", "End of report", "Last lines of last_run.log", "Hints"):
+            for word in self.INDONESIAN:
+                self.assertNotIn(word, heading, heading)
+        for english in ("=== Basara 4 PC - Session report ===", "Summary       :", "--- Most important in the log ---",
+                        "--- Unusual files not found ---", "--- System ---", "--- Settings ---", "--- Content ---",
+                        "--- Session end ---", "=== End of report ===", "--- Last lines of last_run.log ---",
+                        "--- Hints ---"):
             self.assertIn(english, text)
 
-    def test_every_way_a_session_ends_has_english(self):
+    def test_every_way_a_session_ends_is_english(self):
         def ended(code, stopped=False, forced=False, lines=("Runtime: ok",)):
             return rp.summary_line(rp.finish_report({}, code, stopped, forced, list(lines), [], "x"))
         for line in (ended(0), ended(1, True), ended(1, True, True), ended(5), ended(5, lines=()),
                      ended(0xC0000005, lines=BUG_002_LINES), ended(1, lines=["STOP: x"]),
                      rp.summary_line({"status": "started"})):
-            self.assertIn(" / ", line, line)
+            for word in self.INDONESIAN:
+                self.assertNotIn(word, line, line)
+        self.assertEqual(rp.summary_line({"status": "started"}),
+                         "The session had not ended when the report was made (launcher closed or game still running).")
+        self.assertEqual(ended(1, lines=["STOP: x"]), "Stopped: STOP: x")
 
 if __name__ == "__main__":
     unittest.main()

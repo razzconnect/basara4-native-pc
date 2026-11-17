@@ -113,8 +113,8 @@ class RunLogAndPlayTests(unittest.TestCase):
         old_loader = bl.VulkanProbe(True, (1, 0), False, [], "")
         ask, deiconify, started = self.play_with_vulkan(old_loader, answer=False, play_now=True)
         self.assertEqual(ask.call_args.args, bl.vulkan_warning("old", old_loader, None))
-        self.assertEqual(ask.call_args.args[0], "Vulkan Terlalu Lama / Vulkan Too Old")
-        self.assertIn("baru mendukung Vulkan 1.0.", ask.call_args.args[1])
+        self.assertEqual(ask.call_args.args[0], "Vulkan Too Old")
+        self.assertIn("only supports Vulkan 1.0.", ask.call_args.args[1])
         self.assertEqual((ask.call_args.kwargs["icon"], ask.call_args.kwargs["default"]), ("warning", "no"))
         deiconify.assert_called_once()  # the --play shortcut brings the window back for the question
         self.assertFalse(started)  # "No": the game is not started
@@ -122,10 +122,10 @@ class RunLogAndPlayTests(unittest.TestCase):
         self.assertTrue(started)  # "Yes": it starts anyway
         missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
         ask = self.play_with_vulkan(missing, answer=False)[0]
-        self.assertEqual(ask.call_args.args[0], "Vulkan Tidak Ditemukan / Vulkan Not Found")
+        self.assertEqual(ask.call_args.args[0], "Vulkan Not Found")
         self.assertEqual(ask.call_args.args, bl.vulkan_warning("missing", missing, None))
 
-    def test_low_virtual_memory_warning_is_indonesian_then_english(self):
+    def test_low_virtual_memory_warning(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, _game, _iconify):
             paths.core.parent.mkdir(parents=True, exist_ok=True)
             paths.core.write_bytes(b"synthetic runtime")
@@ -135,18 +135,17 @@ class RunLogAndPlayTests(unittest.TestCase):
                     mock.patch.object(bl.messagebox, "askyesno", return_value=False) as ask:
                 app.on_play()
         title, message = ask.call_args.args
-        self.assertEqual(title, "Virtual Memory Sangat Rendah / Virtual Memory Very Low")
+        self.assertEqual(title, "Virtual Memory Very Low")
         question = message.split("\n\n")[-1]
-        self.assertIn("Sisa alokasi memori virtual Windows Anda hanya ~1000 MB.", message)
         self.assertIn("Windows has only ~1000 MB of virtual memory left.", message)
-        self.assertEqual(question, "Tetap jalankan game? / Start the game anyway?")
+        self.assertEqual(question, "Start the game anyway?")
         thread.assert_not_called()  # "No": nothing starts
 
     def test_vulkan_warning_follows_the_chosen_gpu(self):
         mixed = bl.VulkanProbe(True, (1, 3), True, [("Old dGPU", 2, (1, 2)), ("New iGPU", 1, (1, 3))], "")
         ask, _, started = self.play_with_vulkan(mixed, answer=False)  # Auto: the discrete GPU
         ask.assert_called_once()
-        self.assertIn("baru mendukung Vulkan 1.2.", ask.call_args.args[1])  # the GPU the game would use
+        self.assertIn("only supports Vulkan 1.2.", ask.call_args.args[1])  # the GPU the game would use
         self.assertFalse(started)
         ask, deiconify, started = self.play_with_vulkan(mixed, answer=False, cfg={"gpu_index": 1})
         ask.assert_not_called()
@@ -170,7 +169,7 @@ class RunLogAndPlayTests(unittest.TestCase):
             app._show_crash_dialog(0xC0000139)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
             copy = next(w for w in descendants(dialog)
-                        if isinstance(w, ttk.Button) and "Clipboard" in str(w.cget("text")))
+                        if isinstance(w, ttk.Button) and "clipboard" in str(w.cget("text")))
             copy.invoke()
         report = append.call_args.args[0]
         self.assertIn("Exit Code     : 0xc0000139\n", report)
@@ -226,7 +225,7 @@ class RunLogAndPlayTests(unittest.TestCase):
             self.assertTrue(report["signature"].startswith("exit=C0000005 | read:null | top=g:0xaebfb7"))
             self.assertIn("build=01.02/1a2b3c4d/", report["signature"])
             crash_copy, = (paths.user / "crash").glob("report-*.txt")
-            self.assertIn("Crash: read null di g:0xaebfb7.", crash_copy.read_text(encoding="utf-8"))
+            self.assertIn("Crash: read null at g:0xaebfb7.", crash_copy.read_text(encoding="utf-8"))
 
     def test_a_game_that_never_logs_still_has_a_full_report(self):
         missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
@@ -242,7 +241,7 @@ class RunLogAndPlayTests(unittest.TestCase):
             self.assertEqual(report["game"]["app_ver"], "01.02")
             self.assertTrue(any("0xC0000139" in hint for hint in report["hints"]))
             text = self.reports(paths)[0].with_suffix(".txt").read_text(encoding="utf-8")
-            self.assertIn("Game berhenti sebelum menulis log (exit 0xC0000139).", text)
+            self.assertIn("The game stopped before writing a log (exit 0xC0000139).", text)
 
     def test_unreadable_parts_are_written_with_the_reason(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
@@ -282,6 +281,7 @@ class RunLogAndPlayTests(unittest.TestCase):
             target = app.send_report()
             startfile.assert_called_once_with(paths.user / "reports")
             self.assertIn(target.name, showinfo.call_args.args[1])
+            self.assertRegex(target.name, r"^report-\d{8}-\d{6}\.zip$")
             with zipfile.ZipFile(target) as zf:
                 # The crash dump holds the process environment and is never zipped: named, sized, kept on the PC.
                 self.assertEqual(sorted(zf.namelist()), ["captures/frame.png", "last_run.log",
@@ -291,19 +291,16 @@ class RunLogAndPlayTests(unittest.TestCase):
                 self.assertEqual(report["crash_dump_kept_on_pc"], {"file": "core-1.dmp", "bytes": 4,
                                                                    "folder": "user\\crash"})
                 note = zf.read("report.txt").decode("utf-8")
-                self.assertIn("crash/core-1.dmp (4 bytes): disimpan di PC", note)
-                self.assertIn("Tidak ikut / Not included:", note)
-                self.assertIn("kept on the PC, not included because it can hold personal data", note)
+                self.assertIn("Not included:", note)
+                self.assertIn("crash/core-1.dmp (4 bytes): kept on the PC, not included because it can hold "
+                              "personal data", note)
             self.assertTrue((paths.user / "crash" / "core-1.dmp").is_file())  # the dump itself stays
             text = showinfo.call_args.args[1]
-            self.assertIn("File crash dump (.dmp) tidak ikut", text)
-            self.assertIn("pesan pribadi (DM)", text)
             self.assertIn("The crash dump (.dmp) is not included", text)
             self.assertIn("Its folder has been opened. Attach that file in Discord or the GitHub issue when you "
                           "report.", text)
             self.assertIn("in a private message (DM)", text)
-            self.assertIn("Laporan siap dikirim / Report ready to send", showinfo.call_args.args[0])
-            self.assertNotIn("tidak perlu dijelaskan lagi", text)
+            self.assertIn("Report ready to send", showinfo.call_args.args[0])
 
     def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
@@ -318,23 +315,21 @@ class RunLogAndPlayTests(unittest.TestCase):
             app._show_crash_dialog(0xC0000005)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
             buttons = [w for w in descendants(dialog) if isinstance(w, ttk.Button)]
-            self.assertEqual(str(buttons[0].cget("text")), "📦 Kirim laporan\nSend report")  # the main action
-            for button in buttons:  # every button is Indonesian on the first line, English on the second
-                indonesian, english = str(button.cget("text")).split("\n")
-                self.assertTrue(indonesian and english and indonesian != english, english)
+            self.assertEqual(str(buttons[0].cget("text")), "📦 Send report")  # the first, main action
+            self.assertEqual([str(b.cget("text")) for b in buttons],
+                             ["📦 Send report", "📋 Copy error to clipboard", "📁 Open log file", "📸 Open captures",
+                              "🌐 Report on Discord", "Close"])
             labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label))
-            for english in ("The Game Stopped Unexpectedly", "press 📦 Kirim laporan (Send report)",
+            for english in ("The Game Stopped Unexpectedly", "press 📦 Send report",
                             "What the game log shows", "👉 Fix", "Last 10 Log Lines"):
                 self.assertIn(english, labels + "\n" + "\n".join(
                     str(w.cget("text")) for w in descendants(dialog) if isinstance(w, ttk.Label)))
             buttons[0].invoke()
             send.assert_called_once()
-            next(b for b in buttons if "Clipboard" in str(b.cget("text"))).invoke()
+            next(b for b in buttons if "clipboard" in str(b.cget("text"))).invoke()
         self.assertNotIn("qa_leak_7f3a", append.call_args.args[0].lower())
         self.assertEqual(showinfo.call_args.args[:2], (
-            "Tersalin ke Clipboard / Copied to the Clipboard",
-            "Laporan crash lengkap (spek hardware, GPU, log error, dan audio log) berhasil disalin!\n"
-            "Anda tinggal Paste (Ctrl+V) langsung ke Discord untuk bantuan teknis.\n\n"
+            "Copied to the Clipboard",
             "The full crash report (hardware specs, GPU, error log and audio log) was copied!\n"
             "Just paste it (Ctrl+V) on Discord for technical help."))
 
@@ -401,7 +396,6 @@ class RunLogAndPlayTests(unittest.TestCase):
             app._show_crash_dialog(0xC0000005)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
             texts = [str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label)]
-            self.assertTrue(any("sceSaveDataMount5" in text and "tidak biasa" in text for text in texts))
             self.assertTrue(any("sceSaveDataMount5" in text and "just before the crash (unusual)" in text
                                 for text in texts))
 
@@ -524,7 +518,7 @@ class RunLogAndPlayTests(unittest.TestCase):
             app._show_crash_dialog(0xC0000005)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
             next(w for w in descendants(dialog)
-                 if isinstance(w, ttk.Button) and "Clipboard" in str(w.cget("text"))).invoke()
+                 if isinstance(w, ttk.Button) and "clipboard" in str(w.cget("text"))).invoke()
             texts = {p.name: p.read_text(encoding="utf-8") for p in (paths.user / "reports").glob("session-*")}
             texts.update({p.name: p.read_text(encoding="utf-8") for p in (paths.user / "crash").glob("report-*.txt")})
             with zipfile.ZipFile(zip_path) as zf:
