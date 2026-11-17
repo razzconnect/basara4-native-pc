@@ -398,6 +398,41 @@ class RunLogAndPlayTests(unittest.TestCase):
         source = Path(bl.__file__).read_text(encoding="utf-8")
         self.assertNotIn("clipboard_append", source)
 
+    def test_crash_report_buttons_are_normal_size_and_matched(self):
+        """Both steps: two normal buttons of the same size (not the big PLAY style), bottom right."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale), tempfile.TemporaryDirectory() as tmp, \
+                    launcher(tmp) as (app, paths, game, _), \
+                    mock.patch.object(bl, "crash_dialog_geometry", return_value=(820, 678, -4000, 0)), \
+                    mock.patch.object(bl.os, "startfile", create=True):  # drawn off screen
+                self.assertEqual(str(app.play.cget("style")), "Play.TButton")  # PLAY keeps its own look
+                old_scaling = float(app.tk.call("tk", "scaling"))
+                app.tk.call("tk", "scaling", 96 / 72 * scale)
+                app._show_crash_dialog(0xC0000005)
+                dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+                app.send_report(dialog)
+                step2 = report_saved_window(app)
+                step2.geometry("+-4000+0")
+                for window in (dialog, step2):
+                    window.update()
+                    buttons = [b for b in descendants(window)
+                               if isinstance(b, ttk.Button) and b.winfo_toplevel() is window]
+                    self.assertEqual(len(buttons), 2)
+                    self.assertEqual(sorted(str(b.cget("style")) for b in buttons),
+                                     ["Dialog.TButton", "DialogAccent.TButton"])
+                    sizes = [(b.winfo_width(), b.winfo_height()) for b in buttons]
+                    self.assertEqual(sizes[0], sizes[1])  # same width and height
+                    width, height = sizes[0]
+                    self.assertLessEqual(height, 40 * scale, window.title())
+                    self.assertLessEqual(width, 220 * scale, window.title())
+                    # side by side on one row at the bottom right of the window
+                    self.assertEqual(buttons[0].winfo_rooty(), buttons[1].winfo_rooty())
+                    right = max(b.winfo_rootx() + b.winfo_width() for b in buttons)
+                    self.assertGreater(right, window.winfo_rootx() + window.winfo_width() * 0.7)
+                step2.destroy()
+                dialog.destroy()
+                app.tk.call("tk", "scaling", old_scaling)
+
     def test_close_on_the_crash_window_only_closes(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
                 mock.patch.object(bl.os, "startfile", create=True) as startfile, \

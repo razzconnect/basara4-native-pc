@@ -1043,6 +1043,11 @@ class Launcher(tk.Tk):
         s.configure("Play.TButton", background=RED, foreground="#fff", font=("Segoe UI Semibold", 15),
                     padding=(10, 12))
         s.map("Play.TButton", background=[("active", "#b8362d"), ("disabled", "#4a2522")])
+        # Buttons of the crash-report dialogs: normal size, all the same width and height; the main action only
+        # takes the accent colour (the big Play.TButton stays for PLAY and the keymap Save button).
+        s.configure("Dialog.TButton", padding=(14, 6), width=14)
+        s.configure("DialogAccent.TButton", background=RED, foreground="#fff", padding=(14, 6), width=14)
+        s.map("DialogAccent.TButton", background=[("active", "#b8362d"), ("disabled", "#4a2522")])
         s.configure("TCombobox", arrowcolor=GOLD, selectbackground=PANEL, selectforeground=FG)
         s.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", FG)])
         self.option_add("*TCombobox*Listbox.background", PANEL)
@@ -2132,9 +2137,12 @@ class Launcher(tk.Tk):
                  wraplength=520, justify="left").pack(padx=18, pady=(16, 10), anchor="w")
         buttons = ttk.Frame(win, style="TFrame", padding=(14, 0, 14, 14))
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="Open Discord", style="Play.TButton",
-                   command=lambda: self.open_bug_report(target, win)).pack(side="left")
-        ttk.Button(buttons, text="Close", command=win.destroy).pack(side="right")
+        # normal-size buttons side by side at the bottom right; the main one in the accent colour
+        open_discord = ttk.Button(buttons, text="Open Discord", style="DialogAccent.TButton",
+                                  command=lambda: self.open_bug_report(target, win))
+        close = ttk.Button(buttons, text="Close", style="Dialog.TButton", command=win.destroy)
+        close.pack(side="right")
+        open_discord.pack(side="right", padx=(0, 8))
         win.grab_set()
         return win
 
@@ -2277,9 +2285,12 @@ class Launcher(tk.Tk):
         txt.config(state="disabled")
         txt.pack(fill="x")
 
-        ttk.Button(btn_bar, text="Save report", style="Play.TButton",
-                   command=lambda: self.send_report(win)).pack(side="left", padx=4)
-        ttk.Button(btn_bar, text="Close", command=win.destroy).pack(side="right", padx=4)
+        # normal-size buttons side by side at the bottom right; the main one in the accent colour
+        save = ttk.Button(btn_bar, text="Save report", style="DialogAccent.TButton",
+                          command=lambda: self.send_report(win))
+        close = ttk.Button(btn_bar, text="Close", style="Dialog.TButton", command=win.destroy)
+        close.pack(side="right")
+        save.pack(side="right", padx=(0, 8))
 
     # ---- keyboard & mouse mapping dialog ----
     def open_keymap_ui(self):
