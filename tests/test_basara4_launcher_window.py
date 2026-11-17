@@ -15,6 +15,14 @@ from unittest import mock
 from launcher_fixtures import bl, game_folder, launcher_folders
 
 tk, ttk = bl.tk, bl.ttk
+# Error messages are English only: none of these Indonesian words may appear in them.
+INDONESIAN = bl.re.compile(r"\b(Tidak|tidak|Buka|Lapor|Tutup|Anda|kamu|Solusi|Kirim|laporan|Laporan|Gagal|Simpan|"
+                           r"berhasil|sudah|belum|dan|yang|untuk|dengan|sebelum|Berhenti|berhenti|Sisa|Tetap|"
+                           r"Terdeteksi|Cuplikan|Tersalin|ditemukan)\b|File Game|Game tidak")
+
+
+def assert_english(test, text):
+    test.assertIsNone(INDONESIAN.search(text), text)
 
 
 def descendants(widget):
@@ -136,9 +144,12 @@ class RunLogAndPlayTests(unittest.TestCase):
                 app.on_play()
         title, message = ask.call_args.args
         self.assertEqual(title, "Virtual Memory Very Low")
-        question = message.split("\n\n")[-1]
-        self.assertIn("Windows has only ~1000 MB of virtual memory left.", message)
-        self.assertEqual(question, "Start the game anyway?")
+        self.assertEqual(message, "Windows has only ~1000 MB of virtual memory left.\n"
+                                  "The game needs at least ~3584 MB (3.5 GB) of virtual memory.\n"
+                                  "If the game crashes with Error 1455, make sure Virtual Memory (Paging File) is on "
+                                  "in Windows.\n\n"
+                                  "Start the game anyway?")
+        assert_english(self, title + message)
         thread.assert_not_called()  # "No": nothing starts
 
     def test_vulkan_warning_follows_the_chosen_gpu(self):
@@ -301,6 +312,7 @@ class RunLogAndPlayTests(unittest.TestCase):
                           "report.", text)
             self.assertIn("in a private message (DM)", text)
             self.assertIn("Report ready to send", showinfo.call_args.args[0])
+            assert_english(self, showinfo.call_args.args[0] + text)
 
     def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
@@ -386,6 +398,10 @@ class RunLogAndPlayTests(unittest.TestCase):
                                      canvas.winfo_rooty() + canvas.winfo_height() + 1)
                 region = canvas.bbox("all")
                 self.assertGreater(region[3] - region[1], canvas.winfo_height())  # this crash needs the scroll
+                # every text of the window is English (labels, hints, findings, log header, buttons)
+                for widget in descendants(dialog):
+                    if isinstance(widget, (tk.Label, ttk.Label, ttk.Button)):
+                        assert_english(self, str(widget.cget("text")))
                 dialog.destroy()
 
     def test_crash_dialog_names_a_stub_called_just_before_the_crash(self):
