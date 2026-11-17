@@ -118,6 +118,8 @@ class DownloadAndApplyTests(unittest.TestCase):
         launcher._apply_update_and_restart.assert_not_called()
         window.destroy.assert_called_once()
         self.assertIn("offline", showerror.call_args[0][1])
+        self.assertEqual(showerror.call_args[0][0], "Gagal Mengunduh / Download Failed")
+        self.assertIn("The update could not be downloaded", showerror.call_args[0][1])
 
     def test_updater_replaces_program_files_only_and_restarts(self):
         window = mock.MagicMock()

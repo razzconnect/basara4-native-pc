@@ -113,7 +113,7 @@ class RunLogAndPlayTests(unittest.TestCase):
         old_loader = bl.VulkanProbe(True, (1, 0), False, [], "")
         ask, deiconify, started = self.play_with_vulkan(old_loader, answer=False, play_now=True)
         self.assertEqual(ask.call_args.args, bl.vulkan_warning("old", old_loader, None))
-        self.assertEqual(ask.call_args.args[0], "Vulkan Terlalu Lama")
+        self.assertEqual(ask.call_args.args[0], "Vulkan Terlalu Lama / Vulkan Too Old")
         self.assertIn("baru mendukung Vulkan 1.0.", ask.call_args.args[1])
         self.assertEqual((ask.call_args.kwargs["icon"], ask.call_args.kwargs["default"]), ("warning", "no"))
         deiconify.assert_called_once()  # the --play shortcut brings the window back for the question
@@ -122,8 +122,25 @@ class RunLogAndPlayTests(unittest.TestCase):
         self.assertTrue(started)  # "Yes": it starts anyway
         missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
         ask = self.play_with_vulkan(missing, answer=False)[0]
-        self.assertEqual(ask.call_args.args[0], "Vulkan Tidak Ditemukan")
+        self.assertEqual(ask.call_args.args[0], "Vulkan Tidak Ditemukan / Vulkan Not Found")
         self.assertEqual(ask.call_args.args, bl.vulkan_warning("missing", missing, None))
+
+    def test_low_virtual_memory_warning_is_indonesian_then_english(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, _game, _iconify):
+            paths.core.parent.mkdir(parents=True, exist_ok=True)
+            paths.core.write_bytes(b"synthetic runtime")
+            with mock.patch.object(bl, "vulkan_problem", return_value=None), \
+                    mock.patch.object(bl, "check_commit_limit_mb", return_value=1000), \
+                    mock.patch.object(bl.threading, "Thread") as thread, \
+                    mock.patch.object(bl.messagebox, "askyesno", return_value=False) as ask:
+                app.on_play()
+        title, message = ask.call_args.args
+        self.assertEqual(title, "Virtual Memory Sangat Rendah / Virtual Memory Very Low")
+        question = message.split("\n\n")[-1]
+        self.assertIn("Sisa alokasi memori virtual Windows Anda hanya ~1000 MB.", message)
+        self.assertIn("Windows has only ~1000 MB of virtual memory left.", message)
+        self.assertEqual(question, "Tetap jalankan game? / Start the game anyway?")
+        thread.assert_not_called()  # "No": nothing starts
 
     def test_vulkan_warning_follows_the_chosen_gpu(self):
         mixed = bl.VulkanProbe(True, (1, 3), True, [("Old dGPU", 2, (1, 2)), ("New iGPU", 1, (1, 3))], "")
@@ -273,11 +290,17 @@ class RunLogAndPlayTests(unittest.TestCase):
                 self.assertEqual(report["end"]["exit_hex"], "0xC0000005")
                 self.assertEqual(report["crash_dump_kept_on_pc"], {"file": "core-1.dmp", "bytes": 4,
                                                                    "folder": "user\\crash"})
-                self.assertIn("crash/core-1.dmp (4 bytes): disimpan di PC", zf.read("report.txt").decode("utf-8"))
+                note = zf.read("report.txt").decode("utf-8")
+                self.assertIn("crash/core-1.dmp (4 bytes): disimpan di PC", note)
+                self.assertIn("Tidak ikut / Not included:", note)
+                self.assertIn("kept on the PC, not included because it can hold personal data", note)
             self.assertTrue((paths.user / "crash" / "core-1.dmp").is_file())  # the dump itself stays
             text = showinfo.call_args.args[1]
             self.assertIn("File crash dump (.dmp) tidak ikut", text)
             self.assertIn("pesan pribadi (DM)", text)
+            self.assertIn("The crash dump (.dmp) is not included", text)
+            self.assertIn("in a private message (DM)", text)
+            self.assertIn("Laporan siap dikirim / Report ready to send", showinfo.call_args.args[0])
             self.assertNotIn("tidak perlu dijelaskan lagi", text)
 
     def test_crash_dialog_offers_send_report_and_masks_the_copy(self):
@@ -293,7 +316,15 @@ class RunLogAndPlayTests(unittest.TestCase):
             app._show_crash_dialog(0xC0000005)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
             buttons = [w for w in descendants(dialog) if isinstance(w, ttk.Button)]
-            self.assertEqual(str(buttons[0].cget("text")), "📦 Kirim laporan")  # the first, main action
+            self.assertEqual(str(buttons[0].cget("text")), "📦 Kirim laporan\nSend report")  # the main action
+            for button in buttons:  # every button is Indonesian on the first line, English on the second
+                indonesian, english = str(button.cget("text")).split("\n")
+                self.assertTrue(indonesian and english and indonesian != english, english)
+            labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label))
+            for english in ("The Game Stopped Unexpectedly", "press 📦 Kirim laporan (Send report)",
+                            "Technical signs found in the game log", "👉 Fix", "Last 10 Log Lines"):
+                self.assertIn(english, labels + "\n" + "\n".join(
+                    str(w.cget("text")) for w in descendants(dialog) if isinstance(w, ttk.Label)))
             buttons[0].invoke()
             send.assert_called_once()
             next(b for b in buttons if "Clipboard" in str(b.cget("text"))).invoke()
@@ -308,6 +339,8 @@ class RunLogAndPlayTests(unittest.TestCase):
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
             texts = [str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label)]
             self.assertTrue(any("sceSaveDataMount5" in text and "tidak biasa" in text for text in texts))
+            self.assertTrue(any("sceSaveDataMount5" in text and "just before the crash (unusual)" in text
+                                for text in texts))
 
     # ---- the report never stops PLAY or the poll loop, and keeps nothing private ----
     def test_a_failing_collector_does_not_stop_play(self):

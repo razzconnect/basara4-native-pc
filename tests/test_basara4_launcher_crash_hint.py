@@ -25,8 +25,10 @@ def hint_titles(exit_code, errors, tail=""):
 class CrashSummaryTests(unittest.TestCase):
     def test_missing_or_empty_log(self):
         self.assertEqual(summary_of(None)["detected_errors"],
-                         ["File log tidak ditemukan (game belum sempat menulis log)."])
-        self.assertEqual(summary_of("")["detected_errors"], ["Log kosong (game berhenti sebelum inisialisasi)."])
+                         ["File log tidak ditemukan (game belum sempat menulis log). / "
+                          "Log file not found (the game stopped before writing a log)."])
+        self.assertEqual(summary_of("")["detected_errors"], ["Log kosong (game berhenti sebelum inisialisasi). / "
+                                                             "Log is empty (the game stopped before it started up)."])
 
     def test_newest_fatal_lines_first_without_duplicates_at_most_four(self):
         lines = ["Runtime: started"] + [f"STOP: reason {i}" for i in range(6)] + [
@@ -51,7 +53,8 @@ class CrashSummaryTests(unittest.TestCase):
 
     def test_not_found_is_not_fatal_but_unusual_ones_are_listed(self):
         summary = summary_of("Runtime: open(/app0/x) -> not found")
-        self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak)."])
+        self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
+                         "No known fatal signature (the game exited suddenly)."])
         self.assertEqual(summary["unusual_not_found"], ["/app0/x"])
         normal = summary_of("Runtime: open(/app0/nativePS4/actorParam/pl008/pl008.pmc) -> not found")
         self.assertEqual((normal["unusual_not_found"], normal["hidden_not_found"]), ([], 1))
@@ -59,7 +62,8 @@ class CrashSummaryTests(unittest.TestCase):
     def test_tail_context_length_and_no_signature(self):
         lines = [f"Runtime: line {i}" for i in range(30)]
         summary = summary_of("\n".join(lines), max_context_lines=3)
-        self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak)."])
+        self.assertEqual(summary["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
+                         "No known fatal signature (the game exited suddenly)."])
         self.assertEqual(summary["tail_context"].splitlines(), lines[-3:])
 
     def test_every_fatal_pattern_is_recognised(self):
@@ -117,6 +121,49 @@ class HardwareHintTests(unittest.TestCase):
         self.assertEqual(len(hint_titles(0xC0000005, ["VK_ERROR_DEVICE_LOST"])), 1)
         self.assertIn("Device Lost", hint_titles(0xC0000005, ["VK_ERROR_DEVICE_LOST"])[0])
 
+
+class BilingualTests(unittest.TestCase):
+    """Every hint the crash window can show is the Indonesian text, an empty line, then the English text."""
+    SIGNATURES = ["ERROR_COMMITMENT_LIMIT", "vk::Result=ErrorOutOfDeviceMemory", "Vulkan 1.3 is required",
+                  "VK_ERROR_DEVICE_LOST", "Failed to create graphics pipeline", "missing MOVBE, BMI1, LZCNT"]
+    CODES = [0xC0000409, 0xC0000005, 0x17, 0xC0000139, 0xC0000135]
+
+    def all_hints(self):
+        hints = [h for sig in self.SIGNATURES for h in bl.explain_hardware_crash(1, [sig], "")]
+        hints += [h for code in self.CODES for h in bl.explain_hardware_crash(code, [], "")]
+        return hints
+
+    def test_every_hint_is_indonesian_then_english(self):
+        hints = self.all_hints()
+        self.assertEqual(len(hints), len(self.SIGNATURES) + len(self.CODES))  # one per branch, none missed
+        for hint in hints:
+            indonesian, english = hint.split("\n\n")
+            self.assertIn("👉 Solusi", indonesian, hint)
+            self.assertIn("👉 Fix", english, hint)
+            self.assertNotIn("Solusi", english, hint)
+            self.assertEqual(indonesian.splitlines()[0][:2], english.splitlines()[0][:2])  # same icon
+
+    def test_the_english_hint_names_the_same_problem(self):
+        self.assertEqual(bl.explain_hardware_crash(0xC0000139, [], "")[0].split("\n\n")[1].splitlines()[0],
+                         "🧩 Vulkan Not Found or Too Old (Exit Code 0xC0000139):")
+        self.assertEqual(bl.explain_hardware_crash(0xC0000135, [], "")[0].split("\n\n")[1].splitlines()[0],
+                         "📁 Game Files Incomplete (Exit Code 0xC0000135):")
+
+    def test_fallback_lines_are_bilingual(self):
+        for text in (None, "", "Runtime: line"):
+            line = summary_of(text)["detected_errors"][0]
+            indonesian, english = line.split(" / ")
+            self.assertTrue(indonesian and english and indonesian != english, line)
+
+    def test_the_bilingual_helpers_need_two_texts(self):
+        rp = bl.basara4_report
+        self.assertEqual(rp.bilingual("a", "b"), "a\n\nb")
+        self.assertEqual(rp.bilingual_line("a", "b"), "a / b")
+        for args in (("", "b"), ("a", ""), ("a", "a")):
+            with self.assertRaises(ValueError):
+                rp.bilingual(*args)
+            with self.assertRaises(ValueError):
+                rp.bilingual_line(*args)
 
 if __name__ == "__main__":
     unittest.main()

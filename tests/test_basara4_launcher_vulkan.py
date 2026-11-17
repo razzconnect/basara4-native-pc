@@ -201,19 +201,26 @@ class ReportTests(unittest.TestCase):
 class WarningTextTests(unittest.TestCase):
     def test_wording(self):
         not_found = (
-            "Vulkan Tidak Ditemukan",
+            "Vulkan Tidak Ditemukan / Vulkan Not Found",
             "⚠️ Game ini membutuhkan Vulkan 1.3 untuk menampilkan grafis, tetapi Vulkan tidak ditemukan di PC ini.\n"
             "Biasanya karena driver kartu grafis belum terpasang, sudah lama, atau masih driver bawaan Windows.\n\n"
             "👉 Solusi:\n"
             "1. Pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update).\n"
             "2. Restart PC, lalu buka launcher lagi.\n\n"
             "Kalau pesan ini masih muncul, kemungkinan kartu grafis PC ini belum mendukung Vulkan 1.3, sehingga "
-            "game tidak bisa berjalan.\n\n"
-            "Tetap coba jalankan game?")
+            "game tidak bisa berjalan."
+            "\n\n"
+            "⚠️ This game needs Vulkan 1.3 to show graphics, but Vulkan was not found on this PC.\n"
+            "Usually the graphics driver is not installed, is old, or is still the Windows default driver.\n"
+            "👉 Fix: 1. Install the latest driver from the NVIDIA, AMD or Intel website (not from Windows Update). "
+            "2. Restart the PC, then open the launcher again.\n"
+            "If this message still appears, this PC's graphics card probably does not support Vulkan 1.3, so "
+            "the game cannot run.\n\n"
+            "Tetap coba jalankan game? / Start the game anyway?")
         self.assertEqual(warning(bl.probe_vulkan(load=missing)), not_found)
         self.assertEqual(warning(probe(instance=False)[0]), not_found)  # no_gpu: the same message
         self.assertEqual(warning(probe(devices=[("Old dGPU", DGPU, (1, 2)), ("New iGPU", IGPU, (1, 3))])[0]), (
-            "Vulkan Terlalu Lama",
+            "Vulkan Terlalu Lama / Vulkan Too Old",
             "⚠️ Game ini membutuhkan Vulkan 1.3, tetapi PC ini baru mendukung Vulkan 1.2.\n\n"
             "Kartu grafis yang terdeteksi:\n"
             "  • Old dGPU — Vulkan 1.2\n"
@@ -221,13 +228,19 @@ class WarningTextTests(unittest.TestCase):
             "👉 Solusi: pasang driver terbaru dari situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update), "
             "lalu restart PC.\n"
             "Kalau driver sudah yang terbaru, kartu grafis ini belum mendukung Vulkan 1.3, sehingga game tidak bisa "
-            "berjalan di PC ini.\n\n"
-            "Tetap coba jalankan game?"))
+            "berjalan di PC ini."
+            "\n\n"
+            "⚠️ This game needs Vulkan 1.3, but this PC only supports Vulkan 1.2.\n"
+            "👉 Fix: install the latest driver from the NVIDIA, AMD or Intel website (not from Windows Update), "
+            "then restart the PC.\n"
+            "If the driver is already the latest, this graphics card does not support Vulkan 1.3, so the game "
+            "cannot run on this PC.\n\n"
+            "Tetap coba jalankan game? / Start the game anyway?"))
 
     def test_old_names_the_version_the_game_would_get(self):
         def first_line(result, gpu_index=-1):
             title, message = warning(result, gpu_index)
-            self.assertEqual(title, "Vulkan Terlalu Lama")
+            self.assertEqual(title, "Vulkan Terlalu Lama / Vulkan Too Old")
             return message.splitlines()[0]
         # The loader decides when it is too old, even next to a newer GPU.
         self.assertEqual(first_line(probe(loader=(1, 2), devices=[("GPU", DGPU, (1, 4))])[0]),
@@ -248,7 +261,8 @@ class WarningTextTests(unittest.TestCase):
             title, message = warning(result)
             self.assertIn("situs resmi NVIDIA, AMD, atau Intel (bukan dari Windows Update)", message, title)
             self.assertNotIn("lewat Windows Update", message, title)
-            self.assertTrue(message.endswith("Tetap coba jalankan game?"), title)
+            self.assertIn("website (not from Windows Update)", message, title)
+            self.assertTrue(message.endswith("Tetap coba jalankan game? / Start the game anyway?"), title)
 
 
 if __name__ == "__main__":

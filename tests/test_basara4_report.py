@@ -68,7 +68,8 @@ class HealthySessionTests(unittest.TestCase):
 
     def test_healthy_lines_are_never_fatal(self):
         s = summary(self.corpus())
-        self.assertEqual(s["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak)."])
+        self.assertEqual(s["detected_errors"], ["Tidak ada fatal signature terdaftar (game keluar mendadak). / "
+                         "No known fatal signature (the game exited suddenly)."])
         self.assertEqual(s["unusual_not_found"], [])
         self.assertEqual(s["hidden_not_found"], sum("-> not found" in line for line in self.corpus()))
 
@@ -214,11 +215,13 @@ class ReportTests(unittest.TestCase):
     def test_how_the_session_ended(self):
         def line(code, stopped, forced):
             return rp.summary_line(rp.finish_report(self.started(), code, stopped, forced, ["Runtime: ok"], [], "x"))
-        self.assertEqual(line(0, False, False), "Game ditutup normal.")
-        self.assertEqual(line(1, True, True), "Dihentikan user (paksa).")
-        self.assertEqual(line(1, True, False), "Dihentikan user.")
+        self.assertEqual(line(0, False, False), "Game ditutup normal. / The game closed normally.")
+        self.assertEqual(line(1, True, True), "Dihentikan user (paksa). / Stopped by the user (forced).")
+        self.assertEqual(line(1, True, False), "Dihentikan user. / Stopped by the user.")
         self.assertIn("tanpa pesan error", line(5, False, False))
+        self.assertIn("no error message in the log", line(5, False, False))
         self.assertIn("sesi belum selesai", rp.summary_line(self.started()).lower())
+        self.assertIn("the session had not ended", rp.summary_line(self.started()).lower())
 
     def test_write_is_atomic(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -369,6 +372,7 @@ class StubTests(unittest.TestCase):
         self.assertNotIn(self.NEW, s["detected_errors"])
         text = rp.render_text(rp.finish_report({}, 0xC0000005, False, False, lines, [], "x"))
         self.assertIn("dipanggil tepat sebelum berhenti (tidak biasa)", text)
+        self.assertIn("called just before the stop (unusual)", text)
         self.assertIn("  * sceSaveDataMount5", text)
 
     def test_healthy_sessions_still_show_nothing(self):
@@ -458,6 +462,31 @@ class OrderAndLimitTests(unittest.TestCase):
                     rp.write_atomic(target, '{"new": 2}')
             self.assertEqual(target.read_text(encoding="utf-8"), '{"old": 1}')
 
+
+class BilingualReportTests(unittest.TestCase):
+    def test_every_heading_of_the_report_text_has_english(self):
+        lines = BUG_002_LINES
+        report = rp.finish_report({"launcher": {}, "game": {}, "system": {}, "vulkan": {}, "settings": {},
+                                   "content": {}}, 0xC0000005, False, False, lines, [], "x")
+        report["hints"] = ["h"]
+        text = rp.render_text(report, ["tail"])
+        headings = [line for line in text.splitlines() if line.startswith(("---", "==="))]
+        self.assertGreaterEqual(len(headings), 10)
+        for heading in headings:
+            if heading.strip("-= ") in ("Port", "Game", "Vulkan"):
+                continue  # the same word in both languages
+            self.assertIn(" / ", heading, heading)
+        for english in ("Session report", "Summary", "Most important in the log", "Unusual files not found",
+                        "Session end", "End of report", "Last lines of last_run.log", "Hints"):
+            self.assertIn(english, text)
+
+    def test_every_way_a_session_ends_has_english(self):
+        def ended(code, stopped=False, forced=False, lines=("Runtime: ok",)):
+            return rp.summary_line(rp.finish_report({}, code, stopped, forced, list(lines), [], "x"))
+        for line in (ended(0), ended(1, True), ended(1, True, True), ended(5), ended(5, lines=()),
+                     ended(0xC0000005, lines=BUG_002_LINES), ended(1, lines=["STOP: x"]),
+                     rp.summary_line({"status": "started"})):
+            self.assertIn(" / ", line, line)
 
 if __name__ == "__main__":
     unittest.main()
