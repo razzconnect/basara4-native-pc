@@ -11,6 +11,7 @@ All logs here are synthetic lines in the runtime's format, or the masked fixture
 """
 import json
 import os
+import re
 import tempfile
 import unittest
 import zipfile
@@ -313,6 +314,38 @@ class PrivacyTests(unittest.TestCase):
         self.assertEqual(rp.reason(err), "FileNotFoundError: No such file or directory (param.sfo)")
         self.assertEqual(rp.reason(ValueError("bad")), "ValueError: bad")
 
+    def test_every_folder_in_the_settings_and_the_folders_holding_them(self):
+        settings = {"game": r"D:\GAMES QAPRIV 9c2e\Sengoku Basara 4\CUSA01159",
+                    "dlc_dir": r"D:\GAMES QAPRIV 9c2e\Sengoku Basara 4 DLC",
+                    "mods_dir": r"E:\QAMODS 41b",  # a folder setting added later is masked too
+                    "share": r"\\NAS-QA\games\b4", "resolution": "720p", "cheats": ["gold"], "gpu_index": 1}
+        folders = rp.user_folders(settings, r"F:\QAAPPS 77\Basara4")
+        self.assertIn((settings["game"], "<game>"), folders)
+        self.assertIn((settings["dlc_dir"], "<dlc>"), folders)
+        self.assertIn((r"E:\QAMODS 41b", "<folder>"), folders)
+        self.assertIn((r"D:\GAMES QAPRIV 9c2e", "<folder>"), folders)  # holds the DLC folder
+        self.assertIn((r"F:\QAAPPS 77", "<folder>"), folders)  # holds the program
+        self.assertNotIn(("E:\\", "<folder>"), folders)  # a drive root is never a folder name
+        masker = rp.Masker(None, settings["game"], r"F:\QAAPPS 77\Basara4", None, None, folders)
+        text = masker("\n".join([
+            r"Game: d:\games qapriv 9c2e\sengoku basara 4\cusa01159\eboot.bin",
+            r"DLC: 'D:\\GAMES QAPRIV 9c2e\\Sengoku Basara 4 DLC\\CUSA01159-AOC'",
+            "Mods: e:/qamods 41b/x.arc", r"Share: \\NAS-QA\games\b4\y", r"Other: D:\GAMES QAPRIV 9c2e\notes.txt",
+            r"App: F:\QAAPPS 77\Basara4\user", r"Next to the app: F:\QAAPPS 77\other"]))
+        for word in ("qapriv", "qamods", "nas-qa", "qaapps"):
+            self.assertNotIn(word, text.lower())
+        self.assertIn("DLC: '<dlc>", text)
+        self.assertIn("Game: <game>", text)
+        self.assertEqual(masker(r"C:\Windows\System32 and D:\ and 720p"), r"C:\Windows\System32 and D:\ and 720p")
+
+    def test_a_profile_folder_named_unlike_the_account(self):
+        with mock.patch.dict(os.environ, {"USERPROFILE": r"C:\Users\qa.renamed", "USERNAME": "qauser",
+                                          "COMPUTERNAME": "QAPC"}):
+            masker = rp.Masker.from_environment()
+        text = masker(r"Settings: C:\Users\qa.renamed\AppData\x.ini by qauser on QAPC")
+        self.assertNotIn("qa.renamed", text)
+        self.assertEqual(text, r"Settings: <user>\AppData\x.ini by <user> on <pc>")
+
 
 class StubTests(unittest.TestCase):
     STUB = "GPU [Lib.AvPlayer] <Error> avplayer.cpp:55 sceAvPlayerDisableStream: (STUBBED) called"
@@ -342,6 +375,40 @@ class StubTests(unittest.TestCase):
         corpus = HealthySessionTests().corpus()
         self.assertEqual(rp.analyze_log(corpus)["near_primary_stubs"], [])
         self.assertEqual(summary(corpus)["detected_errors"][0][:9], "Tidak ada")
+
+    # The three runtime stubs that log values after "called" (avplayer.cpp:156, :217, video_out.cpp:465),
+    # in the runtime's log line format.
+    WITH_VALUES = {
+        "sceAvPlayerJumpToTime":
+            "GPU [Lib.AvPlayer] <Error> avplayer.cpp:156 sceAvPlayerJumpToTime: (STUBBED) called, time (msec) = 1500",
+        "sceAvPlayerSetTrickSpeed":
+            "GPU [Lib.AvPlayer] <Error> avplayer.cpp:217 sceAvPlayerSetTrickSpeed: (STUBBED) called speed = 2",
+        "sceVideoOutSetWindowModeMargins": "GPU [Lib.VideoOut] <Error> video_out.cpp:465 "
+                                           "sceVideoOutSetWindowModeMargins: (STUBBED) called top = 0, bottom = 0",
+    }
+
+    def test_stubs_that_log_values_are_stubs_like_the_rest(self):
+        for name, line in self.WITH_VALUES.items():
+            healthy = HealthySessionTests().corpus() + [line, line]
+            self.assertEqual(summary(healthy)["detected_errors"][0][:9], "Tidak ada", name)  # not fatal
+            a = rp.analyze_log(healthy)
+            self.assertEqual(a["stubs"][name], 2, name)  # counted under its name
+            crash = [line, "Runtime: line"] + BUG_002_LINES
+            self.assertEqual(rp.analyze_log(crash)["near_primary_stubs"], [name])  # shown just before a crash
+            self.assertEqual(summary(crash)["near_primary_stubs"], [name])
+            self.assertTrue(summary(crash)["detected_errors"][0].startswith("Fault: write"))
+
+    def test_every_stub_form_in_the_runtime_sources_is_recognised(self):
+        sources = [p for d in ("src", "gpu") for p in (ROOT / d).rglob("*") if p.suffix in (".c", ".cpp", ".h")]
+        forms = set()
+        for path in sources:
+            for m in re.finditer(r'"\(STUBBED\)([^"]*)"', path.read_text(encoding="utf-8", errors="replace")):
+                forms.add(m.group(1))
+        self.assertGreaterEqual(len(forms), 4)  # " called" and the three with values
+        for form in forms:
+            line = "GPU [Lib.Test] <Error> test.cpp:1 sceTestCall: (STUBBED)" + form.replace("{}", "7")
+            self.assertTrue(rp.STUB_CALL.search(line), form)
+            self.assertEqual(rp.STUB_NAME.search(line).group(1), "sceTestCall", form)
 
 
 class OrderAndLimitTests(unittest.TestCase):

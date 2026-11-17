@@ -37,8 +37,10 @@ PRIMARY = re.compile(r"(Fault: .*|STOP: .*|Assertion Failed.*|ASSERT_MSG.*)")
 FILE_TRACE = re.compile(r"^File trace: (.*) \((-?\d+) bytes\)$")
 # A stubbed PS4 call is logged at <Error> level every time the game makes it (sceAvPlayerDisableStream
 # in 40 of 48 healthy sessions). It is not what ends a session, so it is counted, not called fatal.
-STUB_CALL = re.compile(r"\(STUBBED\) called\s*$")
-STUB_NAME = re.compile(r"(\w+): \(STUBBED\) called\s*$")
+# Every form in the runtime sources (71 places): "(STUBBED) called" alone (68), and three with values after
+# it: "called, time (msec) = {}", "called speed = {}", "called top = {}, bottom = {}".
+STUB_CALL = re.compile(r"\(STUBBED\) called\b")
+STUB_NAME = re.compile(r"(\w+): \(STUBBED\) called\b")
 FAULT = re.compile(r"^Fault: (?:(read|write|execute) access to (?:0x)?([0-9a-fA-F]+)|exception 0x([0-9a-fA-F]+)) "
                    r"at (.*?) \(thread \d+\)")
 FRAME = re.compile(r"^\s+#(\d+) (.*)$")
@@ -164,12 +166,16 @@ PATH_START = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}|(?<![\w])/[\w.-]+/")
 class Masker:
     """Replaces the user's folders and names in text. Longest paths first, any case, either slash."""
 
-    def __init__(self, user_home=None, game_dir=None, app_dir=None, user_name=None, computer_name=None):
-        pairs = []
-        for path, token in ((game_dir, "<game>"), (app_dir, "<app>"), (user_home, "<user>")):
+    def __init__(self, user_home=None, game_dir=None, app_dir=None, user_name=None, computer_name=None,
+                 folders=()):
+        pairs, seen = [], set()
+        # folders: more (path, token) pairs, such as every folder the user chose and the folders holding
+        # them. A path given twice keeps its first token; a drive root alone ("D:\") is never masked.
+        for path, token in ((game_dir, "<game>"), (app_dir, "<app>"), (user_home, "<user>"), *folders):
             if path:
                 text = str(path).rstrip("\\/")
-                if len(text) > 3:
+                if len(text) > 3 and text.lower() not in seen:
+                    seen.add(text.lower())
                     pairs.append((text, token))
         pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
         # A separator matches one or more slashes of either kind: "D:\\Games\\x" as Python writes it in an
@@ -184,9 +190,9 @@ class Masker:
                       for name, token in names]
 
     @classmethod
-    def from_environment(cls, game_dir=None, app_dir=None):
+    def from_environment(cls, game_dir=None, app_dir=None, folders=()):
         return cls(os.environ.get("USERPROFILE"), game_dir, app_dir, os.environ.get("USERNAME"),
-                   os.environ.get("COMPUTERNAME"))
+                   os.environ.get("COMPUTERNAME"), folders)
 
     def __call__(self, text):
         if not isinstance(text, str):
@@ -201,6 +207,28 @@ class Masker:
         if isinstance(value, list):
             return [self.data(v) for v in value]
         return self(value)
+
+
+ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{2})")
+KNOWN_FOLDER_TOKENS = {"game": "<game>", "dlc_dir": "<dlc>"}
+
+
+def user_folders(settings, app_dir=None):
+    """Every folder named in the settings (any key whose value is an absolute path: the game folder, the
+    DLC folder, and any added later), and the folder holding each of them and the program, unless that is
+    a drive root. All of these are the user's own folder names, to be masked."""
+    folders, holders = [], []
+    for key, value in (settings or {}).items():
+        if isinstance(value, str) and ABSOLUTE_PATH.match(value):
+            folders.append((value, KNOWN_FOLDER_TOKENS.get(key, "<folder>")))
+            holders.append(value)
+    if app_dir:
+        holders.append(str(app_dir))
+    for path in holders:
+        parent = Path(path.rstrip("\\/")).parent
+        if str(parent) != parent.anchor:
+            folders.append((str(parent), "<folder>"))
+    return folders
 
 
 def write_atomic(path, text):

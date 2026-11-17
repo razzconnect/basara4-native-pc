@@ -408,6 +408,67 @@ class RunLogAndPlayTests(unittest.TestCase):
             self.assertIn("os", report["system"])
             self.assertIn("check", report["vulkan"])
 
+    def test_a_dlc_folder_chosen_by_the_user_never_reaches_any_report(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"), \
+                mock.patch.object(bl.Launcher, "clipboard_clear"), \
+                mock.patch.object(bl.Launcher, "clipboard_append") as append:
+            dlc = Path(tmp) / "GAMES QAPRIV 9c2e" / "Sengoku Basara 4 DLC"  # outside the game and program folders
+            dlc.mkdir(parents=True)
+            app.cfg["dlc_dir"] = str(dlc)
+            app._start_session_report(game)
+            paths.log.write_text(f"Runtime: DLC folder {str(dlc).upper()}\n"
+                                 f"Runtime: scan '{str(dlc).replace(chr(92), chr(92) * 2)}\\\\CUSA01159-AOC'\n"
+                                 f"Runtime: other {dlc.parent}\\notes.txt\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            paths.prepare_log.write_text(f"prepare: dlc {dlc}\n", encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            zip_path = app.send_report()
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            next(w for w in descendants(dialog)
+                 if isinstance(w, ttk.Button) and "Clipboard" in str(w.cget("text"))).invoke()
+            texts = {p.name: p.read_text(encoding="utf-8") for p in (paths.user / "reports").glob("session-*")}
+            texts.update({p.name: p.read_text(encoding="utf-8") for p in (paths.user / "crash").glob("report-*.txt")})
+            with zipfile.ZipFile(zip_path) as zf:
+                texts.update({f"zip:{name}": zf.read(name).decode("utf-8") for name in zf.namelist()})
+            texts["Copy Error"] = append.call_args.args[0]
+            self.assertTrue({"zip:last_run.log", "zip:prepare.log", "zip:report.json", "zip:report.txt",
+                             "Copy Error"} <= set(texts))
+            self.assertEqual(len([n for n in texts if n.startswith("session-")]), 2)
+            self.assertEqual(len([n for n in texts if n.startswith("report-")]), 1)
+            for name, text in texts.items():
+                self.assertNotIn("qapriv", text.lower(), name)
+            self.assertIn("<dlc>", texts["zip:report.json"])
+
+    def test_a_report_write_that_fails_any_way_keeps_the_poll_loop_running(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.Launcher, "_show_crash_dialog"), \
+                mock.patch.object(bl.Launcher, "after") as after:
+            app._start_session_report(game)
+            paths.log.write_text("Fault: read access to 0000000000000000 at guest offset 0x10 (thread 1)\n",
+                                 encoding="utf-8")
+            with mock.patch.object(bl.basara4_report, "write_atomic", side_effect=ValueError("bad encoder")):
+                app.proc = mock.Mock()
+                app.proc.poll.return_value = 0xC0000005
+                app.proc.returncode = 0xC0000005
+                app._poll()  # not an OSError: it must not escape either
+            after.assert_called_with(500, app._poll)
+            app._start_session_report(game)
+            with mock.patch.object(bl.basara4_report, "write_atomic", side_effect=ValueError("bad encoder")):
+                app._finish_session_report(1)
+            self.assertIn("Session report not saved (ValueError: bad encoder)", app.stop_note)
+
+    def test_a_failed_new_report_never_reuses_the_previous_session(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            app._start_session_report(game)
+            app._finish_session_report(0)
+            self.assertEqual(app.session_report["status"], "finished")  # the previous session's report
+            with mock.patch.object(bl.basara4_report, "new_report", side_effect=TypeError("broken")):
+                self.assertIn("TypeError: broken", app._start_session_report(game))
+            self.assertIsNone(app.session_report)
+
 
 class IconTests(unittest.TestCase):
     def test_launcher_icon_file(self):

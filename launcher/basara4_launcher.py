@@ -1933,7 +1933,10 @@ class Launcher(tk.Tk):
 
     # ---- session report (basara4_report): written before the game starts, completed when it ends ----
     def _masker(self):
-        return basara4_report.Masker.from_environment(game_dir=self.cfg.get("game") or None, app_dir=ROOT)
+        """Masks the account, computer, profile, program folder, and every folder the user chose in the
+        settings (game, DLC, ...) with the folders that hold them."""
+        return basara4_report.Masker.from_environment(game_dir=self.cfg.get("game") or None, app_dir=ROOT,
+                                                      folders=basara4_report.user_folders(self.cfg, ROOT))
 
     def _write_session_report(self):
         masker = self._masker()
@@ -1959,6 +1962,7 @@ class Launcher(tk.Tk):
         now = datetime.datetime.now()
         self.session_started_at = now.timestamp()
         self.session_tail = None
+        self.session_report = None  # never let an earlier session's report stand for this one
         errors = []
         try:
             gpu_id = game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)
