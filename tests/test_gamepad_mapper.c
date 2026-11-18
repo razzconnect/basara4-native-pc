@@ -470,6 +470,97 @@ static void test_prompt_deadline(void) {
     prompt_timeout_ms = 15000;
 }
 
+/* A review that never gets its next command (one was lost) would wait forever: fail instead. */
+static Uint32 SDLCALL review_never_ended(void *unused, SDL_TimerID id, Uint32 interval) {
+    (void)unused;
+    (void)id;
+    (void)interval;
+    fprintf(stderr, "mapper-test: the review never ended (a command from the window was lost)\n");
+    abort();
+}
+
+/* "Redo this stick" as the window sends it: "check off", "redo leftx", "redo lefty" at once. Both axes
+ * are asked again (the second redo waits in the queue while the first prompt runs; it is not refused),
+ * then the review comes back each time. A skip or cancel still reaches a running prompt past them. */
+static void test_redo_this_stick_asks_both_axes(void) {
+    char guid[64];
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(virtual_id), guid, sizeof guid);
+    reset_bindings();
+    snprintf(bound[target_index("leftx")], BINDING_SIZE, "a0~");
+    snprintf(bound[target_index("lefty")], BINDING_SIZE, "a1");
+    const Phase both[] = {{5, {0, 0, 0, 0}}, {90, {30000, 0, 0, 0}}, {60, {0, 0, 0, 0}},
+                          {90, {0, 30000, 0, 0}}, {1, {0, 0, 0, 0}}};
+    play(both, 5);
+    mapper_poll_hook = drive;
+    ui_mode = 1;
+    queue_command("check left");
+    queue_command("check off");
+    queue_command("redo leftx");
+    queue_command("redo lefty");
+    queue_command("save");  /* waits behind both prompts */
+    events_begin();
+    const SDL_TimerID watchdog = SDL_AddTimer(30000, review_never_ended, NULL);
+    const int saved = review(guid, "Basara test pad", 0);
+    SDL_RemoveTimer(watchdog);
+    char *text = events_end();
+    ui_mode = 0;
+    mapper_poll_hook = NULL;
+    assert(saved == 1);
+    assert(count_of(text, "\"ev\":\"prompt\",\"target\":\"leftx\"") == 1);
+    assert(count_of(text, "\"ev\":\"prompt\",\"target\":\"lefty\"") == 1);
+    assert(count_of(text, "\"ev\":\"review\"") == 3);  /* before, after leftx, after lefty */
+    assert(!strstr(text, "\"ev\":\"error\""));
+    assert(!strcmp(bound[target_index("leftx")], "a0") && !strcmp(bound[target_index("lefty")], "a1"));
+    free(text);
+    /* a cancel behind a queued redo still ends the prompt that runs */
+    reset_bindings();
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    mapper_poll_hook = drive;
+    ui_mode = 1;
+    queue_command("redo lefty");
+    queue_command("cancel");
+    char out[BINDING_SIZE];
+    events_begin();
+    assert(run_capture("leftx", out) == CAP_CANCEL);
+    free(events_end());
+    char left[COMMAND_SIZE];
+    assert(next_command(left, sizeof left) && !strcmp(left, "redo lefty"));  /* kept, in order */
+    assert(!next_command(left, sizeof left));
+    ui_mode = 0;
+    mapper_poll_hook = NULL;
+}
+
+/* Live lines are a --ui feature: the terminal mapper prints none. */
+static void test_no_live_lines_without_ui(void) {
+    ui_mode = 0;
+    events_begin();
+    live_reset();
+    emit_live("leftx", "push", 30000, "side", 0);
+    char *text = events_end();
+    assert(!strstr(text, "\"ev\":\"live\""));
+    free(text);
+}
+
+/* The player's stick in a step counts only free axes: an axis another entry has is not the push. */
+static void test_live_push_ignores_used_axes(void) {
+    reset_bindings();
+    snprintf(bound[target_index("leftx")], BINDING_SIZE, "a0");
+    play((const Phase[]){{1, {30000, 9000, 0, 0}}}, 1);
+    mapper_poll_hook = drive;
+    poll_joystick();
+    ui_mode = 1;
+    events_begin();
+    live_reset();
+    stick_live(target_index("lefty"));
+    char *text = events_end();
+    ui_mode = 0;
+    assert(strstr(text, "{\"ev\":\"live\",\"target\":\"lefty\",\"push\":9000,\"side\":0}"));
+    free(text);
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    poll_joystick();
+    mapper_poll_hook = NULL;
+}
+
 /* The launcher closing its input reads as cancel: in a prompt and in the review. */
 static void test_end_of_input_cancels(void) {
     char path[600];
@@ -528,6 +619,9 @@ int main(void) {
     test_stick_check_shows_what_the_game_reads();
     test_rest_is_taken_again_after_a_rejected_push();
     test_prompt_deadline();
+    test_redo_this_stick_asks_both_axes();
+    test_no_live_lines_without_ui();
+    test_live_push_ignores_used_axes();
     test_end_of_input_cancels();  /* last: it replaces stdin */
     SDL_CloseJoystick(joy);
     SDL_DetachVirtualJoystick(virtual_id);

@@ -168,6 +168,29 @@ static int next_command(char *out, size_t size) {
     return got;
 }
 
+/* The first "skip" or "cancel" anywhere in the queue, taken out of it; the other commands stay queued in
+ * their order. 0 when there is none. The end of input reads as "cancel", even with commands queued. */
+static int take_prompt_command(char *out, size_t size) {
+    int got = 0;
+    SDL_LockMutex(command_lock);
+    for (int i = 0; i < command_count && !got; ++i) {
+        const char *command = command_queue[(command_head + i) % COMMAND_SLOTS];
+        if (strcmp(command, "skip") && strcmp(command, "cancel")) continue;
+        snprintf(out, size, "%s", command);
+        for (int j = i; j + 1 < command_count; ++j)
+            memcpy(command_queue[(command_head + j) % COMMAND_SLOTS],
+                   command_queue[(command_head + j + 1) % COMMAND_SLOTS], COMMAND_SIZE);
+        --command_count;
+        got = 1;
+    }
+    if (!got && command_eof) {  /* the window is gone: queued commands no longer matter */
+        snprintf(out, size, "cancel");
+        got = 1;
+    }
+    SDL_UnlockMutex(command_lock);
+    return got;
+}
+
 /* ---- bindings ---- */
 /* bound[t] is the binding recorded for targets[t] ("" = none). kept[] are fields of an earlier mapping
  * that --sticks keeps (every non-stick field), with the binding part in kept_binding[]. */
@@ -393,15 +416,13 @@ static int diagnose(SDL_Joystick *j, SDL_JoystickID id) {
 enum { CAP_TIMEOUT, CAP_OK, CAP_SKIP, CAP_CANCEL };
 enum { FOUND_NONE, FOUND_BINDING, FOUND_USED, FOUND_REJECTED };
 
-/* A command that ends a prompt (skip, cancel), or 0. Other commands are not valid while a prompt runs. */
+/* A command that ends a prompt (skip, cancel), or 0. A command the window sent is never lost: the others
+ * (a second "redo" queued behind the first, a flip, save) wait in the queue for the review, which carries
+ * them out or answers them. */
 static int prompt_command(void) {
     char command[COMMAND_SIZE];
-    while (ui_mode && next_command(command, sizeof command)) {
-        if (!strcmp(command, "skip")) return CAP_SKIP;
-        if (!strcmp(command, "cancel")) return CAP_CANCEL;
-        emit("error", NULL, "message", "That command is not available while the mapper waits for a button.");
-    }
-    return 0;
+    if (!ui_mode || !take_prompt_command(command, sizeof command)) return 0;
+    return !strcmp(command, "skip") ? CAP_SKIP : CAP_CANCEL;
 }
 
 /* Waits until no button is held, hats are centered and axes are back near rest. Returns 0 when the

@@ -398,6 +398,41 @@ class StickGuideAndCheckTests(ControllerTestCase):
         self.assertEqual(window.state, "check")
         self.assertEqual(self.sent(mapper)[-1], "check left")
 
+    def test_between_the_two_redo_axes_no_guide_runs_and_a_refusal_returns_to_the_check(self):
+        window, mapper, _ = self.started()
+        self.all_sticks_captured(window)
+        window.handle({"ev": "review", "mapping": "..."})
+        window.redo_stick.invoke()
+        window.handle({"ev": "prompt", "target": "leftx"})
+        self.assertIsNotNone(window.stick.anim_job)
+        window.handle({"ev": "captured", "target": "leftx", "binding": "a0"})
+        window.handle({"ev": "review", "mapping": "..."})
+        self.assertIsNone(window.stick.anim_job)  # waiting for the second axis: the guide does not run on
+        self.pump_ui(100)
+        self.assertIsNone(window.stick.anim_job)
+        # the mapper refuses the second redo (it is in its review): the check comes back, with the reason
+        window.handle({"ev": "error", "message": "Unknown command."})
+        self.assertEqual(window.state, "check")
+        self.assertEqual(window.redo_left, 0)
+        self.assertEqual(self.sent(mapper)[-1], "check left")
+        self.assertEqual(window.detail.cget("text"), "Unknown command.")
+        self.assertTrue(window.looks_right.winfo_ismapped() or window.check_buttons.winfo_manager())
+
+    def test_flip_of_an_unset_axis_is_off_and_sends_nothing(self):
+        window, mapper, _ = self.started()
+        window.handle({"ev": "prompt", "target": "leftx"})
+        window.handle({"ev": "timeout", "target": "leftx"})
+        window.handle({"ev": "prompt", "target": "lefty"})
+        window.handle({"ev": "captured", "target": "lefty", "binding": "a1"})
+        window.handle({"ev": "review", "mapping": "..."})
+        self.assertEqual(self.sent(mapper)[-1], "check left")
+        self.assertTrue(window.flip_x.instate(["disabled"]))  # left / right is not set
+        self.assertFalse(window.flip_y.instate(["disabled"]))
+        window.flip_x.invoke()
+        self.assertNotIn("flip leftx", self.sent(mapper))
+        window.flip_y.invoke()
+        self.assertEqual(self.sent(mapper)[-1], "flip lefty")
+
     def test_no_stick_set_means_no_check(self):
         window, mapper, _ = self.started()
         window.handle({"ev": "prompt", "target": "leftx"})

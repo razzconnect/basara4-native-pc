@@ -444,7 +444,13 @@ class ControllerWindow(tk.Toplevel):
         elif kind == "error":
             # Also sent for a refused command (the mapper goes on), so it does not end the run here.
             self.error_shown = True
-            self._say(event.get("message", ""))
+            if self.redo_left and self.asking is None and self.checks:
+                # a redo was refused: the mapper is in its review, so the check comes back with the reason
+                self.redo_left = 0
+                self._start_check()
+                self.detail.config(text=event.get("message", ""))
+            else:
+                self._say(event.get("message", ""))
         elif kind == "exit":
             # 0 saved, 2 cancelled, 1 failed with an error message; anything else is unexplained.
             code = event.get("code")
@@ -544,6 +550,7 @@ class ControllerWindow(tk.Toplevel):
         if self.redo_left:
             self.redo_left -= 1
             if self.redo_left:
+                self.stick.stop()  # between the two axes: no guide runs until the next prompt
                 return  # the other axis of the stick is asked next
         if self.checks is None:  # the stick steps are done: check the sticks that were set
             self.checks = [side for side in CHECK_SIDES
