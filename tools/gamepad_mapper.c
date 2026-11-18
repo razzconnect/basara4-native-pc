@@ -96,6 +96,32 @@ static void emit(const char *ev, const char *target, const char *key, const char
     fflush(stdout);
 }
 
+/* Live stick values for the window (--ui): during a stick prompt (how far the stick is pushed, and how
+ * much it also moves another way) and during the stick check (what the game will read). Sent at most
+ * every kLiveIntervalMs and only when a value moved kLiveStep since the last line, so the pipe carries
+ * about 30 lines a second while the stick moves and none while it rests. */
+enum { kLiveIntervalMs = 33, kLiveStep = 400 };
+static Uint64 live_sent_at;
+static int live_sent, live_last[2];
+
+static void live_reset(void) { live_sent = 0; }
+
+static void emit_live(const char *target, const char *key_a, int a, const char *key_b, int b) {
+    if (!ui_mode) return;
+    const Uint64 now = SDL_GetTicks();
+    if (live_sent && (now - live_sent_at < kLiveIntervalMs ||
+                      (abs(a - live_last[0]) < kLiveStep && abs(b - live_last[1]) < kLiveStep)))
+        return;
+    live_sent = 1;
+    live_sent_at = now;
+    live_last[0] = a;
+    live_last[1] = b;
+    printf("{\"ev\":\"live\",\"target\":");
+    json_text(target);
+    printf(",\"%s\":%d,\"%s\":%d}\n", key_a, a, key_b, b);
+    fflush(stdout);
+}
+
 /* ---- commands (--ui) ---- */
 enum { COMMAND_SLOTS = 8, COMMAND_SIZE = 64 };
 static SDL_Mutex *command_lock;
@@ -419,6 +445,25 @@ static int find_button(char *out, size_t size) {
     return FOUND_NONE;
 }
 
+/* During a stick prompt: how far the most-moved free axis is from rest ("push") and how far the next
+ * free axis moved ("side"), both 0..32768. The window shows them as the player's own stick. */
+static void stick_live(int target) {
+    int push = 0, side = 0;
+    for (int a = 0; a < axes_known(); ++a) {
+        char name[8];
+        snprintf(name, sizeof name, "a%d", a);
+        if (binding_taken(name, target)) continue;
+        const int moved = abs(joy_axis(a) - rest[a]);
+        if (moved > push) {
+            side = push;
+            push = moved;
+        } else if (moved > side) {
+            side = moved;
+        }
+    }
+    emit_live(targets[target].sdl, "push", push, "side", side);
+}
+
 static void widen(AxisRange *range) {
     for (int a = 0; a < axes_known(); ++a) {
         const int delta = joy_axis(a) - rest[a];
@@ -457,6 +502,7 @@ static int find_stick(int target, char *out, size_t size) {
         SDL_Delay(10);
         poll_joystick();
         widen(range);
+        stick_live(target);
     }
     const StickVerdict verdict = stick_verdict(range, axes_known(), free_axis, trigger, negative);
     if (verdict != STICK_OK) {
@@ -471,16 +517,22 @@ static int find_stick(int target, char *out, size_t size) {
     return FOUND_BINDING;
 }
 
+/* How long a prompt waits for a usable input before the entry is skipped. Asking again after an input
+ * another entry has keeps the same deadline (pressing the wrong button does not keep a prompt open
+ * forever). A rejected stick push starts it again: the mapper asked for a new push. */
+static Uint32 prompt_timeout_ms = 15000;
+
 /* One prompt. Polls the selected device directly; SDL joystick events can be absent without a window.
  * An input another entry already has, or an ambiguous stick push, is reported and the prompt asked
- * again once everything is released. 15 seconds without input skip the entry. */
+ * again once everything is released, with the rest values taken again. */
 static int capture(int target, char *out, size_t size) {
-retry:;
-    const Uint64 deadline = SDL_GetTicks() + 15000;
+    Uint64 deadline = SDL_GetTicks() + prompt_timeout_ms;
+    live_reset();
     while (SDL_GetTicks() < deadline) {
         const int command = prompt_command();
         if (command) return command;
         poll_joystick();
+        if (targets[target].axis) stick_live(target);
         int found = targets[target].axis ? find_stick(target, out, size) : find_button(out, size);
         if (found == FOUND_BINDING && binding_taken(out, target)) found = FOUND_USED;
         if (found == FOUND_BINDING) return CAP_OK;
@@ -494,7 +546,9 @@ retry:;
             }
             if (!wait_release()) return CAP_CANCEL;
             sample_rest();
-            goto retry;
+            if (found == FOUND_REJECTED) deadline = SDL_GetTicks() + prompt_timeout_ms;
+            live_reset();
+            continue;
         }
         SDL_Delay(10);
     }
@@ -648,23 +702,76 @@ static int keep_buttons(const char *saved) {
     return 1;
 }
 
-/* --ui after the last prompt: the window shows the result and sends save, cancel, redo <entry> or
- * flip <entry>. Returns 1 to save, 0 when cancelled. */
+/* ---- stick check (--ui review) ---- */
+/* "check left" / "check right": the mapping recorded so far is given to SDL for this controller, and
+ * the stick is read through it as an SDL gamepad, the way the game reads it (the game loads the same
+ * line from user\gamepad_mapping.txt). Live lines then carry what the game would receive. */
+static SDL_Gamepad *check_pad;
+static int check_side = -1;  /* 0 left stick, 1 right stick, -1 no check */
+
+static void check_close(void) {
+    if (check_pad) SDL_CloseGamepad(check_pad);
+    check_pad = NULL;
+}
+
+static int check_apply(const char *guid, const char *name) {
+    char mapping[2048];
+    check_close();
+    if (!build_mapping(mapping, sizeof mapping, guid, name)) return 0;
+    char *platform = strstr(mapping, "platform:");
+    if (platform) *platform = 0;  /* read on the platform the mapper runs on */
+    if (SDL_AddGamepadMapping(mapping) < 0) return 0;
+    check_pad = SDL_OpenGamepad(SDL_GetJoystickID(joy));
+    live_reset();
+    return check_pad != NULL;
+}
+
+static void check_live(void) {
+    poll_joystick();
+    const int right = check_side == 1;
+    emit_live(right ? "right" : "left",
+              "x", SDL_GetGamepadAxis(check_pad, right ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX),
+              "y", SDL_GetGamepadAxis(check_pad, right ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY));
+}
+
+/* --ui after the last prompt: the window shows the result and sends save, cancel, redo <entry>,
+ * flip <entry> or check left|right|off. Returns 1 to save, 0 when cancelled. */
 static int review(const char *guid, const char *name, int sticks_only) {
     char mapping[2048], command[COMMAND_SIZE];
     for (;;) {
         if (!build_mapping(mapping, sizeof mapping, guid, name)) {
             emit("error", NULL, "message", "The mapping is too long to save.");
+            check_close();
             return 0;
         }
         emit("review", NULL, "mapping", mapping);
+        if (check_side >= 0 && !check_apply(guid, name)) {  /* a flip or redo changed what the game reads */
+            emit("error", NULL, "message", "The stick check could not start.");
+            check_side = -1;
+        }
         for (;;) {
             if (!next_command(command, sizeof command)) {
-                SDL_Delay(20);
+                if (check_side >= 0) check_live();
+                SDL_Delay(check_side >= 0 ? 10 : 20);
                 continue;
             }
-            if (!strcmp(command, "save")) return 1;
-            if (!strcmp(command, "cancel")) return 0;
+            if (!strcmp(command, "save") || !strcmp(command, "cancel")) {
+                check_close();
+                check_side = -1;
+                return !strcmp(command, "save");
+            }
+            if (!strncmp(command, "check ", 6)) {
+                const char *side = command + 6;
+                check_side = !strcmp(side, "left") ? 0 : !strcmp(side, "right") ? 1 : -1;
+                if (check_side < 0) {
+                    check_close();
+                    if (strcmp(side, "off")) emit("error", NULL, "message", "Unknown command.");
+                } else if (!check_apply(guid, name)) {
+                    emit("error", NULL, "message", "The stick check could not start.");
+                    check_side = -1;
+                }
+                continue;
+            }
             const int redo = !strncmp(command, "redo ", 5), flip = !strncmp(command, "flip ", 5);
             const int target = redo || flip ? target_index(command + 5) : -1;
             if (target < 0 || (sticks_only && redo && !targets[target].axis)) {

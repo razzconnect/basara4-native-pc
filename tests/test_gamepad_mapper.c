@@ -218,6 +218,287 @@ static void test_review_commands(void) {
     ui_mode = 0;
 }
 
+/* ---- stdout of the mapper (--ui events) into a temporary file ---- */
+#ifdef _WIN32
+#include <io.h>
+#define TEST_DUP _dup
+#define TEST_DUP2 _dup2
+#define TEST_CLOSE _close
+#define TEST_FILENO _fileno
+#else
+#include <unistd.h>
+#define TEST_DUP dup
+#define TEST_DUP2 dup2
+#define TEST_CLOSE close
+#define TEST_FILENO fileno
+#endif
+static int saved_stdout = -1;
+static char events_path[600];
+
+static void events_begin(void) {
+    const char *base = getenv("TEMP");
+    snprintf(events_path, sizeof events_path, "%s/basara4-mapper-events-%llu.txt", base ? base : ".",
+             (unsigned long long)SDL_GetTicksNS());
+    fflush(stdout);
+    saved_stdout = TEST_DUP(TEST_FILENO(stdout));
+    FILE *sink = fopen(events_path, "wb");
+    assert(saved_stdout >= 0 && sink);
+    TEST_DUP2(TEST_FILENO(sink), TEST_FILENO(stdout));
+    fclose(sink);
+}
+
+/* Restores stdout; returns what the mapper wrote (free() it). */
+static char *events_end(void) {
+    fflush(stdout);
+    TEST_DUP2(saved_stdout, TEST_FILENO(stdout));
+    TEST_CLOSE(saved_stdout);
+    FILE *f = fopen(events_path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    const long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *text = malloc((size_t)size + 1);
+    assert(text);
+    text[fread(text, 1, (size_t)size, f)] = 0;
+    fclose(f);
+    remove(events_path);
+    return text;
+}
+
+static int count_of(const char *text, const char *what) {
+    int n = 0;
+    for (const char *p = strstr(text, what); p; p = strstr(p + 1, what)) ++n;
+    return n;
+}
+
+/* Live lines are limited in rate and only sent when a value moved. */
+static void test_live_rate_and_change(void) {
+    ui_mode = 1;
+    events_begin();
+    live_reset();
+    for (int i = 0; i < 200; ++i) emit_live("leftx", "push", 5000, "side", 0);  /* the stick holds still */
+    emit_live("leftx", "push", 30000, "side", 0);  /* moved, but within 33 ms of the last line */
+    char *text = events_end();
+    assert(count_of(text, "\"ev\":\"live\"") == 1);  /* one line for 201 polls */
+    assert(strstr(text, "{\"ev\":\"live\",\"target\":\"leftx\",\"push\":5000,\"side\":0}"));
+    free(text);
+    events_begin();
+    SDL_Delay(kLiveIntervalMs + 15);
+    emit_live("leftx", "push", 30000, "side", 0);  /* now it is sent */
+    SDL_Delay(kLiveIntervalMs + 15);
+    emit_live("leftx", "push", 30100, "side", 0);  /* below kLiveStep: not sent, also when time allows */
+    text = events_end();
+    ui_mode = 0;
+    assert(count_of(text, "\"ev\":\"live\"") == 1);
+    assert(strstr(text, "{\"ev\":\"live\",\"target\":\"leftx\",\"push\":30000,\"side\":0}"));
+    free(text);
+}
+
+/* A stick prompt sends the player's own stick while it moves: rising push values, about 30 a second. */
+static void test_live_during_a_stick_prompt(void) {
+    char out[BINDING_SIZE];
+    reset_bindings();
+    mapper_poll_hook = drive;
+    Phase ramp[34];
+    ramp[0] = (Phase){5, {0, 0, 0, 0}};
+    for (int i = 1; i < 33; ++i) ramp[i] = (Phase){3, {(Sint16)(i * 900), 0, 0, 0}};
+    ramp[33] = (Phase){1, {30000, 0, 0, 0}};
+    play(ramp, 34);
+    ui_mode = 1;
+    events_begin();
+    const Uint64 start = SDL_GetTicks();
+    const int result = run_capture("leftx", out);
+    const Uint64 elapsed = SDL_GetTicks() - start;
+    char *text = events_end();
+    ui_mode = 0;
+    mapper_poll_hook = NULL;
+    assert(result == CAP_OK && !strcmp(out, "a0"));
+    const int lines = count_of(text, "\"ev\":\"live\",\"target\":\"leftx\"");
+    assert(lines >= 5);
+    assert(lines <= (int)(elapsed / kLiveIntervalMs) + 2);  /* never more than one per interval */
+    int last = -1, rising = 1;
+    for (const char *p = strstr(text, "\"push\":"); p; p = strstr(p + 1, "\"push\":")) {
+        const int push = atoi(p + 7);
+        rising &= push >= last;
+        last = push;
+    }
+    assert(rising && last >= 29000);
+    free(text);
+}
+
+/* Commands the launcher would send while the review polls the check: (poll step, command). */
+typedef struct { int step; const char *command; } Scheduled;
+static const Scheduled *schedule;
+static int schedule_count, schedule_next;
+static void drive_and_queue(void) {
+    drive();
+    while (schedule_next < schedule_count && script_step >= schedule[schedule_next].step)
+        queue_command(schedule[schedule_next++].command);
+}
+
+static void live_xy(const char *line, int *x, int *y) {
+    const char *px = strstr(line, "\"x\":"), *py = strstr(line, "\"y\":");
+    assert(px && py);
+    *x = atoi(px + 4);
+    *y = atoi(py + 4);
+}
+
+/* The stick check reads the stick through SDL with the recorded mapping, as the game does: "~" turns
+ * the value around, and a flip changes what the check shows right away. */
+static void test_stick_check_shows_what_the_game_reads(void) {
+    char guid[64];
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(virtual_id), guid, sizeof guid);
+    reset_bindings();
+    snprintf(bound[target_index("leftx")], BINDING_SIZE, "a0");
+    snprintf(bound[target_index("lefty")], BINDING_SIZE, "a1~");
+    play((const Phase[]){{1, {30000, -30000, 0, 0}}}, 1);  /* raw: x to the right, y pushed up */
+    static const Scheduled commands[] = {{25, "flip lefty"}, {60, "save"}};
+    schedule = commands;
+    schedule_count = 2;
+    schedule_next = 0;
+    mapper_poll_hook = drive_and_queue;
+    ui_mode = 1;
+    queue_command("check middle");  /* unknown: an error, the review goes on */
+    queue_command("check left");
+    events_begin();
+    const int saved = review(guid, "Basara test pad", 0);
+    char *text = events_end();
+    ui_mode = 0;
+    mapper_poll_hook = NULL;
+    assert(saved == 1);
+    assert(!strcmp(bound[target_index("lefty")], "a1"));
+    assert(strstr(text, "\"message\":\"Unknown command.\""));
+    /* live lines for the left stick: before the flip y is turned around by "~" (raw up -> positive,
+     * which SDL calls down); after the flip the game reads up (negative) */
+    const char *flipped = strstr(text, "\"ev\":\"flipped\"");
+    assert(flipped);
+    int before = 0, after = 0;
+    for (const char *p = strstr(text, "\"ev\":\"live\",\"target\":\"left\""); p;
+         p = strstr(p + 1, "\"ev\":\"live\",\"target\":\"left\"")) {
+        int x, y;
+        live_xy(p, &x, &y);
+        assert(x > 20000);
+        if (p < flipped) {
+            assert(y > 20000);
+            ++before;
+        } else {
+            assert(y < -20000);
+            ++after;
+        }
+    }
+    assert(before >= 1 && after >= 1);
+    assert(!check_pad && check_side < 0);  /* saving ends the check */
+    free(text);
+    /* "check right" with the right stick not set: the game reads the centre */
+    reset_bindings();
+    static const Scheduled cancel_later[] = {{10, "cancel"}};
+    schedule = cancel_later;
+    schedule_count = 1;
+    schedule_next = 0;
+    play((const Phase[]){{1, {30000, -30000, 30000, 30000}}}, 1);
+    mapper_poll_hook = drive_and_queue;
+    ui_mode = 1;
+    queue_command("check right");
+    events_begin();
+    assert(review(guid, "Basara test pad", 0) == 0);
+    text = events_end();
+    ui_mode = 0;
+    mapper_poll_hook = NULL;
+    const char *line = strstr(text, "\"ev\":\"live\",\"target\":\"right\"");
+    assert(line);
+    int x, y;
+    live_xy(line, &x, &y);
+    assert(x == 0 && y == 0);
+    free(text);
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    drive();
+    SDL_UpdateJoysticks();
+}
+
+/* After a rejected push the rest values are taken again: an axis that settled off centre while the
+ * player let go still reads its next push from where it rests now. */
+static void test_rest_is_taken_again_after_a_rejected_push(void) {
+    char out[BINDING_SIZE];
+    reset_bindings();
+    mapper_poll_hook = drive;
+    const Phase settle[] = {{3, {0, 0, 0, 0}}, {10, {0, 0, 30000, 0}}, {100, {0, 0, -32000, 0}},
+                            {60, {0, 0, 9000, 0}}, {1, {0, 0, -14000, 0}}};
+    play(settle, 5);
+    /* swung (rejected), then it rests at 9000: the push to -14000 is 23000 from there, but only 14000
+     * from the old rest, which is not a push at all */
+    assert(run_capture("rightx", out) == CAP_OK && !strcmp(out, "a2~"));
+    assert(stick_rejections == 1);
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    sample_rest();
+    mapper_poll_hook = NULL;
+}
+
+/* A button that is pressed again every few polls (a used input pressed again and again). */
+static int toggle_polls;
+static void press_button_again_and_again(void) {
+    SDL_SetJoystickVirtualButton(joy, 0, (toggle_polls++ % 40) < 5);
+    if (toggle_polls > 2000) {
+        fprintf(stderr, "mapper-test: the prompt never ended while a used button was pressed\n");
+        abort();
+    }
+}
+
+/* The prompt deadline: pressing a used button again and again does not keep a prompt open; a rejected
+ * stick push gives the player the full time again for the new push. */
+static void test_prompt_deadline(void) {
+    char out[BINDING_SIZE];
+    prompt_timeout_ms = 600;
+    reset_bindings();
+    snprintf(bound[target_index("a")], BINDING_SIZE, "b0");
+    toggle_polls = 0;
+    mapper_poll_hook = press_button_again_and_again;
+    const Uint64 start = SDL_GetTicks();
+    assert(run_capture("b", out) == CAP_TIMEOUT);
+    assert(SDL_GetTicks() - start < 600 + 1500);  /* the deadline plus at most one release wait */
+    SDL_SetJoystickVirtualButton(joy, 0, 0);
+    /* rejected after the first deadline has passed (the 700 ms watch), then a straight push: kept */
+    reset_bindings();
+    mapper_poll_hook = drive;
+    const Phase late[] = {{3, {0, 0, 0, 0}}, {10, {30000, 0, 0, 0}}, {100, {-32000, 0, 0, 0}},
+                          {40, {0, 0, 0, 0}}, {1, {30000, 0, 0, 0}}};
+    play(late, 5);
+    assert(run_capture("leftx", out) == CAP_OK && !strcmp(out, "a0"));
+    assert(stick_rejections == 1);
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    sample_rest();
+    mapper_poll_hook = NULL;
+    prompt_timeout_ms = 15000;
+}
+
+/* The launcher closing its input reads as cancel: in a prompt and in the review. */
+static void test_end_of_input_cancels(void) {
+    char path[600];
+    const char *base = getenv("TEMP");
+    snprintf(path, sizeof path, "%s/basara4-mapper-eof-%llu.txt", base ? base : ".",
+             (unsigned long long)SDL_GetTicksNS());
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    fclose(f);
+    assert(freopen(path, "rb", stdin));
+    command_eof = 0;
+    read_commands(NULL);  /* the real reader: empty input, then end of input */
+    char command[COMMAND_SIZE];
+    assert(next_command(command, sizeof command) && !strcmp(command, "cancel"));
+    char out[BINDING_SIZE];
+    reset_bindings();
+    ui_mode = 1;
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    mapper_poll_hook = drive;
+    assert(run_capture("leftx", out) == CAP_CANCEL);
+    events_begin();
+    assert(review("0300aaaa", "Pad", 0) == 0);
+    free(events_end());
+    ui_mode = 0;
+    mapper_poll_hook = NULL;
+    command_eof = 0;
+    remove(path);
+}
+
 int main(void) {
     test_verdict();
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -242,6 +523,12 @@ int main(void) {
     test_tilde_reverses_the_axis_the_game_reads();
     test_save_keeps_other_controllers();
     test_review_commands();
+    test_live_rate_and_change();
+    test_live_during_a_stick_prompt();
+    test_stick_check_shows_what_the_game_reads();
+    test_rest_is_taken_again_after_a_rejected_push();
+    test_prompt_deadline();
+    test_end_of_input_cancels();  /* last: it replaces stdin */
     SDL_CloseJoystick(joy);
     SDL_DetachVirtualJoystick(virtual_id);
     SDL_DestroyMutex(command_lock);

@@ -2575,7 +2575,10 @@ class Launcher(tk.Tk):
         USER.mkdir(parents=True, exist_ok=True)
         window = getattr(self, "pad_window", None)
         if window is not None and window.winfo_exists():
-            window.lift()  # one mapper at a time: a second one would fight over the same file
+            # one mapper at a time (a second one would fight over the same file): the open window switches
+            # to what this button maps, unless it is mapping now
+            window.set_sticks_only("--sticks" in extra)
+            window.lift()
             return
         self.pad_window = basara4_controller.ControllerWindow(
             self, exe, MAPPING, env, sticks_only="--sticks" in extra, on_saved=self._pad_text,
