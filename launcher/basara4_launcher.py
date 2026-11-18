@@ -782,8 +782,8 @@ def report_saved_text(name):
     """What the player reads after Save report: where the zip is and how to post it."""
     return (f"The report was saved as {name}.\n"
             f"You can find it next to the launcher in user\\reports\\{name}\n\n"
-            "To report the problem, press Open Discord: Discord opens in your browser and the file is shown in a "
-            "folder window. Drag the file into your post on Discord.\n\n"
+            "The file is shown in a folder window. To report the problem, press Open Discord: Discord opens in your "
+            "browser. Drag the file into your post on Discord.\n\n"
             "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
             "The crash dump (.dmp) is not included because it can hold personal data. It stays in user\\crash. "
             "Send it only when the team asks for it, in a private message (DM), never in a public place.")
@@ -2087,8 +2087,8 @@ class Launcher(tk.Tk):
         return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
     def send_report(self, parent=None):
-        """"Kirim laporan": one zip with the session report, the masked logs and this session's newest
-        capture; then open its folder so the user only attaches it. Returns the zip path.
+        """Save report: one zip with the session report, the masked logs and this session's newest
+        capture; then Explorer shows it and the "Report saved" window says how to post it. Returns the zip path.
         A crash dump never goes in the zip: a minidump holds the process environment (account and
         computer names, every user variable, tokens included), which cannot be masked. It stays in
         user\\crash; the report names it and its size so the team can ask for it privately."""
@@ -2131,11 +2131,34 @@ class Launcher(tk.Tk):
                                                           "folder.") + f"\n\n{exc.strerror or exc}",
                                  parent=parent or self)
             return None
-        self._show_report_saved(target, parent or self)
+        # Explorer first, then the dialog: the dialog is the newest window and stays above Explorer, which
+        # may draw its window a moment later.
+        shown = self.show_report_file(target, parent or self)
+        self._show_report_saved(target, parent or self, file_shown=shown)
         return target
 
-    def _show_report_saved(self, target, parent):
-        """Step 2 of reporting a crash: where the zip is, and two buttons, Open Discord and Close."""
+    def show_report_file(self, target, parent=None):
+        """Shows the saved zip in Explorer, selected. When Explorer cannot select it, its folder is opened; when
+        that fails too, the player is told where the file is. Returns whether a folder window was opened."""
+        try:
+            # one quoted argument, so a path with commas or spaces selects the right file
+            subprocess.Popen(f'explorer.exe /select,"{target}"')
+            return True
+        except OSError:
+            pass  # no explorer.exe to start: the folder is opened instead
+        try:
+            os.startfile(REPORTS)
+            return True
+        except OSError as exc:
+            messagebox.showerror("Folder not opened",
+                                 f"Open it yourself: user\\reports\\{target.name}\n\n{exc.strerror or exc}",
+                                 parent=parent or self)
+            return False
+
+    def _show_report_saved(self, target, parent, file_shown=True):
+        """Step 2 of reporting a crash: where the zip is, and two buttons, Open Discord and Close.
+        Explorer opens at the same time, so this window is kept on top until the player presses Open Discord
+        (then the browser and Explorer must be able to come in front) or closes it."""
         win = tk.Toplevel(parent)
         win.title("Report saved")
         win.configure(bg=BG)
@@ -2146,32 +2169,34 @@ class Launcher(tk.Tk):
         buttons = ttk.Frame(win, style="TFrame", padding=(14, 0, 14, 14))
         buttons.pack(fill="x")
         # normal-size buttons side by side at the bottom right; the main one in the accent colour
+        win.file_shown = file_shown
+
+        def open_discord_pressed():
+            win.attributes("-topmost", False)  # the browser opens now and must come in front
+            win.file_shown = self.open_bug_report(target, win, show_file=not win.file_shown) or win.file_shown
+
         open_discord = ttk.Button(buttons, text="Open Discord", style="DialogAccent.TButton",
-                                  command=lambda: self.open_bug_report(target, win))
+                                  command=open_discord_pressed)
         close = ttk.Button(buttons, text="Close", style="Dialog.TButton", command=win.destroy)
         close.pack(side="right")
         open_discord.pack(side="right", padx=(0, 8))
+        win.attributes("-topmost", True)
+        win.lift()
+        win.focus_force()
         win.grab_set()
         return win
 
-    def open_bug_report(self, target, parent=None):
-        """Opens the bug-reports channel in the browser and shows the saved zip in Explorer, so the player only
-        drags it into a post. Nothing is uploaded. When Explorer cannot select the file, its folder is opened."""
+    def open_bug_report(self, target, parent=None, show_file=True):
+        """Opens the bug-reports channel in the browser, so the player only drags the zip into a post. Nothing
+        is uploaded. Save report has already shown the zip in Explorer; show_file asks for it again (when
+        that failed then). Returns whether a folder window was opened now."""
         browser_opened = webbrowser.open(BUG_REPORT_URL)
-        try:
-            # one quoted argument, so a path with commas or spaces selects the right file
-            subprocess.Popen(f'explorer.exe /select,"{target}"')
-        except OSError:
-            try:
-                os.startfile(REPORTS)
-            except OSError as exc:
-                messagebox.showerror("Folder not opened",
-                                     f"Open it yourself: user\\reports\\{target.name}\n\n{exc.strerror or exc}",
-                                     parent=parent or self)
+        shown = self.show_report_file(target, parent) if show_file else False
         if not browser_opened:
             messagebox.showwarning("Browser not opened",
                                    f"Could not open your browser. Open Discord yourself: {BUG_REPORT_URL} and drag "
                                    "the file into your post.", parent=parent or self)
+        return shown
 
     def _show_crash_dialog(self, code):
         data = extract_crash_summary(LOG)

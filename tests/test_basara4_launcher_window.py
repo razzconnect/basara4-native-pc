@@ -6,6 +6,7 @@ controls. Uses a real Tk window like test_basara4_render_trace.py; the game is n
 """
 import contextlib
 import json
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -31,6 +32,21 @@ def report_saved_window(app):
     return wins[-1] if wins else None
 
 
+def z_index(window):
+    """Position of the window's top-level frame in the Windows z-order (0 = in front)."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    user32.GetTopWindow.restype = user32.GetWindow.restype = ctypes.c_void_p
+    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    frame = int(window.wm_frame(), 16)
+    hwnd, index = user32.GetTopWindow(None), 0
+    while hwnd:
+        if hwnd == frame:
+            return index
+        hwnd, index = user32.GetWindow(hwnd, 2), index + 1  # GW_HWNDNEXT
+    raise AssertionError("window not in the z-order")
+
+
 def button_texts(window):
     return [str(w.cget("text")) for w in descendants(window) if isinstance(w, ttk.Button)]
 
@@ -42,12 +58,16 @@ def descendants(widget):
 
 
 @contextlib.contextmanager
-def launcher(tmp, play_now=False, cfg=None):
+def launcher(tmp, play_now=False, cfg=None, real_explorer=False):
+    """real_explorer=False (the default) replaces Launcher.show_report_file with a mock, so Save report never
+    opens a real Explorer window; tests of the Explorer call itself pass True and mock subprocess.Popen."""
     with launcher_folders(tmp) as paths, contextlib.ExitStack() as stack:
         paths.user.mkdir(parents=True, exist_ok=True)
         game = game_folder(tmp)
         paths.config.write_text(json.dumps(dict(cfg or {}, game=str(game))), encoding="utf-8")
         stack.enter_context(mock.patch.object(bl.Launcher, "_check_update_thread", lambda self: None))
+        if not real_explorer:
+            stack.enter_context(mock.patch.object(bl.Launcher, "show_report_file", return_value=True))
         iconify = stack.enter_context(mock.patch.object(bl.Launcher, "iconify"))
         app = bl.Launcher(play_now=play_now)
         try:
@@ -282,8 +302,8 @@ class RunLogAndPlayTests(unittest.TestCase):
             with launcher(tmp) as (app, paths, game, _):
                 self.assertEqual(json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))["status"], "unfinished")
 
-    def test_save_report_makes_one_zip_then_offers_open_discord_and_close(self):
-        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+    def test_save_report_makes_one_zip_shows_it_in_explorer_then_offers_open_discord_and_close(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
                 mock.patch.object(bl.os, "startfile", create=True) as startfile, \
                 mock.patch.object(bl.webbrowser, "open") as browser, \
                 mock.patch.object(bl.subprocess, "Popen") as popen:
@@ -312,10 +332,10 @@ class RunLogAndPlayTests(unittest.TestCase):
                 self.assertIn("crash/core-1.dmp (4 bytes): kept on the PC, not included because it can hold "
                               "personal data", note)
             self.assertTrue((paths.user / "crash" / "core-1.dmp").is_file())  # the dump itself stays
-            # Saving opens nothing by itself: no folder, no browser, no Explorer.
+            # Saving shows the zip selected in Explorer (as before the two-step dialog), and opens no browser.
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')
             startfile.assert_not_called()
             browser.assert_not_called()
-            popen.assert_not_called()
             # Step 2: where the zip is, and exactly two buttons.
             step2 = report_saved_window(app)
             self.assertIsNotNone(step2)
@@ -325,8 +345,8 @@ class RunLogAndPlayTests(unittest.TestCase):
             self.assertEqual(message,
                              f"The report was saved as {target.name}.\n"
                              f"You can find it next to the launcher in user\\reports\\{target.name}\n\n"
-                             "To report the problem, press Open Discord: Discord opens in your browser and the file "
-                             "is shown in a folder window. Drag the file into your post on Discord.\n\n"
+                             "The file is shown in a folder window. To report the problem, press Open Discord: "
+                             "Discord opens in your browser. Drag the file into your post on Discord.\n\n"
                              "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
                              "The crash dump (.dmp) is not included because it can hold personal data. It stays in "
                              "user\\crash. Send it only when the team asks for it, in a private message (DM), never "
@@ -335,13 +355,13 @@ class RunLogAndPlayTests(unittest.TestCase):
             # Close only closes.
             next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Close").invoke()
             browser.assert_not_called()
-            popen.assert_not_called()
+            popen.assert_called_once()  # still only the Explorer of Save report
             startfile.assert_not_called()
             self.assertFalse(step2.winfo_exists())
 
-    def test_open_discord_opens_the_bug_channel_and_shows_the_zip(self):
+    def test_open_discord_opens_the_bug_channel_and_no_second_explorer(self):
         self.assertEqual(bl.BUG_REPORT_URL, "https://discord.gg/uZzSPr3Xjq")
-        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
                 mock.patch.object(bl.os, "startfile", create=True) as startfile, \
                 mock.patch.object(bl.webbrowser, "open") as browser, \
                 mock.patch.object(bl.subprocess, "Popen") as popen:
@@ -349,11 +369,12 @@ class RunLogAndPlayTests(unittest.TestCase):
             step2 = report_saved_window(app)
             next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Open Discord").invoke()
             browser.assert_called_once_with("https://discord.gg/uZzSPr3Xjq")
-            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')  # the zip, selected
+            # Explorer already shows the zip since Save report: not opened a second time
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')
             startfile.assert_not_called()
 
     def test_explorer_selects_a_zip_whose_path_has_commas_spaces_and_unicode(self):
-        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
                 mock.patch.object(bl.webbrowser, "open", return_value=True), \
                 mock.patch.object(bl.subprocess, "Popen") as popen:
             target = Path(tmp) / "Games, Basara 4 ünï" / "report-20261118-000000.zip"
@@ -361,7 +382,7 @@ class RunLogAndPlayTests(unittest.TestCase):
             popen.assert_called_once_with(f'explorer.exe /select,"{target}"')  # one quoted argument
 
     def test_open_discord_without_a_browser_says_so_and_still_shows_the_zip(self):
-        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
                 mock.patch.object(bl.webbrowser, "open", return_value=False), \
                 mock.patch.object(bl.subprocess, "Popen") as popen, \
                 mock.patch.object(bl.messagebox, "showwarning") as warning, \
@@ -376,8 +397,8 @@ class RunLogAndPlayTests(unittest.TestCase):
                 "Could not open your browser. Open Discord yourself: https://discord.gg/uZzSPr3Xjq and drag the "
                 "file into your post."))
 
-    def test_open_discord_falls_back_to_the_reports_folder(self):
-        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+    def test_save_report_falls_back_to_the_reports_folder(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
                 mock.patch.object(bl.os, "startfile", create=True) as startfile, \
                 mock.patch.object(bl.webbrowser, "open") as browser, \
                 mock.patch.object(bl.subprocess, "Popen", side_effect=OSError("no explorer")), \
@@ -385,17 +406,57 @@ class RunLogAndPlayTests(unittest.TestCase):
                 mock.patch.object(bl.messagebox, "showwarning") as showwarning, \
                 mock.patch.object(bl.messagebox, "showinfo") as showinfo, \
                 mock.patch.object(bl.messagebox, "askyesno") as askyesno:
-            target = app.send_report()
-            app.open_bug_report(target)
-            browser.assert_called_once_with(bl.BUG_REPORT_URL)
+            target = app.send_report()  # no explorer.exe: the folder opens instead
             startfile.assert_called_once_with(paths.user / "reports")
             showerror.assert_not_called()
+            self.press(report_saved_window(app), "Open Discord")
+            browser.assert_called_once_with(bl.BUG_REPORT_URL)
+            startfile.assert_called_once()  # the folder is already open: not again
+            report_saved_window(app).destroy()
             startfile.side_effect = OSError(5, "Access is denied")
-            app.open_bug_report(target)  # neither works: the player is told where the file is
+            target = app.send_report()  # neither works: the player is told where the file is
             self.assertEqual(showerror.call_args.args[0], "Folder not opened")
+            self.assertIn(f"user\\reports\\{target.name}", showerror.call_args.args[1])
+            self.assertIsNotNone(report_saved_window(app))  # the dialog still says where the zip is
+            self.press(report_saved_window(app), "Open Discord")  # nothing was shown: tried again
+            self.assertEqual(startfile.call_count, 3)
+            self.assertEqual(showerror.call_count, 2)
             for other in (showwarning, showinfo, askyesno):  # every dialog is mocked: a wrong one fails, not hangs
                 other.assert_not_called()
-            self.assertIn(f"user\\reports\\{target.name}", showerror.call_args.args[1])
+
+    @staticmethod
+    def press(window, text):
+        next(b for b in descendants(window) if isinstance(b, ttk.Button) and b.cget("text") == text).invoke()
+
+    def test_report_saved_stays_in_front_of_the_explorer_window(self):
+        """Both windows must be noticed: Explorer opens first, then the dialog, which stays above windows
+        that appear later (Explorer draws its window after a moment) until Open Discord is pressed."""
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.webbrowser, "open", return_value=True):
+            app.attributes("-alpha", 0.0)
+            order = []
+            bl.Launcher.show_report_file.side_effect = \
+                lambda target, parent=None: order.append(("explorer", report_saved_window(app))) or True
+            target = app.send_report()
+            step2 = report_saved_window(app)
+            step2.attributes("-alpha", 0.0)  # drawn, but invisible on the desktop
+            self.assertEqual(order, [("explorer", None)])  # Explorer was asked for before the dialog existed
+            bl.Launcher.show_report_file.assert_called_once_with(target, app)
+            self.assertTrue(int(step2.attributes("-topmost")))
+            self.assertEqual(str(step2.grab_current()), str(step2))  # the dialog has the input
+            # A window that opens after the dialog and is raised (like Explorer) stays below it.
+            later = tk.Toplevel(app)
+            later.attributes("-alpha", 0.0)
+            later.geometry("+0+0")
+            app.update()
+            later.lift()
+            app.update()
+            if sys.platform == "win32":
+                self.assertLess(z_index(step2), z_index(later))
+            self.press(step2, "Open Discord")  # now the browser has to come in front
+            self.assertFalse(int(step2.attributes("-topmost")))
+            bl.Launcher.show_report_file.assert_called_once()  # Explorer is not opened a second time
+            later.destroy()
 
     PRIVATE = ("qauser7c1", "qapc7c1", "qadlc7c1", "qashare7c1", "ünï7c1")
 
