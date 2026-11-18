@@ -6,14 +6,49 @@ controls. Uses a real Tk window like test_basara4_render_trace.py; the game is n
 """
 import contextlib
 import json
+import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
 from launcher_fixtures import bl, game_folder, launcher_folders
 
 tk, ttk = bl.tk, bl.ttk
+# Error messages are English only: none of these Indonesian words may appear in them.
+INDONESIAN = bl.re.compile(r"\b(Tidak|tidak|Buka|Lapor|Tutup|Anda|kamu|Solusi|Kirim|laporan|Laporan|Gagal|Simpan|"
+                           r"berhasil|sudah|belum|dan|yang|untuk|dengan|sebelum|Berhenti|berhenti|Sisa|Tetap|"
+                           r"Terdeteksi|Cuplikan|Tersalin|ditemukan)\b|File Game|Game tidak")
+
+
+def assert_english(test, text):
+    test.assertIsNone(INDONESIAN.search(text), text)
+
+
+def report_saved_window(app):
+    """The newest "Report saved" window (step 2 of reporting a crash)."""
+    wins = [w for w in descendants(app) if isinstance(w, tk.Toplevel) and w.title() == "Report saved"]
+    return wins[-1] if wins else None
+
+
+def z_index(window):
+    """Position of the window's top-level frame in the Windows z-order (0 = in front)."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    user32.GetTopWindow.restype = user32.GetWindow.restype = ctypes.c_void_p
+    user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    frame = int(window.wm_frame(), 16)
+    hwnd, index = user32.GetTopWindow(None), 0
+    while hwnd:
+        if hwnd == frame:
+            return index
+        hwnd, index = user32.GetWindow(hwnd, 2), index + 1  # GW_HWNDNEXT
+    raise AssertionError("window not in the z-order")
+
+
+def button_texts(window):
+    return [str(w.cget("text")) for w in descendants(window) if isinstance(w, ttk.Button)]
 
 
 def descendants(widget):
@@ -23,12 +58,16 @@ def descendants(widget):
 
 
 @contextlib.contextmanager
-def launcher(tmp, play_now=False, cfg=None):
+def launcher(tmp, play_now=False, cfg=None, real_explorer=False):
+    """real_explorer=False (the default) replaces Launcher.show_report_file with a mock, so Save report never
+    opens a real Explorer window; tests of the Explorer call itself pass True and mock subprocess.Popen."""
     with launcher_folders(tmp) as paths, contextlib.ExitStack() as stack:
         paths.user.mkdir(parents=True, exist_ok=True)
         game = game_folder(tmp)
         paths.config.write_text(json.dumps(dict(cfg or {}, game=str(game))), encoding="utf-8")
         stack.enter_context(mock.patch.object(bl.Launcher, "_check_update_thread", lambda self: None))
+        if not real_explorer:
+            stack.enter_context(mock.patch.object(bl.Launcher, "show_report_file", return_value=True))
         iconify = stack.enter_context(mock.patch.object(bl.Launcher, "iconify"))
         app = bl.Launcher(play_now=play_now)
         try:
@@ -112,8 +151,8 @@ class RunLogAndPlayTests(unittest.TestCase):
         old_loader = bl.VulkanProbe(True, (1, 0), False, [], "")
         ask, deiconify, started = self.play_with_vulkan(old_loader, answer=False, play_now=True)
         self.assertEqual(ask.call_args.args, bl.vulkan_warning("old", old_loader, None))
-        self.assertEqual(ask.call_args.args[0], "Vulkan Terlalu Lama")
-        self.assertIn("baru mendukung Vulkan 1.0.", ask.call_args.args[1])
+        self.assertEqual(ask.call_args.args[0], "Vulkan Too Old")
+        self.assertIn("only supports Vulkan 1.0.", ask.call_args.args[1])
         self.assertEqual((ask.call_args.kwargs["icon"], ask.call_args.kwargs["default"]), ("warning", "no"))
         deiconify.assert_called_once()  # the --play shortcut brings the window back for the question
         self.assertFalse(started)  # "No": the game is not started
@@ -121,14 +160,33 @@ class RunLogAndPlayTests(unittest.TestCase):
         self.assertTrue(started)  # "Yes": it starts anyway
         missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
         ask = self.play_with_vulkan(missing, answer=False)[0]
-        self.assertEqual(ask.call_args.args[0], "Vulkan Tidak Ditemukan")
+        self.assertEqual(ask.call_args.args[0], "Vulkan Not Found")
         self.assertEqual(ask.call_args.args, bl.vulkan_warning("missing", missing, None))
+
+    def test_low_virtual_memory_warning(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, _game, _iconify):
+            paths.core.parent.mkdir(parents=True, exist_ok=True)
+            paths.core.write_bytes(b"synthetic runtime")
+            with mock.patch.object(bl, "vulkan_problem", return_value=None), \
+                    mock.patch.object(bl, "check_commit_limit_mb", return_value=1000), \
+                    mock.patch.object(bl.threading, "Thread") as thread, \
+                    mock.patch.object(bl.messagebox, "askyesno", return_value=False) as ask:
+                app.on_play()
+        title, message = ask.call_args.args
+        self.assertEqual(title, "Virtual Memory Very Low")
+        self.assertEqual(message, "Windows has only ~1000 MB of virtual memory left.\n"
+                                  "The game needs at least ~3584 MB (3.5 GB) of virtual memory.\n"
+                                  "If the game crashes with Error 1455, make sure Virtual Memory (Paging File) is on "
+                                  "in Windows.\n\n"
+                                  "Start the game anyway?")
+        assert_english(self, title + message)
+        thread.assert_not_called()  # "No": nothing starts
 
     def test_vulkan_warning_follows_the_chosen_gpu(self):
         mixed = bl.VulkanProbe(True, (1, 3), True, [("Old dGPU", 2, (1, 2)), ("New iGPU", 1, (1, 3))], "")
         ask, _, started = self.play_with_vulkan(mixed, answer=False)  # Auto: the discrete GPU
         ask.assert_called_once()
-        self.assertIn("baru mendukung Vulkan 1.2.", ask.call_args.args[1])  # the GPU the game would use
+        self.assertIn("only supports Vulkan 1.2.", ask.call_args.args[1])  # the GPU the game would use
         self.assertFalse(started)
         ask, deiconify, started = self.play_with_vulkan(mixed, answer=False, cfg={"gpu_index": 1})
         ask.assert_not_called()
@@ -145,18 +203,635 @@ class RunLogAndPlayTests(unittest.TestCase):
     def test_crash_report_carries_the_vulkan_line(self):
         vulkan = bl.VulkanProbe(True, (1, 0), False, [], "")
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, _paths, _game, _iconify), \
-                mock.patch.object(bl, "VULKAN", vulkan), \
-                mock.patch.object(bl.messagebox, "showinfo"), \
-                mock.patch.object(bl.Launcher, "clipboard_clear"), \
-                mock.patch.object(bl.Launcher, "clipboard_append") as append:  # the user's clipboard stays as it is
+                mock.patch.object(bl, "VULKAN", vulkan):
             app._show_crash_dialog(0xC0000139)
             dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
-            copy = next(w for w in descendants(dialog)
-                        if isinstance(w, ttk.Button) and "Clipboard" in str(w.cget("text")))
-            copy.invoke()
-        report = append.call_args.args[0]
-        self.assertIn("Exit Code     : 0xc0000139\n", report)
-        self.assertIn("Vulkan        : loader 1.0, no instance; needs 1.3\n", report)
+            labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label))
+            self.assertIn("(Exit Code 0xc0000139)", labels)
+            with zipfile.ZipFile(app.send_report(dialog)) as zf:
+                report = zf.read("report.txt").decode("utf-8")
+        self.assertIn("summary: loader 1.0, no instance; needs 1.3", report)
+
+    # ---- the session report: written before the game starts, completed when it ends ----
+    def game_with_sfo(self, game, app_ver="01.02"):
+        from test_basara4_cheats import build_sfo
+        (game / "sce_sys").mkdir(exist_ok=True)
+        (game / "sce_sys" / "param.sfo").write_bytes(build_sfo({"TITLE_ID": "CUSA01159", "APP_VER": app_ver}))
+        bl.OUT.mkdir(parents=True, exist_ok=True)
+        bl.STAMP.write_text(json.dumps({"eboot_sha256": "1a2b3c4d" + "0" * 56, "game": str(game)}), encoding="utf-8")
+
+    def reports(self, paths):
+        return sorted((paths.user / "reports").glob("session-*.json"))
+
+    def test_report_exists_before_the_game_starts_and_is_completed_at_the_end(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, cfg={"resolution": "720p"}) as (app, paths, game, _):
+            self.game_with_sfo(game)
+            seen = {}
+
+            def popen(*args, **kwargs):
+                seen["reports"] = [json.loads(p.read_text(encoding="utf-8")) for p in self.reports(paths)]
+                return mock.Mock()
+            app.pending = (None, game, bl.CORE, [], "", "dlc")
+            with mock.patch.object(bl.subprocess, "Popen", side_effect=popen) as started:
+                app._wait_prepare()
+            started.call_args.kwargs["stdout"].close()
+            self.assertEqual(started.call_args.kwargs["env"]["SPARTAN_FILE_TRACE"], "1")
+            report, = seen["reports"]  # already on disk when the game was started
+            self.assertEqual(report["status"], "started")
+            self.assertEqual((report["game"]["app_ver"], report["game"]["title_id"], report["game"]["eboot_sha8"]),
+                             ("01.02", "CUSA01159", "1a2b3c4d"))
+            self.assertEqual(report["game"]["folder"], "<game>")
+            self.assertEqual((report["settings"]["resolution"], report["settings"]["render_size"]), ("720p", "1280x720"))
+            for key in ("os", "cpu"):
+                self.assertIn(key, report["system"])
+            self.assertIn(report["vulkan"]["check"], ("ok", "old", "missing", "no_gpu"))
+            self.assertEqual(report["launcher"]["version"], bl.VERSION)
+            # The game crashed: the report is completed and a copy of its text is kept in user\crash.
+            paths.log.write_text("\n".join([
+                "Runtime: open(/app0/nativePS4/actorParam/pl008/pl008.pmc) -> not found",
+                "File trace: /app0/nativePS4/rom/ui/pl/pl012/pl012.arc (4096 bytes)",
+                "Runtime: open(/app0/nativePS4/ui/gui/idrama/idrama00_ps4.gui) -> not found",
+                "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)"]), encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "finished")
+            self.assertTrue(report["end"]["crashed"])
+            self.assertEqual(report["log"]["unusual_not_found"], ["/app0/nativePS4/ui/gui/idrama/idrama00_ps4.gui"])
+            self.assertEqual(report["log"]["last_files"], [{"path": "/app0/nativePS4/rom/ui/pl/pl012/pl012.arc",
+                                                            "bytes": 4096}])
+            self.assertTrue(report["signature"].startswith("exit=C0000005 | read:null | top=g:0xaebfb7"))
+            self.assertIn("build=01.02/1a2b3c4d/", report["signature"])
+            crash_copy, = (paths.user / "crash").glob("report-*.txt")
+            self.assertIn("Crash: read null at g:0xaebfb7.", crash_copy.read_text(encoding="utf-8"))
+
+    def test_a_game_that_never_logs_still_has_a_full_report(self):
+        missing = bl.VulkanProbe(False, None, False, [], "vulkan-1.dll: not found")
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl, "VULKAN", missing), mock.patch.object(bl, "SYSTEM_GPUS", bl.gpu_choices(missing)):
+            self.game_with_sfo(game)
+            self.assertEqual(app._start_session_report(game), "")
+            paths.log.write_bytes(b"")  # 0xC0000139: Windows refused the program, it wrote nothing
+            app._finish_session_report(0xC0000139)
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual((report["log"]["lines"], report["end"]["exit_hex"]), (0, "0xC0000139"))
+            self.assertEqual(report["vulkan"]["check"], "missing")
+            self.assertEqual(report["game"]["app_ver"], "01.02")
+            self.assertTrue(any("0xC0000139" in hint for hint in report["hints"]))
+            text = self.reports(paths)[0].with_suffix(".txt").read_text(encoding="utf-8")
+            self.assertIn("The game stopped before writing a log (exit 0xC0000139).", text)
+
+    def test_unreadable_parts_are_written_with_the_reason(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            app._start_session_report(game)  # no param.sfo, no prepared.json
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertIn("param.sfo not readable", report["game"]["app_ver"]["unknown"])
+            self.assertIn("prepared.json not readable", report["game"]["eboot_sha8"]["unknown"])
+
+    def test_a_report_folder_that_cannot_be_written_does_not_stop_the_game(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.basara4_report, "write_atomic", side_effect=PermissionError(13, "Access is denied")):
+            self.assertIn("Session report not written (PermissionError: Access is denied)",
+                          app._start_session_report(game))
+            app._finish_session_report(1)
+            self.assertIn("Session report not saved (PermissionError: Access is denied)", app.stop_note)
+
+    def test_unfinished_sessions_are_marked_when_the_launcher_opens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with launcher(tmp) as (app, paths, game, _):
+                app._start_session_report(game)  # the launcher closes before the game ends
+            with launcher(tmp) as (app, paths, game, _):
+                self.assertEqual(json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))["status"], "unfinished")
+
+    def test_save_report_makes_one_zip_shows_it_in_explorer_then_offers_open_discord_and_close(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen") as popen:
+            self.game_with_sfo(game)
+            app._start_session_report(game)
+            paths.log.write_text("Fault: write access to 0000000000000010 at guest offset 0x9c859c (thread 3)\n",
+                                 encoding="utf-8")
+            (paths.user / "crash").mkdir(exist_ok=True)
+            (paths.user / "crash" / "core-1.dmp").write_bytes(b"MDMP")
+            (paths.user / "captures").mkdir(exist_ok=True)
+            (paths.user / "captures" / "frame.png").write_bytes(b"\x89PNG")
+            app._finish_session_report(0xC0000005)
+            target = app.send_report()
+            self.assertRegex(target.name, r"^report-\d{8}-\d{6}\.zip$")
+            self.assertEqual(target.parent, paths.user / "reports")
+            with zipfile.ZipFile(target) as zf:
+                # The crash dump holds the process environment and is never zipped: named, sized, kept on the PC.
+                self.assertEqual(sorted(zf.namelist()), ["captures/frame.png", "last_run.log",
+                                                         "report.json", "report.txt"])
+                report = json.loads(zf.read("report.json"))
+                self.assertEqual(report["end"]["exit_hex"], "0xC0000005")
+                self.assertEqual(report["crash_dump_kept_on_pc"], {"file": "core-1.dmp", "bytes": 4,
+                                                                   "folder": "user\\crash"})
+                note = zf.read("report.txt").decode("utf-8")
+                self.assertIn("Not included:", note)
+                self.assertIn("crash/core-1.dmp (4 bytes): kept on the PC, not included because it can hold "
+                              "personal data", note)
+            self.assertTrue((paths.user / "crash" / "core-1.dmp").is_file())  # the dump itself stays
+            # Saving shows the zip selected in Explorer (as before the two-step dialog), and opens no browser.
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')
+            startfile.assert_not_called()
+            browser.assert_not_called()
+            # Step 2: where the zip is, and exactly two buttons.
+            step2 = report_saved_window(app)
+            self.assertIsNotNone(step2)
+            self.assertEqual(button_texts(step2), ["Open Discord", "Close"])
+            message = next(str(w.cget("text")) for w in descendants(step2) if isinstance(w, tk.Label))
+            self.assertEqual(message, bl.report_saved_text(target.name))
+            self.assertEqual(message,
+                             f"The report was saved as {target.name}.\n"
+                             f"You can find it next to the launcher in user\\reports\\{target.name}\n\n"
+                             "The file is shown in a folder window. To report the problem, press Open Discord: "
+                             "Discord opens in your browser. Drag the file into your post on Discord.\n\n"
+                             "It holds your PC specs, settings and logs. Your account and folder names are hidden.\n"
+                             "The crash dump (.dmp) is not included because it can hold personal data. It stays in "
+                             "user\\crash. Send it only when the team asks for it, in a private message (DM), never "
+                             "in a public place.")
+            assert_english(self, step2.title() + message + " ".join(button_texts(step2)))
+            # Close only closes.
+            next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Close").invoke()
+            browser.assert_not_called()
+            popen.assert_called_once()  # still only the Explorer of Save report
+            startfile.assert_not_called()
+            self.assertFalse(step2.winfo_exists())
+
+    def test_open_discord_opens_the_bug_channel_and_no_second_explorer(self):
+        self.assertEqual(bl.BUG_REPORT_URL, "https://discord.gg/uZzSPr3Xjq")
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen") as popen:
+            target = app.send_report()
+            step2 = report_saved_window(app)
+            next(b for b in descendants(step2) if isinstance(b, ttk.Button) and b.cget("text") == "Open Discord").invoke()
+            browser.assert_called_once_with("https://discord.gg/uZzSPr3Xjq")
+            # Explorer already shows the zip since Save report: not opened a second time
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')
+            startfile.assert_not_called()
+
+    def test_explorer_selects_a_zip_whose_path_has_commas_spaces_and_unicode(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
+                mock.patch.object(bl.webbrowser, "open", return_value=True), \
+                mock.patch.object(bl.subprocess, "Popen") as popen:
+            target = Path(tmp) / "Games, Basara 4 ünï" / "report-20261118-000000.zip"
+            app.open_bug_report(target)
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')  # one quoted argument
+
+    def test_open_discord_without_a_browser_says_so_and_still_shows_the_zip(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
+                mock.patch.object(bl.webbrowser, "open", return_value=False), \
+                mock.patch.object(bl.subprocess, "Popen") as popen, \
+                mock.patch.object(bl.messagebox, "showwarning") as warning, \
+                mock.patch.object(bl.messagebox, "showerror") as error, \
+                mock.patch.object(bl.messagebox, "showinfo"):
+            target = Path(tmp) / "report-20261118-000000.zip"
+            app.open_bug_report(target)
+            popen.assert_called_once_with(f'explorer.exe /select,"{target}"')
+            error.assert_not_called()
+            self.assertEqual(warning.call_args.args, (
+                "Browser not opened",
+                "Could not open your browser. Open Discord yourself: https://discord.gg/uZzSPr3Xjq and drag the "
+                "file into your post."))
+
+    def test_save_report_falls_back_to_the_reports_folder(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp, real_explorer=True) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen", side_effect=OSError("no explorer")), \
+                mock.patch.object(bl.messagebox, "showerror") as showerror, \
+                mock.patch.object(bl.messagebox, "showwarning") as showwarning, \
+                mock.patch.object(bl.messagebox, "showinfo") as showinfo, \
+                mock.patch.object(bl.messagebox, "askyesno") as askyesno:
+            target = app.send_report()  # no explorer.exe: the folder opens instead
+            startfile.assert_called_once_with(paths.user / "reports")
+            showerror.assert_not_called()
+            self.press(report_saved_window(app), "Open Discord")
+            browser.assert_called_once_with(bl.BUG_REPORT_URL)
+            startfile.assert_called_once()  # the folder is already open: not again
+            report_saved_window(app).destroy()
+            startfile.side_effect = OSError(5, "Access is denied")
+            target = app.send_report()  # neither works: the player is told where the file is
+            self.assertEqual(showerror.call_args.args[0], "Folder not opened")
+            self.assertIn(f"user\\reports\\{target.name}", showerror.call_args.args[1])
+            self.assertIsNotNone(report_saved_window(app))  # the dialog still says where the zip is
+            self.press(report_saved_window(app), "Open Discord")  # nothing was shown: tried again
+            self.assertEqual(startfile.call_count, 3)
+            self.assertEqual(showerror.call_count, 2)
+            for other in (showwarning, showinfo, askyesno):  # every dialog is mocked: a wrong one fails, not hangs
+                other.assert_not_called()
+
+    @staticmethod
+    def press(window, text):
+        next(b for b in descendants(window) if isinstance(b, ttk.Button) and b.cget("text") == text).invoke()
+
+    def test_report_saved_stays_in_front_of_the_explorer_window(self):
+        """Both windows must be noticed: Explorer opens first, then the dialog, which stays above windows
+        that appear later (Explorer draws its window after a moment) until Open Discord is pressed."""
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.webbrowser, "open", return_value=True):
+            app.attributes("-alpha", 0.0)
+            order = []
+            bl.Launcher.show_report_file.side_effect = \
+                lambda target, parent=None: order.append(("explorer", report_saved_window(app))) or True
+            target = app.send_report()
+            step2 = report_saved_window(app)
+            step2.attributes("-alpha", 0.0)  # drawn, but invisible on the desktop
+            self.assertEqual(order, [("explorer", None)])  # Explorer was asked for before the dialog existed
+            bl.Launcher.show_report_file.assert_called_once_with(target, app)
+            self.assertTrue(int(step2.attributes("-topmost")))
+            self.assertEqual(str(step2.grab_current()), str(step2))  # the dialog has the input
+            # A window that opens after the dialog and is raised (like Explorer) stays below it.
+            later = tk.Toplevel(app)
+            later.attributes("-alpha", 0.0)
+            later.geometry("+0+0")
+            app.update()
+            later.lift()
+            app.update()
+            if sys.platform == "win32":
+                self.assertLess(z_index(step2), z_index(later))
+            self.press(step2, "Open Discord")  # now the browser has to come in front
+            self.assertFalse(int(step2.attributes("-topmost")))
+            bl.Launcher.show_report_file.assert_called_once()  # Explorer is not opened a second time
+            later.destroy()
+
+    PRIVATE = ("qauser7c1", "qapc7c1", "qadlc7c1", "qashare7c1", "ünï7c1")
+
+    def zip_report_text(self, app):
+        with mock.patch.object(bl.os, "startfile", create=True):
+            target = app.send_report()
+        with zipfile.ZipFile(target) as zf:
+            return zf.read("report.txt").decode("utf-8"), zf.read("report.json").decode("utf-8")
+
+    def test_render_trace_summary_goes_into_the_zip_masked(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(bl.os.environ, {"USERNAME": "QAUSER7c1", "COMPUTERNAME": "QAPC7c1",
+                                                "USERPROFILE": "C:\\Users\\QAUSER7c1"}):
+            app.cfg["dlc_dir"] = "D:\\QADLC7c1 ünï7c1\\DLC"  # another drive, Unicode
+            app.cfg["mods_dir"] = "\\\\qaserver\\QASHARE7c1\\mods"  # UNC
+            session = paths.user / "render_traces" / "20261118-000000"
+            session.mkdir(parents=True)
+            (session / "render_trace.log").write_text(
+                "trace: start\n"
+                "open C:\\Users\\QAUSER7c1\\AppData\\Local\\Temp\\x.bin\n"
+                f"game {game}\\eboot.bin and {str(game).replace(chr(92), '/')}/sce_sys\n"
+                "dlc D:\\QADLC7c1 ünï7c1\\DLC\\CUSA01159-AOC\n"
+                "mods \\\\qaserver\\QASHARE7c1\\mods\\a.txt\n"
+                "host QAPC7c1 ready\n"
+                "anomaly: tex.overlap_view_lost frame=812\n", encoding="utf-8")
+            (paths.user / "captures").mkdir(exist_ok=True)
+            (paths.user / "captures" / "frame812.png").write_bytes(b"\x89PNG")
+            report_txt, report_json = self.zip_report_text(app)
+        section = report_txt.split("--- Render trace ---\n", 1)[1].split("=== End of report ===")[0]
+        self.assertIn("anomaly: tex.overlap_view_lost frame=812", section)  # the log tail
+        self.assertIn("frame812.png", section)  # and the captures
+        self.assertIn("render_traces\\20261118-000000\\render_trace.log", section)
+        for name in self.PRIVATE + (Path(game).parent.name.lower(), str(game).lower()):
+            self.assertNotIn(name, section.lower(), name)
+            self.assertNotIn(name, report_txt.lower(), name)
+        self.assertNotIn("Render trace", report_json)  # report.json keeps its structure
+
+    def test_without_a_render_trace_the_zip_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            report_txt, _json = self.zip_report_text(app)
+        self.assertIn("--- Render trace ---\n  (none: Render debug trace was off, or it left no log or captures)\n"
+                      "=== End of report ===", report_txt)
+
+    def test_session_reports_keep_their_text_without_the_render_trace_part(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            app._start_session_report(game)
+            text = app.session_report_path.with_suffix(".txt").read_text(encoding="utf-8")
+        self.assertNotIn("--- Render trace ---", text)
+
+    def test_crash_window_has_save_report_and_close_and_no_clipboard_path(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(bl.os.environ, {"USERNAME": "QA_LEAK_7f3a"}), \
+                mock.patch.object(bl.Launcher, "clipboard_clear") as clear, \
+                mock.patch.object(bl.Launcher, "clipboard_append") as append, \
+                mock.patch.object(bl.os, "startfile", create=True), \
+                mock.patch.object(bl.webbrowser, "open"), mock.patch.object(bl.subprocess, "Popen"):
+            paths.log.write_text("Settings: C:\\Users\\QA_LEAK_7f3a\\b4\\user\\basara4.ini\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            self.assertEqual(button_texts(dialog), ["Save report", "Close"])
+            labels = "\n".join(str(w.cget("text")) for w in descendants(dialog) if isinstance(w, (tk.Label, ttk.Label)))
+            for english in ("The Game Stopped Unexpectedly", "press Save report", "What the game log shows",
+                            "👉 Fix", "Last 10 Log Lines"):
+                self.assertIn(english, labels)
+            everything = labels + " ".join(button_texts(dialog))
+            for gone in ("Send", "Copy", "clipboard", "Clipboard", "Open log", "Open captures", "Report on Discord"):
+                self.assertNotIn(gone, everything)
+            next(b for b in descendants(dialog) if isinstance(b, ttk.Button) and b.cget("text") == "Save report").invoke()
+            step2 = report_saved_window(app)
+            for button in [b for b in descendants(step2) if isinstance(b, ttk.Button)]:
+                button.invoke() if button.winfo_exists() else None
+            # Nothing reaches the clipboard on the whole path: no copy of names or paths can leak that way.
+            clear.assert_not_called()
+            append.assert_not_called()
+        source = Path(bl.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("clipboard_append", source)
+
+    def test_crash_report_buttons_are_normal_size_and_matched(self):
+        """Both steps: two normal buttons of the same size (not the big PLAY style), bottom right."""
+        for scale in (1.0, 1.25, 1.5):
+            with self.subTest(scale=scale), tempfile.TemporaryDirectory() as tmp, \
+                    launcher(tmp) as (app, paths, game, _), \
+                    mock.patch.object(bl, "crash_dialog_geometry", return_value=(820, 678, -4000, 0)), \
+                    mock.patch.object(bl.os, "startfile", create=True):  # drawn off screen
+                self.assertEqual(str(app.play.cget("style")), "Play.TButton")  # PLAY keeps its own look
+                old_scaling = float(app.tk.call("tk", "scaling"))
+                app.tk.call("tk", "scaling", 96 / 72 * scale)
+                app._show_crash_dialog(0xC0000005)
+                dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+                app.send_report(dialog)
+                step2 = report_saved_window(app)
+                step2.geometry("+-4000+0")
+                for window in (dialog, step2):
+                    window.update()
+                    buttons = [b for b in descendants(window)
+                               if isinstance(b, ttk.Button) and b.winfo_toplevel() is window]
+                    self.assertEqual(len(buttons), 2)
+                    self.assertEqual(sorted(str(b.cget("style")) for b in buttons),
+                                     ["Dialog.TButton", "DialogAccent.TButton"])
+                    sizes = [(b.winfo_width(), b.winfo_height()) for b in buttons]
+                    self.assertEqual(sizes[0], sizes[1])  # same width and height
+                    width, height = sizes[0]
+                    self.assertLessEqual(height, 40 * scale, window.title())
+                    self.assertLessEqual(width, 220 * scale, window.title())
+                    # side by side on one row at the bottom right of the window
+                    self.assertEqual(buttons[0].winfo_rooty(), buttons[1].winfo_rooty())
+                    right = max(b.winfo_rootx() + b.winfo_width() for b in buttons)
+                    self.assertGreater(right, window.winfo_rootx() + window.winfo_width() * 0.7)
+                step2.destroy()
+                dialog.destroy()
+                app.tk.call("tk", "scaling", old_scaling)
+
+    def test_close_on_the_crash_window_only_closes(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True) as startfile, \
+                mock.patch.object(bl.webbrowser, "open") as browser, \
+                mock.patch.object(bl.subprocess, "Popen") as popen, \
+                mock.patch.object(bl.Launcher, "send_report") as send:
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            next(b for b in descendants(dialog) if isinstance(b, ttk.Button) and b.cget("text") == "Close").invoke()
+            self.assertFalse(dialog.winfo_exists())
+            for called in (startfile, browser, popen, send):
+                called.assert_not_called()
+
+    def test_credits_keep_the_community_server_link(self):
+        source = Path(bl.__file__).read_text(encoding="utf-8")
+        self.assertIn('webbrowser.open("https://discord.gg/UBZc57bBMa")', source)
+        self.assertEqual(source.count("https://discord.gg/uZzSPr3Xjq"), 1)  # one named constant
+
+    DENSE_CRASH = ("".join(f"Runtime: open(/app0/nativePS4/ui/gui/f{i}.arc) -> not found\n" for i in range(8))
+                   + "GPU [Lib.SaveData] <Error> savedata.cpp:12 sceSaveDataMount5: (STUBBED) called\n"
+                   "error 1455\nVK_ERROR_DEVICE_LOST\n"
+                   "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n")
+    # Screens as the launcher sees them: it is not DPI aware, so with Windows scaling it gets the scaled size
+    # (1366x768 at 125% is 1093x614). Windows 11 keeps 48 px for the taskbar, a title bar takes about 31.
+    SCREENS = [(1366, 768), (1280, 720), (1920, 1080), (1093, 614), (911, 512)]
+
+    def test_crash_window_size_follows_the_screen(self):
+        self.assertEqual(bl.crash_dialog_geometry(1920, 1080), (820, 720, 550, 135))
+        self.assertEqual(bl.crash_dialog_geometry(1366, 768)[:2], (820, 678))
+        for width, height in self.SCREENS:
+            w, h, left, top = bl.crash_dialog_geometry(width, height)
+            self.assertLessEqual(top + h + 31, height - 48, (width, height))  # above the taskbar
+            self.assertLessEqual(left + w, width, (width, height))
+
+    def test_crash_window_keeps_title_and_buttons_on_every_screen(self):
+        for width, height in self.SCREENS:
+            with self.subTest(screen=f"{width}x{height}"), tempfile.TemporaryDirectory() as tmp, \
+                    launcher(tmp) as (app, paths, game, _), \
+                    mock.patch.object(bl.Launcher, "winfo_screenwidth", return_value=width), \
+                    mock.patch.object(bl.Launcher, "winfo_screenheight", return_value=height):
+                paths.log.write_text(self.DENSE_CRASH, encoding="utf-8")
+                app._show_crash_dialog(0xC0000005)
+                dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+                dialog.update()
+                size, left, top = dialog.geometry().split("+")[:3]
+                w, h = map(int, size.split("x"))
+                self.assertLessEqual(int(top) + h + 31, height - 48)  # the whole window is above the taskbar
+                self.assertLessEqual(int(left) + w, width)
+                inside_top, inside_bottom = dialog.winfo_rooty(), dialog.winfo_rooty() + dialog.winfo_height()
+                buttons = [b for b in descendants(dialog) if isinstance(b, ttk.Button)]
+                self.assertEqual(len(buttons), 2)
+                for button in buttons:  # every button is drawn inside the window
+                    self.assertTrue(button.winfo_ismapped(), button.cget("text"))
+                    self.assertGreater(button.winfo_height(), 1)
+                    self.assertGreaterEqual(button.winfo_rooty(), inside_top)
+                    self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), inside_bottom)
+                labels = [w for w in descendants(dialog) if isinstance(w, tk.Label)]
+                title = next(w for w in labels if "The Game Stopped Unexpectedly" in str(w.cget("text")))
+                self.assertGreaterEqual(title.winfo_rooty(), inside_top)
+                self.assertLessEqual(title.winfo_rooty() + title.winfo_height(), inside_bottom)
+                # What does not fit scrolls: the stub list can be scrolled fully into view.
+                canvas = dialog.crash_scroll
+                stub = next(w for w in labels if "sceSaveDataMount5" in str(w.cget("text")))
+                content = canvas.bbox("all")[3] - canvas.bbox("all")[1]
+                canvas.yview_moveto(stub.winfo_y() / content)
+                dialog.update()
+                self.assertGreaterEqual(stub.winfo_rooty(), canvas.winfo_rooty())
+                self.assertLessEqual(stub.winfo_rooty() + stub.winfo_height(),
+                                     canvas.winfo_rooty() + canvas.winfo_height() + 1)
+                region = canvas.bbox("all")
+                self.assertGreater(region[3] - region[1], canvas.winfo_height())  # this crash needs the scroll
+                # every text of the window is English (labels, hints, findings, log header, buttons)
+                for widget in descendants(dialog):
+                    if isinstance(widget, (tk.Label, ttk.Label, ttk.Button)):
+                        assert_english(self, str(widget.cget("text")))
+                # step 2 also fits above the taskbar, with both buttons drawn inside it
+                with mock.patch.object(bl.os, "startfile", create=True):
+                    app.send_report(dialog)
+                step2 = report_saved_window(app)
+                step2.update()
+                self.assertLessEqual(step2.winfo_height() + 31, height - 48)
+                self.assertLessEqual(step2.winfo_width(), width)
+                bottom = step2.winfo_rooty() + step2.winfo_height()
+                for button in [b for b in descendants(step2) if isinstance(b, ttk.Button)]:
+                    self.assertTrue(button.winfo_ismapped())
+                    self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), bottom)
+                step2.destroy()
+                dialog.destroy()
+
+    def test_crash_dialog_names_a_stub_called_just_before_the_crash(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            paths.log.write_text("GPU [Lib.SaveData] <Error> savedata.cpp:12 sceSaveDataMount5: (STUBBED) called\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            texts = [str(w.cget("text")) for w in descendants(dialog) if isinstance(w, tk.Label)]
+            self.assertTrue(any("sceSaveDataMount5" in text and "just before the crash (unusual)" in text
+                                for text in texts))
+
+    # ---- the report never stops PLAY or the poll loop, and keeps nothing private ----
+    def test_a_failing_collector_does_not_stop_play(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl, "system_info", side_effect=RuntimeError("WMI is broken")), \
+                mock.patch.object(bl, "content_info", side_effect=AttributeError("'list' object has no attribute 'get'")):
+            app.pending = (None, game, bl.CORE, [], "", "dlc")
+            with mock.patch.object(bl.subprocess, "Popen") as popen:
+                app._wait_prepare()
+            popen.call_args.kwargs["stdout"].close()
+            popen.assert_called_once()  # the game started
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["system"], {"unknown": "RuntimeError: WMI is broken"})
+            self.assertEqual(report["content"], {"unknown": "AttributeError: 'list' object has no attribute 'get'"})
+            self.assertEqual(report["collect_errors"], ["system: RuntimeError: WMI is broken",
+                                                        "content: AttributeError: 'list' object has no attribute 'get'"])
+
+    def test_a_report_that_cannot_be_built_still_starts_the_game(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.basara4_report, "new_report", side_effect=TypeError("broken")):
+            self.assertEqual(app._start_session_report(game), "Session report not written (TypeError: broken).  ")
+
+    def test_a_failing_finish_keeps_the_poll_loop_running(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.basara4_report, "analyze_log", side_effect=RuntimeError("bad log")), \
+                mock.patch.object(bl.Launcher, "_show_crash_dialog"), \
+                mock.patch.object(bl.Launcher, "after") as after:
+            app._start_session_report(game)
+            paths.log.write_text("Runtime: started\n", encoding="utf-8")
+            app.proc = mock.Mock()
+            app.proc.poll.return_value = 5
+            app.proc.returncode = 5
+            app._poll()
+            after.assert_called_with(500, app._poll)  # the loop goes on
+            report = json.loads(self.reports(paths)[0].read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "finished")
+            self.assertEqual(report["end"]["exit_code"], 5)
+            self.assertEqual(report["log"], {"unknown": "report not completed: RuntimeError: bad log"})
+            self.assertIn("finish: RuntimeError: bad log", report["collect_errors"])
+            # Called directly (without _poll, which shows and clears the note), the reason is in the status note.
+            app._start_session_report(game)
+            app._finish_session_report(5)
+            self.assertIn("Session report incomplete (RuntimeError: bad log)", app.stop_note)
+
+    def test_crash_copy_in_user_crash_is_masked(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(bl.os.environ, {"USERNAME": "QA_LEAK_7f3a", "COMPUTERNAME": "PC-QA_LEAK_7f3a"}):
+            app._start_session_report(game)
+            paths.log.write_text("Settings: C:\\Users\\QA_LEAK_7f3a\\b4\\user\\basara4.ini on PC-QA_LEAK_7f3a\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            crash_copy, = (paths.user / "crash").glob("report-*.txt")
+            text = crash_copy.read_text(encoding="utf-8")
+            self.assertNotIn("qa_leak_7f3a", text.lower())
+            self.assertIn("<pc>", text)
+
+    def test_a_game_folder_name_never_reaches_the_report(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, _game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"):
+            game = Path(tmp) / "GAMES QAFOLDER 7f3a" / "Basara4"  # no param.sfo: the error names the folder
+            game.mkdir(parents=True)
+            app.cfg["game"] = str(game).upper()  # saved in another case than the error message writes it
+            app._start_session_report(game)
+            paths.log.write_text(f"io_file.cpp:202 Open: path={str(game).lower()}\\\\x\n", encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            zip_path = app.send_report()
+            texts = [p.read_text(encoding="utf-8") for p in (paths.user / "reports").glob("session-*")]
+            texts += [p.read_text(encoding="utf-8") for p in (paths.user / "crash").glob("report-*.txt")]
+            with zipfile.ZipFile(zip_path) as zf:
+                texts += [zf.read(name).decode("utf-8") for name in zf.namelist()]
+            self.assertEqual(len(texts), 6)  # session .json/.txt, crash copy, zip report.json/.txt/last_run.log
+            for text in texts:
+                self.assertNotIn("qafolder", text.lower())
+
+    def test_a_dump_from_an_earlier_session_is_not_named(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"):
+            (paths.user / "crash").mkdir(parents=True)
+            old = paths.user / "crash" / "core-old.dmp"
+            old.write_bytes(b"MDMP")
+            bl.os.utime(old, (1_000_000_000, 1_000_000_000))  # written long before this session
+            app._start_session_report(game)
+            paths.log.write_text("Fault: read access to 0000000000000000 at guest offset 0x10 (thread 1)\n",
+                                 encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            with zipfile.ZipFile(app.send_report()) as zf:
+                report = json.loads(zf.read("report.json"))
+                self.assertNotIn("crash_dump_kept_on_pc", report)
+                self.assertNotIn("core-old", zf.read("report.txt").decode("utf-8"))
+
+    def test_send_report_without_a_session_still_describes_the_pc(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), mock.patch.object(bl.messagebox, "showinfo"):
+            with zipfile.ZipFile(app.send_report()) as zf:
+                report = json.loads(zf.read("report.json"))
+            self.assertEqual(report["status"], "no-session")
+            self.assertIn("os", report["system"])
+            self.assertIn("check", report["vulkan"])
+
+    def test_a_dlc_folder_chosen_by_the_user_never_reaches_any_report(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.os, "startfile", create=True), \
+                mock.patch.object(bl.Launcher, "clipboard_append") as append:
+            dlc = Path(tmp) / "GAMES QAPRIV 9c2e" / "Sengoku Basara 4 DLC"  # outside the game and program folders
+            dlc.mkdir(parents=True)
+            app.cfg["dlc_dir"] = str(dlc)
+            app._start_session_report(game)
+            paths.log.write_text(f"Runtime: DLC folder {str(dlc).upper()}\n"
+                                 f"Runtime: scan '{str(dlc).replace(chr(92), chr(92) * 2)}\\\\CUSA01159-AOC'\n"
+                                 f"Runtime: other {dlc.parent}\\notes.txt\n"
+                                 "Fault: read access to 0000000000000000 at guest offset 0xaebfb7 (thread 1)\n",
+                                 encoding="utf-8")
+            paths.prepare_log.write_text(f"prepare: dlc {dlc}\n", encoding="utf-8")
+            app._finish_session_report(0xC0000005)
+            zip_path = app.send_report()
+            step2 = report_saved_window(app)
+            app._show_crash_dialog(0xC0000005)
+            dialog = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+            texts = {p.name: p.read_text(encoding="utf-8") for p in (paths.user / "reports").glob("session-*")}
+            texts.update({p.name: p.read_text(encoding="utf-8") for p in (paths.user / "crash").glob("report-*.txt")})
+            with zipfile.ZipFile(zip_path) as zf:
+                texts.update({f"zip:{name}": zf.read(name).decode("utf-8") for name in zf.namelist()})
+            texts["Report saved"] = "\n".join(str(w.cget("text")) for w in descendants(step2)
+                                               if isinstance(w, tk.Label))
+            texts["Crash window"] = "\n".join(str(w.cget("text")) for w in descendants(dialog)
+                                               if isinstance(w, (tk.Label, ttk.Label)))
+            append.assert_not_called()  # nothing goes to the clipboard any more
+            self.assertTrue({"zip:last_run.log", "zip:prepare.log", "zip:report.json", "zip:report.txt",
+                             "Report saved", "Crash window"} <= set(texts))
+            self.assertEqual(len([n for n in texts if n.startswith("session-")]), 2)
+            self.assertEqual(len([n for n in texts if n.startswith("report-")]), 1)
+            for name, text in texts.items():
+                self.assertNotIn("qapriv", text.lower(), name)
+            self.assertIn("<dlc>", texts["zip:report.json"])
+
+    def test_a_report_write_that_fails_any_way_keeps_the_poll_loop_running(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.object(bl.Launcher, "_show_crash_dialog"), \
+                mock.patch.object(bl.Launcher, "after") as after:
+            app._start_session_report(game)
+            paths.log.write_text("Fault: read access to 0000000000000000 at guest offset 0x10 (thread 1)\n",
+                                 encoding="utf-8")
+            with mock.patch.object(bl.basara4_report, "write_atomic", side_effect=ValueError("bad encoder")):
+                app.proc = mock.Mock()
+                app.proc.poll.return_value = 0xC0000005
+                app.proc.returncode = 0xC0000005
+                app._poll()  # not an OSError: it must not escape either
+            after.assert_called_with(500, app._poll)
+            app._start_session_report(game)
+            with mock.patch.object(bl.basara4_report, "write_atomic", side_effect=ValueError("bad encoder")):
+                app._finish_session_report(1)
+            self.assertIn("Session report not saved (ValueError: bad encoder)", app.stop_note)
+
+    def test_a_failed_new_report_never_reuses_the_previous_session(self):
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            app._start_session_report(game)
+            app._finish_session_report(0)
+            self.assertEqual(app.session_report["status"], "finished")  # the previous session's report
+            with mock.patch.object(bl.basara4_report, "new_report", side_effect=TypeError("broken")):
+                self.assertIn("TypeError: broken", app._start_session_report(game))
+            self.assertIsNone(app.session_report)
 
 
 class IconTests(unittest.TestCase):

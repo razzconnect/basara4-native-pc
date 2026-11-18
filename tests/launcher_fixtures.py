@@ -27,7 +27,7 @@ def launcher_folders(folder):
         "MAPPING": user / "gamepad_mapping.txt", "AUDIO_LOG": user / "audio_debug.log",
         "AUDIO_WAV": user / "audio_wav", "RENDER_TRACE_LOG": user / "render_trace.log",
         "RENDER_TRACES": user / "render_traces", "CAPTURES_DIR": user / "captures",
-        "STAMP": out / "prepared.json",
+        "STAMP": out / "prepared.json", "REPORTS": user / "reports", "CRASH_DIR": user / "crash",
     }
     with contextlib.ExitStack() as stack:
         for name, value in names.items():
