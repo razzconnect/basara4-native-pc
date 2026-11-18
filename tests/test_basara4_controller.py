@@ -114,13 +114,20 @@ class WindowEventTests(ControllerTestCase):
         reasons = set(re.findall(r'"(stick_[a-z_]+)"', source))
         self.assertEqual(reasons, {"stick_rotated", "stick_two_axes"})
         self.assertTrue(reasons <= set(bc.TEXT))
+        # the "controller" event carries the kind the window names buttons for, and the kinds it can be
+        # are the window's LABELS or "other"
+        self.assertIn('printf(",\\"kind\\":");\n        json_text(pad_kind(ids[selected]));',
+                      source.replace("\r\n", "\n"))
+        kinds = set(re.findall(r'return "([a-z]+)";', source[source.index("static const char *pad_kind"):]
+                               .split("\n}\n", 1)[0]))
+        self.assertEqual(kinds, set(bc.LABELS) | {"other"})
 
     def test_a_run_fills_the_list_and_done_saves(self):
         saved = mock.Mock()
         window, mapper, process = self.started(on_saved=saved)
         self.assertEqual(process.call_args.args[2], [])
         self.assertEqual(self.enabled(window), {"Skip", "Cancel"})
-        window.handle({"ev": "controller", "name": "Xbox Controller", "guid": "0300"})
+        window.handle({"ev": "controller", "name": "Xbox Controller", "guid": "0300", "kind": "xbox"})
         window.handle({"ev": "prompt", "target": "a", "index": 0})
         self.assertEqual(self.column(window, "a"), "press now")
         self.assertIn("A (bottom)", window.prompt.cget("text"))
@@ -418,6 +425,17 @@ class StickGuideAndCheckTests(ControllerTestCase):
         self.assertEqual(window.detail.cget("text"), "Unknown command.")
         self.assertTrue(window.looks_right.winfo_ismapped() or window.check_buttons.winfo_manager())
 
+    def test_an_error_that_is_not_a_redo_does_not_restart_the_check(self):
+        window, mapper, _ = self.started()
+        self.all_sticks_captured(window)
+        window.handle({"ev": "review", "mapping": "..."})
+        window.flip_y.invoke()
+        sent_before = list(self.sent(mapper))
+        window.handle({"ev": "error", "message": "Unknown command."})
+        self.assertEqual(window.state, "check")
+        self.assertEqual(self.sent(mapper), sent_before)  # no "check left" again
+        self.assertTrue(window.flip_y_var.get())  # the tick stays
+
     def test_flip_of_an_unset_axis_is_off_and_sends_nothing(self):
         window, mapper, _ = self.started()
         window.handle({"ev": "prompt", "target": "leftx"})
@@ -509,6 +527,90 @@ class RealPipeTests(ControllerTestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertFalse(out.exists())
         self.assertFalse(window.winfo_exists())
+
+
+class PadKindLabelTests(ControllerTestCase):
+    """Button names follow the kind of controller the mapper reports; unknown pads are named by position."""
+
+    XBOX_WORDS = ("Xbox", "LB", "RB", "LT", "RT", "A (", "B (", "X (", "Y (", "View", "Menu")
+    PLAYSTATION_WORDS = ("Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3", "R3", "PS button",
+                         "Options", "Share")
+
+    def pad_column(self, window):
+        return {name: window.rows.item(name, "values")[0] for name in window.rows.get_children()}
+
+    def test_every_entry_has_a_name_for_every_kind(self):
+        for kind in ("xbox", "playstation", "other"):
+            for name, _pad, _game in bc.ENTRIES:
+                self.assertTrue(bc.pad_label(name, kind), (kind, name))
+        self.assertEqual(set(bc.LABELS), {"xbox", "playstation"})
+        for kind, labels in bc.LABELS.items():
+            self.assertTrue(set(labels) <= {name for name, _p, _g in bc.ENTRIES}, kind)
+
+    def test_before_the_controller_is_known_names_are_by_position(self):
+        window = self.window()
+        pads = self.pad_column(window)
+        self.assertEqual(pads["a"], "Bottom button (A or Cross)")
+        self.assertEqual(pads["leftshoulder"], "Left shoulder button (upper)")
+        self.assertFalse([p for p in pads.values() if "Xbox" in p])
+
+    def test_xbox_names(self):
+        window, _mapper, _ = self.started()
+        window.handle({"ev": "controller", "name": "Xbox Wireless Controller", "guid": "03", "kind": "xbox"})
+        pads = self.pad_column(window)
+        self.assertEqual((pads["a"], pads["leftshoulder"], pads["lefttrigger"], pads["guide"]),
+                         ("A (bottom)", "LB (left shoulder)", "LT (left trigger)", "Xbox button (centre)"))
+        self.assertIn("Xbox names", window.detail.cget("text"))
+        window.handle({"ev": "prompt", "target": "rightshoulder"})
+        self.assertIn("Press RB (right shoulder) on your controller", window.prompt.cget("text"))
+        self.assertIn("R1 in the game", window.prompt.cget("text"))
+
+    def test_playstation_names_have_no_xbox_words(self):
+        window, _mapper, _ = self.started()
+        window.handle({"ev": "controller", "name": "DualSense Wireless Controller", "guid": "05",
+                       "kind": "playstation"})
+        pads = self.pad_column(window)
+        self.assertEqual((pads["a"], pads["b"], pads["x"], pads["y"]),
+                         ("Cross (bottom)", "Circle (right)", "Square (left)", "Triangle (top)"))
+        self.assertEqual((pads["leftshoulder"], pads["lefttrigger"], pads["back"], pads["start"]),
+                         ("L1 (left shoulder)", "L2 (left trigger)", "Share / Create (small left button)",
+                          "Options (small right button)"))
+        for name, pad in pads.items():
+            for word in self.XBOX_WORDS:
+                self.assertNotIn(word, pad, name)
+        window.handle({"ev": "prompt", "target": "a"})
+        self.assertIn("Press Cross (bottom) on your controller", window.prompt.cget("text"))
+
+    def test_unknown_pads_are_named_by_position_without_a_guess(self):
+        for kind in ("other", "ps3", "standard", "", None, 7):  # anything but the two known kinds
+            window, _mapper, _ = self.started()
+            event = {"ev": "controller", "name": "USB Gamepad", "guid": "0810"}
+            if kind is not None:
+                event["kind"] = kind
+            window.handle(event)
+            pads = self.pad_column(window)
+            self.assertEqual(pads["a"], "Bottom button (A or Cross)", kind)
+            self.assertEqual(pads["leftstick"], "Press the left stick in", kind)
+            self.assertFalse([p for p in pads.values() if "Xbox" in p or "PlayStation" in p], kind)
+            self.assertIn("by where they are on the controller", window.detail.cget("text"))
+
+    def test_what_is_recorded_stays_when_the_names_change(self):
+        window, _mapper, _ = self.started()
+        window.handle({"ev": "prompt", "target": "a"})
+        window.handle({"ev": "captured", "target": "a", "binding": "b0"})
+        window.handle({"ev": "controller", "name": "Xbox", "guid": "03", "kind": "xbox"})
+        self.assertEqual(window.rows.item("a", "values"), ("A (bottom)", "Cross", "b0"))
+        window.handle({"ev": "captured", "target": "b", "binding": "b1"})
+        self.assertEqual(window.rows.item("b", "values"), ("B (right)", "Circle", "b1"))
+
+    def test_sticks_only_list_keeps_the_kind(self):
+        window, _mapper, _ = self.started()
+        window.handle({"ev": "controller", "name": "DualShock 4", "guid": "05", "kind": "playstation"})
+        window.handle({"ev": "exit", "code": 2})
+        window.set_sticks_only(False)
+        window.set_sticks_only(True)
+        window.set_sticks_only(False)
+        self.assertEqual(self.pad_column(window)["a"], "Cross (bottom)")  # the last controller's names
 
 
 class HungMapperTests(unittest.TestCase):

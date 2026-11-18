@@ -530,6 +530,113 @@ static void test_redo_this_stick_asks_both_axes(void) {
     mapper_poll_hook = NULL;
 }
 
+/* The prompt queue with the real review, as the window can drive it (scenarios A, B, C):
+ *   A  "redo leftx", "redo lefty", "save" queued; Skip pressed during the leftx prompt
+ *   B  "redo leftx" queued; during its prompt Skip, "redo lefty" and "save" arrive
+ *   C  "redo leftx", "redo lefty" queued; the window closes (end of input) during the leftx prompt */
+static char queue_scenario;
+static int queue_injected;
+static void drive_and_inject(void) {
+    drive();
+    if (queue_injected || script_step < 30) return;  /* the leftx prompt runs; the stick still rests */
+    queue_injected = 1;
+    if (queue_scenario == 'A') queue_command("skip");
+    if (queue_scenario == 'B') {
+        queue_command("skip");
+        queue_command("redo lefty");
+        queue_command("save");
+    }
+    if (queue_scenario == 'C') {
+        SDL_LockMutex(command_lock);
+        command_eof = 1;
+        SDL_UnlockMutex(command_lock);
+    }
+}
+
+static void test_prompt_queue_skip_and_end_of_input(void) {
+    char guid[64];
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(virtual_id), guid, sizeof guid);
+    for (const char *s = "ABC"; *s; ++s) {
+        queue_scenario = *s;
+        queue_injected = 0;
+        reset_bindings();
+        snprintf(bound[target_index("leftx")], BINDING_SIZE, "a0");
+        snprintf(bound[target_index("lefty")], BINDING_SIZE, "a1");
+        /* rest while leftx is asked (it gets skipped), then the player pushes down for lefty and lets go */
+        const Phase phases[] = {{150, {0, 0, 0, 0}}, {120, {0, 30000, 0, 0}}, {1, {0, 0, 0, 0}}};
+        play(phases, 3);
+        mapper_poll_hook = drive_and_inject;
+        ui_mode = 1;
+        queue_command("redo leftx");
+        if (*s != 'B') queue_command("redo lefty");
+        if (*s == 'A') queue_command("save");
+        events_begin();
+        const SDL_TimerID watchdog = SDL_AddTimer(30000, review_never_ended, NULL);
+        const int saved = review(guid, "Basara test pad", 0);
+        SDL_RemoveTimer(watchdog);
+        char *text = events_end();
+        ui_mode = 0;
+        mapper_poll_hook = NULL;
+        const int asked_x = count_of(text, "\"ev\":\"prompt\",\"target\":\"leftx\"");
+        const int asked_y = count_of(text, "\"ev\":\"prompt\",\"target\":\"lefty\"");
+        if (*s == 'C') {
+            /* M15: the end of input cancels at once, also with commands still queued */
+            assert(saved == 0 && asked_x == 1 && asked_y == 0);
+        } else {
+            /* M17 (A): Skip behind queued commands reaches the prompt; M16 (B): Skip in front of them */
+            assert(saved == 1 && asked_x == 1 && asked_y == 1);
+            assert(count_of(text, "\"ev\":\"skipped\",\"target\":\"leftx\"") == 1);
+            assert(count_of(text, "\"ev\":\"captured\",\"target\":\"lefty\"") == 1);
+            assert(!strstr(text, "\"ev\":\"error\""));
+            assert(!bound[target_index("leftx")][0] && !strcmp(bound[target_index("lefty")], "a1"));
+        }
+        free(text);
+        char left[COMMAND_SIZE];
+        SDL_LockMutex(command_lock);
+        command_eof = 0;
+        SDL_UnlockMutex(command_lock);
+        while (next_command(left, sizeof left)) {}  /* C leaves "redo lefty" queued: not part of the next run */
+    }
+    play((const Phase[]){{1, {0, 0, 0, 0}}}, 1);
+    drive();
+    SDL_UpdateJoysticks();
+}
+
+/* The kind of controller the window names buttons for. Only a device SDL knows as a gamepad gets Xbox or
+ * PlayStation names; a joystick without a mapping is "other" even when SDL guesses a type from its USB
+ * ids (0810:0001, a PS2-adapter-like id, reads as "ps3" in SDL 3.4.18). */
+static void test_pad_kind(void) {
+    static const struct { SDL_JoystickType type; Uint16 vendor, product; const char *kind; } pads[] = {
+        {SDL_JOYSTICK_TYPE_GAMEPAD, 0x045e, 0x02ea, "xbox"},         /* Xbox One */
+        {SDL_JOYSTICK_TYPE_GAMEPAD, 0x045e, 0x028e, "xbox"},         /* Xbox 360 */
+        {SDL_JOYSTICK_TYPE_GAMEPAD, 0x054c, 0x09cc, "playstation"},  /* DualShock 4 */
+        {SDL_JOYSTICK_TYPE_GAMEPAD, 0x054c, 0x0ce6, "playstation"},  /* DualSense */
+        {SDL_JOYSTICK_TYPE_GAMEPAD, 0, 0, "other"},                  /* a gamepad SDL calls "standard" */
+        {SDL_JOYSTICK_TYPE_UNKNOWN, 0x0810, 0x0001, "other"},        /* no mapping: SDL's "ps3" is a guess */
+        {SDL_JOYSTICK_TYPE_UNKNOWN, 0, 0, "other"},
+    };
+    for (size_t i = 0; i < sizeof pads / sizeof *pads; ++i) {
+        SDL_VirtualJoystickDesc desc;
+        SDL_INIT_INTERFACE(&desc);
+        desc.type = pads[i].type;
+        desc.vendor_id = pads[i].vendor;
+        desc.product_id = pads[i].product;
+        desc.naxes = 4;
+        desc.nbuttons = 12;
+        desc.nhats = 1;
+        desc.name = "kind test";
+        const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+        assert(id);
+        const char *kind = pad_kind(id);
+        if (strcmp(kind, pads[i].kind)) {
+            fprintf(stderr, "mapper-test: %04x:%04x is %s, expected %s\n", pads[i].vendor, pads[i].product, kind,
+                    pads[i].kind);
+            abort();
+        }
+        assert(SDL_DetachVirtualJoystick(id));
+    }
+}
+
 /* Live lines are a --ui feature: the terminal mapper prints none. */
 static void test_no_live_lines_without_ui(void) {
     ui_mode = 0;
@@ -622,6 +729,8 @@ int main(void) {
     test_redo_this_stick_asks_both_axes();
     test_no_live_lines_without_ui();
     test_live_push_ignores_used_axes();
+    test_prompt_queue_skip_and_end_of_input();
+    test_pad_kind();
     test_end_of_input_cancels();  /* last: it replaces stdin */
     SDL_CloseJoystick(joy);
     SDL_DetachVirtualJoystick(virtual_id);

@@ -25,12 +25,19 @@ from tkinter import ttk
 CREATE_NO_WINDOW = 0x08000000
 
 # The 21 entries in the mapper's order: SDL name, what to press on the controller, what the game gets.
+# The middle column names the input by its position, for any controller; LABELS below give the names
+# printed on Xbox and PlayStation controllers, used once the mapper says which kind is connected.
 ENTRIES = [
-    ("a", "A (bottom)", "Cross"), ("b", "B (right)", "Circle"), ("x", "X (left)", "Square"),
-    ("y", "Y (top)", "Triangle"), ("leftshoulder", "LB", "L1"), ("rightshoulder", "RB", "R1"),
-    ("lefttrigger", "LT", "L2"), ("righttrigger", "RT", "R2"), ("back", "Back / View", "Touchpad (pause menu)"),
-    ("start", "Start / Menu", "Options"), ("leftstick", "Left stick click", "L3"),
-    ("rightstick", "Right stick click", "R3"), ("guide", "Guide / Home", "PS button"),
+    ("a", "Bottom button (A or Cross)", "Cross"),
+    ("b", "Right button (B or Circle)", "Circle"),
+    ("x", "Left button (X or Square)", "Square"),
+    ("y", "Top button (Y or Triangle)", "Triangle"),
+    ("leftshoulder", "Left shoulder button (upper)", "L1"), ("rightshoulder", "Right shoulder button (upper)", "R1"),
+    ("lefttrigger", "Left trigger (lower)", "L2"), ("righttrigger", "Right trigger (lower)", "R2"),
+    ("back", "Small left button (Select / Back)", "Touchpad (pause menu)"),
+    ("start", "Small right button (Start)", "Options"),
+    ("leftstick", "Press the left stick in", "L3"), ("rightstick", "Press the right stick in", "R3"),
+    ("guide", "Centre / Home button (if any)", "PS button"),
     ("dpup", "D-pad up", "D-pad up"), ("dpdown", "D-pad down", "D-pad down"),
     ("dpleft", "D-pad left", "D-pad left"), ("dpright", "D-pad right", "D-pad right"),
     ("leftx", "Left stick: push RIGHT", "Left stick"), ("lefty", "Left stick: push DOWN (toward you)", "Left stick"),
@@ -38,6 +45,34 @@ ENTRIES = [
     ("righty", "Right stick: push DOWN (toward you)", "Right stick"),
 ]
 STICKS = {"leftx", "lefty", "rightx", "righty"}
+# Names printed on the controller, by the kind the mapper reports ("kind" in its "controller" event). The
+# position stays in the name, so it still reads right if a pad is reported as the wrong kind. Any other
+# kind (a pad SDL has no layout for, such as a PS2 adapter or a generic DirectInput pad) keeps the
+# position names of ENTRIES: the window never guesses.
+LABELS = {
+    "xbox": {
+        "a": "A (bottom)", "b": "B (right)", "x": "X (left)", "y": "Y (top)",
+        "leftshoulder": "LB (left shoulder)", "rightshoulder": "RB (right shoulder)",
+        "lefttrigger": "LT (left trigger)", "righttrigger": "RT (right trigger)",
+        "back": "View / Back (small left button)", "start": "Menu / Start (small right button)",
+        "leftstick": "LS (press the left stick in)", "rightstick": "RS (press the right stick in)",
+        "guide": "Xbox button (centre)",
+    },
+    "playstation": {
+        "a": "Cross (bottom)", "b": "Circle (right)", "x": "Square (left)", "y": "Triangle (top)",
+        "leftshoulder": "L1 (left shoulder)", "rightshoulder": "R1 (right shoulder)",
+        "lefttrigger": "L2 (left trigger)", "righttrigger": "R2 (right trigger)",
+        "back": "Share / Create (small left button)", "start": "Options (small right button)",
+        "leftstick": "L3 (press the left stick in)", "rightstick": "R3 (press the right stick in)",
+        "guide": "PS button (centre)",
+    },
+}
+
+
+def pad_label(name, kind):
+    """What to press for entry `name` on a controller of this kind ("xbox", "playstation", other)."""
+    label = LABELS.get(kind, {}).get(name)
+    return label or next(pad for entry, pad, _game in ENTRIES if entry == name)
 # The four stick steps: entry, stick, direction to push, unit vector of that direction on screen.
 STICK_STEPS = [("leftx", "Left stick", "RIGHT", (1, 0)), ("lefty", "Left stick", "DOWN (toward you)", (0, 1)),
                ("rightx", "Right stick", "RIGHT", (1, 0)), ("righty", "Right stick", "DOWN (toward you)", (0, 1))]
@@ -77,6 +112,9 @@ TEXT = {
     "set": "not set", "skipped": "skipped", "no_input": "skipped (no input)", "waiting": "press now",
     "map_all": "Map all", "map_sticks": "Map sticks", "skip": "Skip", "cancel": "Cancel", "reset": "Reset",
     "done": "Done", "use": "Use this controller",
+    "kind_xbox": "{name}: buttons are shown with their Xbox names.",
+    "kind_playstation": "{name}: buttons are shown with their PlayStation names.",
+    "kind_other": "{name}: buttons are shown by where they are on the controller.",
 }
 
 # The stick panel: canvas size, circle radius, animation timing (ms), and what counts as a direction.
@@ -255,6 +293,7 @@ class ControllerWindow(tk.Toplevel):
         self.finished = False  # the mapper said saved or cancelled
         self.error_shown = False  # the mapper's last message was an error
         self.asking = None  # the entry asked for now
+        self.kind = "other"  # names printed on the controller (LABELS); position names until it is known
         self.bindings = {}  # entry -> binding recorded in this run
         self.checks = None  # sticks still to check in this run (None: the check has not started)
         self.checks_total = 0  # sticks the check started with
@@ -325,7 +364,7 @@ class ControllerWindow(tk.Toplevel):
         style.map("Pad.Treeview.Heading", background=[("active", bg)])
         self.rows = ttk.Treeview(table, columns=("pad", "game", "set"), show="headings", height=12,
                                  selectmode="browse", style="Pad.Treeview")
-        for column, title, width in (("pad", "Controller", 230), ("game", "In game", 150), ("set", "Set", 120)):
+        for column, title, width in (("pad", "Controller", 250), ("game", "In game", 140), ("set", "Set", 110)):
             self.rows.heading(column, text=title)
             self.rows.column(column, width=width, anchor="w")
         scroll = ttk.Scrollbar(table, orient="vertical", command=self.rows.yview)
@@ -348,8 +387,16 @@ class ControllerWindow(tk.Toplevel):
 
     def _fill_rows(self):
         self.rows.delete(*self.rows.get_children())
-        for name, pad, game in self._entries():
-            self.rows.insert("", "end", iid=name, values=(pad, game, TEXT["set"]))
+        for name, _pad, game in self._entries():
+            self.rows.insert("", "end", iid=name, values=(pad_label(name, self.kind), game, TEXT["set"]))
+
+    def _set_kind(self, kind):
+        """The mapper said which kind of controller is connected: the list uses its button names; what is
+        already recorded stays."""
+        self.kind = kind if kind in LABELS else "other"
+        for name in self.rows.get_children():
+            _pad, game, recorded = self.rows.item(name, "values")
+            self.rows.item(name, values=(pad_label(name, self.kind), game, recorded))
 
     def set_sticks_only(self, sticks_only):
         """Map controller / Map sticks only while this window is open: switches what Map all asks for,
@@ -409,7 +456,8 @@ class ControllerWindow(tk.Toplevel):
                 self.chooser.pack(fill="x", pady=(8, 0))
         elif kind == "controller":
             self.chooser.pack_forget()
-            self.detail.config(text=event.get("name", ""))
+            self._set_kind(event.get("kind"))
+            self.detail.config(text=TEXT[f"kind_{self.kind}"].format(name=event.get("name", "") or "Controller"))
         elif kind == "prompt" and target in self._names():
             self.error_shown = False
             self._ask(target)
@@ -468,7 +516,7 @@ class ControllerWindow(tk.Toplevel):
         return next((step for step in STICK_STEPS if step[0] == target), None)
 
     def _ask(self, target):
-        pad, game = next((p, g) for n, p, g in ENTRIES if n == target)
+        pad, game = pad_label(target, self.kind), next(g for n, _p, g in ENTRIES if n == target)
         names = self._names()
         self.asking = target
         self._show_state("mapping")
@@ -487,7 +535,7 @@ class ControllerWindow(tk.Toplevel):
         self.rows.selection_set(target)
 
     def _set(self, target, value):
-        pad, game = next((p, g) for n, p, g in ENTRIES if n == target)
+        pad, game = pad_label(target, self.kind), next(g for n, _p, g in ENTRIES if n == target)
         self.rows.item(target, values=(pad, game, value))
 
     def _say(self, text):

@@ -15,18 +15,23 @@
 #endif
 
 typedef struct { const char *sdl, *prompt; int axis; } Target;
-/* Prompts use the Xbox names printed on the controller; SDL's a/b/x/y are positions (south, east,
- * west, north), which the game reads as Cross, Circle, Square and Triangle. */
+/* Terminal prompts name each input by its position, with the Xbox and PlayStation names as examples:
+ * SDL's a/b/x/y are positions (south, east, west, north), which the game reads as Cross, Circle, Square
+ * and Triangle. Under --ui only the entry ids are sent; the window names them for the controller type. */
 static const Target targets[] = {
-    {"a", "A (bawah)  -> Cross di game", 0},       {"b", "B (kanan)  -> Circle di game", 0},
-    {"x", "X (kiri)   -> Square di game", 0},      {"y", "Y (atas)   -> Triangle di game", 0},
-    {"leftshoulder", "LB  -> L1", 0},              {"rightshoulder", "RB  -> R1", 0},
-    {"lefttrigger", "LT  -> L2", 0},               {"righttrigger", "RT  -> R2", 0},
-    {"back", "BACK / VIEW  -> touchpad (menu pause)", 0},
-    {"start", "START / MENU  -> Options", 0},
-    {"leftstick", "LS (tekan stick kiri)  -> L3", 0},
-    {"rightstick", "RS (tekan stick kanan)  -> R3", 0},
-    {"guide", "GUIDE / HOME (diam 15 detik bila tidak ada)", 0},
+    {"a", "Tombol BAWAH (A / Cross)  -> Cross di game", 0},
+    {"b", "Tombol KANAN (B / Circle)  -> Circle di game", 0},
+    {"x", "Tombol KIRI (X / Square)  -> Square di game", 0},
+    {"y", "Tombol ATAS (Y / Triangle)  -> Triangle di game", 0},
+    {"leftshoulder", "Bahu kiri atas (LB / L1)  -> L1", 0},
+    {"rightshoulder", "Bahu kanan atas (RB / R1)  -> R1", 0},
+    {"lefttrigger", "Pelatuk kiri bawah (LT / L2)  -> L2", 0},
+    {"righttrigger", "Pelatuk kanan bawah (RT / R2)  -> R2", 0},
+    {"back", "Tombol kecil kiri (View / Share / Select)  -> touchpad (menu pause)", 0},
+    {"start", "Tombol kecil kanan (Menu / Options / Start)  -> Options", 0},
+    {"leftstick", "Tekan stick kiri ke dalam (LS / L3)  -> L3", 0},
+    {"rightstick", "Tekan stick kanan ke dalam (RS / R3)  -> R3", 0},
+    {"guide", "Tombol tengah / logo (diam 15 detik bila tidak ada)", 0},
     {"dpup", "D-PAD ATAS", 0},                     {"dpdown", "D-PAD BAWAH", 0},
     {"dpleft", "D-PAD KIRI", 0},                   {"dpright", "D-PAD KANAN", 0},
     {"leftx", "STICK KIRI ke KANAN", 1},           {"lefty", "STICK KIRI ke BAWAH", 1},
@@ -819,6 +824,26 @@ static int finish(SDL_Joystick *j, SDL_JoystickID *ids, int code) {
     return code;
 }
 
+/* The family of names printed on the controller, for the window: "xbox" or "playstation" only when SDL
+ * knows the device as a gamepad (it has a built-in mapping, so its layout is known); anything else is
+ * "other" and named by position. The type is not trusted alone: SDL also reports one for joysticks it
+ * has no mapping for, guessed from the USB ids (a PS2-style adapter id reads as "ps3"; a device without
+ * ids reads as "standard"). Measured with SDL 3.4.18 virtual joysticks. */
+static const char *pad_kind(SDL_JoystickID id) {
+    if (!SDL_IsGamepad(id)) return "other";
+    switch (SDL_GetRealGamepadTypeForID(id)) {
+    case SDL_GAMEPAD_TYPE_XBOX360:
+    case SDL_GAMEPAD_TYPE_XBOXONE:
+        return "xbox";
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5:
+        return "playstation";
+    default:
+        return "other";
+    }
+}
+
 /* One line of the device list, as JSON. */
 static void emit_devices(const SDL_JoystickID *ids, int count) {
     if (!ui_mode) return;
@@ -936,6 +961,8 @@ int main(int argc, char **argv) {
         json_text(name);
         printf(",\"guid\":");
         json_text(guid);
+        printf(",\"kind\":");
+        json_text(pad_kind(ids[selected]));
         printf("}\n");
         fflush(stdout);
     } else {
