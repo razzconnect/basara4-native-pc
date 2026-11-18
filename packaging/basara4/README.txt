@@ -51,6 +51,8 @@ Controller
   Map all, press each button when it is asked for, then Done saves. It can customize any pad, lets you
   select one when multiple are connected, and keeps mappings for other pads. To make Xbox A act
   as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
+  For the sticks the window shows which way to push. Afterwards it shows what the game will receive
+  from each stick: if that goes another way than your thumb, tick Flip, or map the stick again.
 
 Problems
   Attach user\last_run.log (and user\prepare.log if the preparation failed) to your report.
