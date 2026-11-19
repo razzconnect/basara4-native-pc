@@ -26,6 +26,7 @@
 
 extern SpartanActorSlot spartanport_actor_slots[2];
 extern "C" void runtime_restart(void); // src/probe.c: starts run.py again, ends this process
+extern "C" void runtime_audio_marker(const char* reason); // src/runtime_audio.c: F11 marker in the audio log
 #include "common/elf_info.h"
 #include "imgui.h"
 #include "imgui_internal.h" // RegisterUserTexture (save pictures)
@@ -408,7 +409,7 @@ void ImageTab() {
         ImGui::TextDisabled("%s", cap.c_str());
         ImGui::PopTextWrapPos();
     }
-    DisabledText("F11 captures a trace when Render debug trace is enabled in the launcher.");
+    DisabledText("F11 captures a trace when Tracer is enabled in the launcher.");
     Separator("Information");
     if (BeginRows("##image_info")) {
         char text[96];
@@ -1459,6 +1460,7 @@ bool HandleEvent(const SDL_Event& event) {
         }
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {
             Vulkan::FrameCapture::Request("hotkey_f11");
+            runtime_audio_marker("hotkey_f11"); // the moment the player saw it, for the audio log (when it is on)
             ShowNotice(Tr("Capturing render trace..."));
             return true;
         }

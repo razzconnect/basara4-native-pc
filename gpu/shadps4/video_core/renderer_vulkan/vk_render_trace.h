@@ -340,6 +340,18 @@ inline void EnsureLogFileLocked(State& s) {
     const std::string banner = "=== Basara 4 PC Render Trace Log ===\n";
     std::fwrite(banner.data(), 1, banner.size(), s.log_file);
     s.log_bytes = banner.size();
+    {
+        // The wall-clock time of this log's "0 ms" (State::start), so the render trace and the audio log, which
+        // each count from their own start, can be laid side by side: time = epoch_ms + the line's ms.
+        const auto since_start = std::chrono::steady_clock::now() - s.start;
+        const auto zero = std::chrono::system_clock::now() -
+                          std::chrono::duration_cast<std::chrono::system_clock::duration>(since_start);
+        const long long epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       zero.time_since_epoch()).count();
+        const std::string line = "[     0 ms] log.start format=1 epoch_ms=" + std::to_string(epoch_ms) + "\n";
+        std::fwrite(line.data(), 1, line.size(), s.log_file);
+        s.log_bytes += line.size();
+    }
     if (!s.gpu_summary.empty()) {
         const std::string line = "[     0 ms] gpu.info " + s.gpu_summary + "\n";
         std::fwrite(line.data(), 1, line.size(), s.log_file);

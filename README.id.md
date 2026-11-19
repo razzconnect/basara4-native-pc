@@ -106,7 +106,7 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 | **Anisotropic Filtering**| Off, 2x, 4x, 8x, 16x | Kualitas filter tekstur untuk sudut pandang miring. |
 | **Frame Limit** | 60 (Default), 90, 120, 144, 165, 240, Unlimited | Membuka cap FPS bawaan game menggunakan signature patch. |
 | **VSync** | Aktif / Nonaktif | Sinkronisasi frame rate dengan refresh rate monitor. |
-| **Audio Debug Log** | Aktif / Nonaktif | Mencatat detail alokasi suara Ngs2 ke `user\audio_debug.log`. |
+| **Tracer** | Aktif / Nonaktif | Mencatat render trace, capture F11, dan log audio (`user\audio_debug.log`, detail suara Ngs2) satu sesi; tombol **Report** di sebelahnya membuat satu zip dari sesi itu. |
 | **Cheats** | Gold, special coin, growth points, weapon points, weapon rank points | Cheat GoldHEN oleh **Q8Despair**, untuk CUSA01159 update 01.02. Semua cheat dapat diaktifkan bersamaan; launcher memisahkan trampoline agar alamat patch tidak bertabrakan. |
 
 ---

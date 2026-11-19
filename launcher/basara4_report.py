@@ -77,6 +77,15 @@ def where_of(text):
     return "raw"
 
 
+# Log lines that read like errors and are not. They are counted and explained in the report, so the team does not
+# chase them; the lines themselves stay in last_run.log (and in the tail of it that the report shows).
+KNOWN_HARMLESS = (
+    ("HLE thread: join failed", re.compile(r"HLE thread: join failed"),
+     "a game thread is waited for at most 5 s and then let go (on Windows a join can fail while the thread is "
+     "fine); it shows up in most sessions, around the movies, and is not a crash"),
+)
+
+
 def analyze_log(lines):
     """What a session log says about how the session ended. Pure: lines in, a dict out."""
     primary = [(i, PRIMARY.search(line).group(1).strip()) for i, line in enumerate(lines) if PRIMARY.search(line)]
@@ -120,8 +129,11 @@ def analyze_log(lines):
                      "where": where_of(m.group(4)), "frames": frames[:8]}
             break
     dump = next((m.group(1) for line in lines for m in [re.match(r"^Crash dump written: (.*)$", line)] if m), None)
+    harmless = {name: n for name, pattern, _why in KNOWN_HARMLESS
+                for n in [sum(1 for line in lines if pattern.search(line))] if n}
     return {
         "lines": len(lines),
+        "known_harmless": harmless,
         "primary": [text for _, text in reversed(primary)],
         "fault": fault,
         "unusual_not_found": unusual,
@@ -401,6 +413,11 @@ def render_text(report, tail_lines=None, sections=()):
             out.append(f"--- Files not found just before the stop (last {NEAR_PRIMARY} lines; can be normal) ---")
             out += [f"  * {p}" for p in log["near_primary_not_found"]]
         out.append(f"  ({log['hidden_not_found']} normal not-found hidden)")
+        if log.get("known_harmless"):
+            out.append("--- Known and harmless (the lines stay in last_run.log) ---")
+            for name, count in log["known_harmless"].items():
+                why = next((text for known, _pattern, text in KNOWN_HARMLESS if known == name), "")
+                out.append(f"  * {name} x{count}: {why}")
         if log["last_files"]:
             out.append(f"--- last {len(log['last_files'])} files opened before the stop ---")
             out += [f"  {f['path']} ({f['bytes']} bytes)" for f in log["last_files"]]

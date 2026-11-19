@@ -33,7 +33,7 @@ def main():
     user = Path(sys.argv[1]) if len(sys.argv) > 1 else default_user()
     files = sorted((user / "audio_wav").glob("master_b*.wav"))
     if not files:
-        sys.exit(f"no master_b*.wav in {user / 'audio_wav'}: tick 'Audio debug log' and '+ WAV capture' in the launcher and play")
+        sys.exit(f"no master_b*.wav in {user / 'audio_wav'}: tick 'Tracer' and '+ WAV capture' in the launcher and play")
     clipped = False
     for path in files:
         head = path.read_bytes()[:44]

@@ -5,7 +5,7 @@ Checks that streamed music (BGM) loops the way the game asked for it.
 
   python tools/audio_loop_check.py [user_dir]        (default: ./user, else the user\\ folder next to tools\\)
 
-Needs a session recorded with "Audio debug log" + "+ WAV capture" in the launcher (user\\audio_debug.log and user\\audio_wav\\voice_*.wav),
+Needs a session recorded with "Tracer" + "+ WAV capture" in the launcher (user\\audio_debug.log and user\\audio_wav\\voice_*.wav),
 and numpy. For every ATRAC9 stereo stream that started with a calc_block line, it works out from the log
 
   b0    samples of the first pass   = samples requested - position            (the part the game plays before the loop point)
@@ -186,7 +186,7 @@ def main():
     user = Path(sys.argv[1]) if len(sys.argv) > 1 else default_user()
     log, wavs = user / "audio_debug.log", user / "audio_wav"
     if not log.is_file() or not wavs.is_dir():
-        sys.exit(f"{log} or {wavs} is missing: tick 'Audio debug log' and '+ WAV capture' in the launcher and play")
+        sys.exit(f"{log} or {wavs} is missing: tick 'Tracer' and '+ WAV capture' in the launcher and play")
     starts, calcs, parsed = read_log(log)
     failed = False
     seen = 0

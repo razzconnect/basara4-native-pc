@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Basara 4 PC - by Razz.   Copyright (C) 2026 Razz.   GPL-2.0-or-later (NOTICE.md).
 
-Summarises a user\\audio_debug.log (written with SPARTAN_AUDIO_DEBUG, or "Audio debug log" in the launcher).
+Summarises a user\\audio_debug.log (written with SPARTAN_AUDIO_DEBUG, or "Tracer" in the launcher).
 
   python tools/audio_log_summary.py user/audio_debug.log
 

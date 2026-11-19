@@ -70,7 +70,7 @@ inline constexpr std::pair<std::string_view, const char*> ChineseText[] = {
     {"Engine frame rate: ", "引擎帧率："},
     {"Engine frame rate: 60 FPS only (no frame rate patch for this game build)", "引擎帧率：仅支持 60 帧（此版本无可用帧率补丁）"},
     {"Every multiplier back to 1x (the game's normal values).", "将所有倍率恢复为 1 倍（游戏正常数值）。"},
-    {"F11 captures a trace when Render debug trace is enabled in the launcher.", "在启动器启用“渲染调试追踪”后，按 F11 也可捕获追踪。"},
+    {"F11 captures a trace when Tracer is enabled in the launcher.", "在启动器启用“Tracer”后，按 F11 也可捕获追踪。"},
     {"F12 saves a screenshot to the user\\screenshots folder.", "按 F12 将截图保存到 user\\screenshots 目录。"},
     {"Fewer stutters in new areas; an object or effect may appear a moment later.", "减少新区域卡顿；物体或特效可能稍后出现。"},
     {"Fewer waits for the GPU. Switch it off if textures or shadows look wrong.", "减少等待 GPU；若纹理或阴影异常，请关闭。"},

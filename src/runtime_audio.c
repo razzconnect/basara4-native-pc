@@ -55,6 +55,9 @@ static int initialized, sdl_ready=-1;
 static size_t buffers_out, ports_opened;
 
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec; }
+/* Wall-clock milliseconds since 1970: the audio log and the render trace both write theirs at "0 ms", so the two
+ * logs (each counts from its own start) can be laid side by side. */
+static uint64_t wall_ms(void) { struct timespec t; clock_gettime(CLOCK_REALTIME,&t); return (uint64_t)t.tv_sec*1000u+(uint64_t)t.tv_nsec/1000000u; }
 
 /* ---- SPARTAN_AUDIO_DEBUG=<file>: "[  ms] kind key=value ..." lines, flushed per line, capped at 64 MiB ---- */
 static FILE *alog_file;
@@ -70,7 +73,8 @@ int runtime_audio_log_enabled(void) {
         alog_state=0;
         if (path && path[0] && (alog_file=fopen(path,"w"))) {
             alog_start_ns=now_ns();
-            fprintf(alog_file,"[       0 ms] log.start format=1 audio_mode=%s\n",getenv("SPARTAN_AUDIO") ? getenv("SPARTAN_AUDIO") : "default");
+            fprintf(alog_file,"[       0 ms] log.start format=1 audio_mode=%s epoch_ms=%llu\n",
+                    getenv("SPARTAN_AUDIO") ? getenv("SPARTAN_AUDIO") : "default",(unsigned long long)wall_ms());
             fflush(alog_file);
             alog_state=1;
         }
@@ -105,6 +109,112 @@ static const char *port_type_name(int type) {
     case 0: return "main"; case 1: return "bgm"; case 2: return "voice"; case 3: return "personal";
     case 4: return "padspk"; case 126: return "audio3d"; case 127: return "aux"; default: return "?";
     }
+}
+/* ---- level summaries in the audio log (while SPARTAN_AUDIO_DEBUG is on) ----
+ * "audio.level1s": one line per port per second for the whole session (peak, rms, how many buffers were silent).
+ * "audio.level": one line per port per 100 ms, only within LVL_WINDOW_MS before and after an F11 marker
+ * (runtime_audio_marker), so a short glitch around the moment the player saw it can be seen without writing
+ * 100 ms lines for the whole session. The last LVL_RING bins (15 s) are kept in memory, so the seconds before the
+ * marker are still there when it arrives. Nothing here allocates, and nothing runs while the log is off.
+ * Times are milliseconds on the audio log's clock; a line's own "t=" is the start of its bin, so a bin written
+ * after the marker can sit below later lines of the log. */
+#define LVL_BIN_MS 100u
+#define LVL_RING 150 /* 15 s of 100 ms bins */
+#define LVL_WINDOW_MS 15000u
+#define LVL_MARKERS 16
+#define LVL_SILENT 0.001f /* a buffer whose peak is below this is silent, as in audioout.stats */
+typedef struct { uint64_t start_ms; float peak; double sumsq; uint64_t samples; unsigned buffers, loud; } LevelBin;
+typedef struct {
+    LevelBin cur, sec;                  /* the 100 ms and 1 s bins being filled (buffers==0: none yet) */
+    LevelBin ring[LVL_RING]; unsigned ring_count;
+    uint64_t written_until_ms;          /* start of the newest 100 ms bin already written, +1 (0: none) */
+    unsigned markers_seen;
+} LevelTrack;
+static LevelTrack levels[PORTS];
+static uint64_t marker_ms[LVL_MARKERS];
+static unsigned marker_count;           /* markers set so far; written under alog_lock, read without it */
+
+static float bin_rms(const LevelBin *b) { return b->samples ? (float)sqrt(b->sumsq/(double)b->samples) : 0.0f; }
+static void level_write100(int id, const char *type, const LevelBin *b) {
+    runtime_audio_log("audio.level port=%d type=%s t=%llu peak=%.4f rms=%.4f buffers=%u loud=%u",id,type,
+                      (unsigned long long)b->start_ms,b->peak,bin_rms(b),b->buffers,b->loud);
+}
+/* Is a 100 ms bin starting at start_ms within the window of a marker that is already known? */
+static int level_wanted(uint64_t start_ms, unsigned known) {
+    for (unsigned i=known>LVL_MARKERS ? known-LVL_MARKERS : 0; i<known; ++i) {
+        uint64_t m=marker_ms[i%LVL_MARKERS];
+        if (start_ms+LVL_BIN_MS>m-(m<LVL_WINDOW_MS ? m : LVL_WINDOW_MS) && start_ms<=m+LVL_WINDOW_MS) return 1;
+    }
+    return 0;
+}
+static void level_note_markers(LevelTrack *L, int id, const char *type, unsigned known) {
+    if (known-L->markers_seen>LVL_MARKERS) L->markers_seen=known-LVL_MARKERS; /* too many at once: the oldest are gone */
+    for (; L->markers_seen<known; ++L->markers_seen) {
+        /* a marker has arrived: write the bins kept before it (oldest first) that are inside its window */
+        unsigned count=L->ring_count<LVL_RING ? L->ring_count : LVL_RING;
+        for (unsigned k=0; k<count; ++k) {
+            const LevelBin *b=&L->ring[(L->ring_count-count+k)%LVL_RING];
+            if (b->start_ms+1>L->written_until_ms && level_wanted(b->start_ms,L->markers_seen+1)) {
+                level_write100(id,type,b); L->written_until_ms=b->start_ms+1;
+            }
+        }
+    }
+}
+static void level_close100(LevelTrack *L, int id, const char *type, unsigned known) {
+    if (!L->cur.buffers) return;
+    L->ring[L->ring_count%LVL_RING]=L->cur; ++L->ring_count;
+    if (L->cur.start_ms+1>L->written_until_ms && level_wanted(L->cur.start_ms,known)) {
+        level_write100(id,type,&L->cur); L->written_until_ms=L->cur.start_ms+1;
+    }
+    memset(&L->cur,0,sizeof L->cur);
+}
+static void level_close1s(LevelTrack *L, int id, const char *type) {
+    if (!L->sec.buffers) return;
+    runtime_audio_log("audio.level1s port=%d type=%s t=%llu peak=%.4f rms=%.4f buffers=%u loud=%u",id,type,
+                      (unsigned long long)L->sec.start_ms,L->sec.peak,bin_rms(&L->sec),L->sec.buffers,L->sec.loud);
+    memset(&L->sec,0,sizeof L->sec);
+}
+/* One buffer given to port `id` at now_ms: its peak and sum of squares over `samples` values. Called with the
+ * port locked, so a port's bins are only touched by one thread at a time. */
+static void level_feed(int id, const char *type, uint64_t now_ms, float peak, double sumsq, uint64_t samples) {
+    LevelTrack *L=&levels[id];
+    unsigned known=__atomic_load_n(&marker_count,__ATOMIC_ACQUIRE);
+    level_note_markers(L,id,type,known);
+    uint64_t b100=now_ms/LVL_BIN_MS*LVL_BIN_MS, b1s=now_ms/1000u*1000u;
+    if (L->cur.buffers && L->cur.start_ms!=b100) level_close100(L,id,type,known);
+    if (L->sec.buffers && L->sec.start_ms!=b1s) level_close1s(L,id,type);
+    LevelBin *bins[2]={&L->cur,&L->sec};
+    uint64_t starts[2]={b100,b1s};
+    for (int i=0; i<2; ++i) {
+        LevelBin *b=bins[i];
+        if (!b->buffers) b->start_ms=starts[i];
+        if (peak>b->peak) b->peak=peak;
+        b->sumsq+=sumsq; b->samples+=samples; ++b->buffers;
+        if (peak>=LVL_SILENT) ++b->loud;
+    }
+}
+/* The port closes: what is left in its bins is written, so the last second of a port is not lost. */
+static void level_flush(int id, const char *type) {
+    if (!runtime_audio_log_enabled()) return;
+    LevelTrack *L=&levels[id];
+    unsigned known=__atomic_load_n(&marker_count,__ATOMIC_ACQUIRE);
+    level_note_markers(L,id,type,known);
+    level_close100(L,id,type,known);
+    level_close1s(L,id,type);
+}
+/* The player pressed F11 (or another capture was requested) at now_ms: remember it, so the 100 ms bins around it
+ * are written. */
+static void audio_marker_at(uint64_t now_ms, uint64_t wall, const char *reason) {
+    pthread_mutex_lock(&alog_lock);
+    marker_ms[marker_count%LVL_MARKERS]=now_ms;
+    __atomic_store_n(&marker_count,marker_count+1,__ATOMIC_RELEASE);
+    pthread_mutex_unlock(&alog_lock);
+    runtime_audio_log("capture.marker reason=%s epoch_ms=%llu window_s=%u",reason ? reason : "?",
+                      (unsigned long long)wall,LVL_WINDOW_MS/1000u);
+}
+void runtime_audio_marker(const char *reason) {
+    if (!runtime_audio_log_enabled()) return;
+    audio_marker_at(runtime_audio_log_ms(),wall_ms(),reason);
 }
 static void sleep_until(uint64_t deadline) {
 #ifdef _WIN32
@@ -254,6 +364,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     if (id<0) { pthread_mutex_unlock(&table_lock); return open_fail(ERR_PORT_FULL,type,length,freq,param); }
     Port *p=&ports[id];
     memset(p,0,sizeof(*p));
+    memset(&levels[id],0,sizeof levels[id]); /* the bins of a port that was closed before are not this port's */
+    levels[id].markers_seen=__atomic_load_n(&marker_count,__ATOMIC_ACQUIRE);
     pthread_mutex_init(&p->lock,NULL);
     p->used=1; p->type=type; p->channels=channels[format]; p->is_float=format>=3 && format!=6;
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
@@ -291,6 +403,7 @@ static ABI int32_t audio_close(int32_t handle) {
     Port *p=port_of(handle,&error);
     if (p) {
         pthread_mutex_lock(&p->lock);
+        level_flush((int)(p-ports),port_type_name(p->type));
         runtime_audio_log("audioout.close port=%d type=%s buffers=%llu loud=%llu",(int)(p-ports),port_type_name(p->type),
                           (unsigned long long)p->lg_total,(unsigned long long)p->lg_total_loud);
         if (p->stream) SDL_DestroyAudioStream(p->stream);
@@ -338,13 +451,15 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         if (p->downmix) bytes=downmix_stereo(converted,(size_t)p->frames,p->is_float);
         if (p->dump) fwrite(converted,1,bytes,p->dump);
         if (runtime_audio_log_enabled()) { /* level of what the port is given, after volume and downmix */
-            float peak=0.0f; size_t count=bytes/(size_t)p->sample_bytes;
+            float peak=0.0f; double sumsq=0.0; size_t count=bytes/(size_t)p->sample_bytes;
             for (size_t i=0;i<count;++i) {
                 float v;
                 if (p->is_float) memcpy(&v,converted+i*4,4); else { int16_t s; memcpy(&s,converted+i*2,2); v=(float)s/32768.0f; }
                 if (v<0) v=-v;
                 if (v>peak) peak=v;
+                sumsq+=(double)v*(double)v;
             }
+            level_feed((int)(p-ports),port_type_name(p->type),runtime_audio_log_ms(),peak,sumsq,(uint64_t)count);
             if (peak>p->lg_peak) p->lg_peak=peak;
             ++p->lg_buffers; ++p->lg_total;
             if (peak>0.001f) {
@@ -402,6 +517,8 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         ++buffers_out;
     }
     if (!data) ++p->lg_null;
+    if (!data && runtime_audio_log_enabled()) /* a buffer the game left out is silence: it counts in the bins */
+        level_feed((int)(p-ports),port_type_name(p->type),runtime_audio_log_ms(),0.0f,0.0,0);
     if (runtime_audio_log_enabled()) {
         uint64_t now=now_ns();
         if (!p->lg_start_ns) p->lg_start_ns=now;
