@@ -635,7 +635,10 @@ def collect_session_artifacts(report, *, traces_dir, captures_dir, fallback_trac
 
 
 def mark_unfinished(folder):
-    """Reports left 'started' by a launcher that closed before its game ended; returns their names."""
+    """Reports left 'started' by a launcher that closed before its game ended; returns their names. The end of
+    such a session is fixed at the moment it is found (no game can have run between the old launcher closing
+    and this one opening), so its window for files never stays open up to "now" and cannot reach into a
+    later session."""
     names = []
     for path in sorted(Path(folder).glob("session-*.json")) if Path(folder).is_dir() else []:
         try:
@@ -645,6 +648,10 @@ def mark_unfinished(folder):
         if report.get("status") == "started":
             report["status"] = "unfinished"
             report["end"] = unknown("the launcher closed before the game ended")
+            if not isinstance(report.get("tracer"), dict):
+                report["tracer"] = {}  # a report from before the Tracer still gets an end
+            if not isinstance(report["tracer"].get("ended_epoch"), (int, float)):
+                report["tracer"]["ended_epoch"] = time.time()
             try:
                 write_atomic(path, json.dumps(report, indent=2, ensure_ascii=False))
             except OSError:

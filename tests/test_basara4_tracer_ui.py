@@ -33,6 +33,26 @@ class TracerOptionTests(unittest.TestCase):
                 report.invoke()
             send.assert_called_once_with()
 
+    def test_the_tracer_row_fits_its_panel_and_does_not_widen_it(self):
+        # The hint beside the Tracer was cut off ("...then R") and pushed the dropdown columns to the right:
+        # measured in a real window (alpha 0, off screen) at the Windows scalings 100%, 125% and 150%.
+        for scale in (1.0, 1.25, 1.5):
+            with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+                app.attributes("-alpha", 0.0)
+                app.geometry("+-3000+0")
+                app.tk.call("tk", "scaling", 96 / 72 * scale)
+                app.update()
+                row = widget(app, ttk.Checkbutton, "Tracer").master
+                panel = row.master
+                with_row = panel.winfo_reqwidth()
+                self.assertLessEqual(row.winfo_reqwidth(), panel.winfo_width(), f"cut off at {scale}")
+                hint = [w for w in row.winfo_children() if isinstance(w, ttk.Label)]
+                self.assertEqual(len(hint), 1)
+                self.assertIn("Report", str(hint[0].cget("text")))  # the part that matters is still said
+                row.grid_remove()
+                app.update()
+                self.assertEqual(panel.winfo_reqwidth(), with_row, f"the row widens the panel at {scale}")
+
     def test_the_tracer_off_turns_the_wav_capture_off_and_the_wav_turns_the_tracer_on(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
             app.tracer_var.set(True)

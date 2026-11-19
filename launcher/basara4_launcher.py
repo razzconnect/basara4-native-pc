@@ -1233,8 +1233,8 @@ class Launcher(tk.Tk):
         ttk.Checkbutton(trace_frame, text="Tracer", variable=self.tracer_var, command=self._tracer_toggled).pack(side="left", padx=(0, 10))
         ttk.Button(trace_frame, text="Report", command=lambda: self.send_report()).pack(side="left", padx=(0, 10))
         ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
-        ttk.Label(trace_frame, text="Tracer: GPU anomalies, audio log, F11 -> user\\captures. After a bug: F11, then Report",
-                  style="Muted.TLabel").pack(side="left")
+        # Short: the row must fit the panel (the dropdown columns above it are sized by its widest row)
+        ttk.Label(trace_frame, text="At the bug: F11, then Report", style="Muted.TLabel").pack(side="left")
 
         # Baris 5: Keterangan / Tips
         ttk.Label(opts, text="The game draws at 1080p. Window size sets windowed mode. FSR 1 sharpens if screen > 1080p.\n"

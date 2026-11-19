@@ -142,6 +142,57 @@ class SessionTests(SessionMixin, unittest.TestCase):
                 self.assertIn("before the freeze", self.text(zf, "render_trace.log"))
                 self.assertIn("captures/frame_a_1.txt", zf.namelist())
 
+    def test_a_session_without_an_end_is_closed_when_the_launcher_finds_it_so_a_later_session_stays_out(self):
+        """Session A never ended; session B ran after it. A's zip must take A's files only: marking A as
+        unfinished fixes the end of its window at that moment instead of leaving it open until "now"."""
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            self.begin(app, game)
+            bl.CAPTURES_DIR.mkdir(exist_ok=True)
+            (bl.CAPTURES_DIR / "frame_a_1.txt").write_text("session A\n", encoding="utf-8")
+            marked = rp.mark_unfinished(bl.REPORTS)
+            self.assertEqual(len(marked), 1)
+            saved = json.loads((bl.REPORTS / marked[0]).read_text(encoding="utf-8"))
+            self.assertIsInstance(saved["tracer"]["ended_epoch"], float)
+            later = time.time() + 30  # session B, written after the launcher found A unfinished
+            for name in ("frame_b_1.txt", "frame_b_1.png"):
+                (bl.CAPTURES_DIR / name).write_bytes(b"session B")
+                os.utime(bl.CAPTURES_DIR / name, (later, later))
+            bl.AUDIO_LOG.write_text("[1 ms] session B\n", encoding="utf-8")
+            os.utime(bl.AUDIO_LOG, (later, later))
+            found = rp.collect_session_artifacts(saved, traces_dir=bl.RENDER_TRACES, captures_dir=bl.CAPTURES_DIR,
+                                                 fallback_trace_log=None, audio_log=bl.AUDIO_LOG, run_log=None,
+                                                 prepare_log=None, now=later + 100)
+            names = {zip_name for zip_name, _ in found.logs} | {zip_name for zip_name, _ in found.binaries}
+            self.assertIn("captures/frame_a_1.txt", names)
+            self.assertFalse({"captures/frame_b_1.txt", "captures/frame_b_1.png", "audio_debug.log"} & names)
+
+    def test_marking_a_session_unfinished_keeps_an_end_it_already_has(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-20261119-100000.json"
+            path.write_text(json.dumps({"status": "started", "started": "2026-11-19T10:00:00",
+                                        "tracer": {"started_epoch": 1000.0, "ended_epoch": 1500.0}}), encoding="utf-8")
+            old = Path(tmp) / "session-20261119-090000.json"  # a report from before the Tracer: no tracer part
+            old.write_text(json.dumps({"status": "started", "started": "2026-11-19T09:00:00"}), encoding="utf-8")
+            self.assertEqual(len(rp.mark_unfinished(tmp)), 2)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["tracer"]["ended_epoch"], 1500.0)
+            self.assertIsInstance(json.loads(old.read_text(encoding="utf-8"))["tracer"]["ended_epoch"], float)
+
+    def test_a_trace_folder_with_a_path_separator_is_never_followed(self):
+        """The folder name comes from a file on disk; "..\\x" or "../x" must not reach outside render_traces."""
+        with tempfile.TemporaryDirectory() as tmp:
+            traces = Path(tmp) / "render_traces"
+            traces.mkdir()
+            (Path(tmp) / "secret").mkdir()
+            (Path(tmp) / "secret" / "render_trace.log").write_text("OUTSIDE\n", encoding="utf-8")
+            for folder in ("..\\secret", "../secret", "a\\b", str(Path(tmp) / "secret")):
+                report = {"started": "2026-11-19T10:00:00", "tracer": {"on": False, "trace_folder": folder,
+                                                                       "started_epoch": time.time() - 5}}
+                found = rp.collect_session_artifacts(report, traces_dir=traces, captures_dir=None,
+                                                     fallback_trace_log=None, audio_log=None, run_log=None,
+                                                     prepare_log=None)
+                self.assertIsNone(found.trace_log, folder)
+                self.assertEqual(found.logs, [], folder)
+
     def test_a_file_just_before_the_start_belongs_to_the_session_and_one_long_before_does_not(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
             bl.CAPTURES_DIR.mkdir(exist_ok=True)
@@ -352,6 +403,29 @@ class PrivacyNetTests(unittest.TestCase):
                     text = zf.read(name).decode("utf-8").lower()
                     for private in ("qauser9z", "qapc9z", "qadlc9z"):
                         self.assertNotIn(private, text, (name, private))
+
+
+class LeftoverPathZipTests(SessionMixin, unittest.TestCase):
+    def test_an_absolute_path_in_any_text_of_the_zip_is_cut_to_its_file_name(self):
+        """Not only the function: every text that goes into a Tracer zip passes the cut (trace, capture text,
+        audio log, game log), while paths under the Windows folder stay readable."""
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _), \
+                mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}):
+            session = self.begin(app, game)
+            text = ("loaded E:\\Backup\\Stash9q\\data.bin\n" "driver C:\\Windows\\System32\\vulkan-1.dll\n")
+            (session / "render_trace.log").write_text(text, encoding="utf-8")
+            bl.AUDIO_LOG.write_text(text, encoding="utf-8")
+            bl.CAPTURES_DIR.mkdir(exist_ok=True)
+            (bl.CAPTURES_DIR / "frame_1.txt").write_text(text, encoding="utf-8")
+            bl.LOG.write_text(text, encoding="utf-8")
+            self.end(app)
+            with self.zip_of(app) as zf:
+                for name in ("render_trace.log", "audio_debug.log", "captures/frame_1.txt", "last_run.log"):
+                    shown = self.text(zf, name)
+                    self.assertNotIn("Stash9q", shown, name)
+                    self.assertNotIn("E:\\Backup", shown, name)
+                    self.assertIn("<path>\\data.bin", shown, name)
+                    self.assertIn("C:\\Windows\\System32\\vulkan-1.dll", shown, name)
 
 
 class EndLabelTests(unittest.TestCase):
