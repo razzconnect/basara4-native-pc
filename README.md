@@ -118,7 +118,7 @@ The launcher detects extracted DLC under the `DLC` folder beside the installatio
 | **Anisotropic Filtering**| Off, 2x, 4x, 8x, 16x | Texture filtering quality for oblique camera angles. |
 | **Frame Limit** | 60 (Default), 90, 120, 144, 165, 240, Unlimited | Overrides engine cap using automated signature patching. |
 | **VSync** | Enabled / Disabled | Synchronize buffer swaps to display refresh rate. |
-| **Audio Debug Log** | Enabled / Disabled | Writes granular Ngs2 voice and bus diagnostics to `user\audio_debug.log`. |
+| **Tracer** | Enabled / Disabled | Records the render trace, the F11 captures and the audio log (`user\audio_debug.log`, Ngs2 voice and bus diagnostics) of a session; the **Report** button next to it zips them. |
 | **Cheats** | Gold, special coin, growth points, weapon points, weapon rank points | GoldHEN cheats by **Q8Despair** for CUSA01159 update 01.02. All cheats can be enabled together; the launcher separates their trampolines to avoid patch address conflicts. |
 
 ---
@@ -219,7 +219,7 @@ python packaging/basara4/make_package.py --out G:/basara4-windows --update
 When reporting issues or bugs, please attach the relevant logs from the `user\` folder:
 - **`user\last_run.log`**: Core runtime diagnostic log (initialization, GPU shader compiling, crash traceback).
 - **`user\prepare.log`**: Output from the image preparation and relocation stage.
-- **`user\audio_debug.log`**: Detailed Ngs2 voice allocations, streaming feeds, and buffer status (enable "Audio debug log" in launcher).
+- **`user\audio_debug.log`**: Detailed Ngs2 voice allocations, streaming feeds, and buffer status (enable "Tracer" in launcher).
 
 To summarize audio logs from command line:
 ```bash

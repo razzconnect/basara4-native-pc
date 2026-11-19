@@ -474,6 +474,8 @@ class RunLogAndPlayTests(unittest.TestCase):
             app.cfg["mods_dir"] = "\\\\qaserver\\QASHARE7c1\\mods"  # UNC
             session = paths.user / "render_traces" / "20261118-000000"
             session.mkdir(parents=True)
+            app.trace_session = session  # this game session was traced into that folder
+            app._start_session_report(game)
             (session / "render_trace.log").write_text(
                 "trace: start\n"
                 "open C:\\Users\\QAUSER7c1\\AppData\\Local\\Temp\\x.bin\n"
@@ -484,20 +486,26 @@ class RunLogAndPlayTests(unittest.TestCase):
                 "anomaly: tex.overlap_view_lost frame=812\n", encoding="utf-8")
             (paths.user / "captures").mkdir(exist_ok=True)
             (paths.user / "captures" / "frame812.png").write_bytes(b"\x89PNG")
-            report_txt, report_json = self.zip_report_text(app)
+            with mock.patch.object(bl.os, "startfile", create=True):
+                target = app.send_report()
+            with zipfile.ZipFile(target) as zf:
+                report_txt, report_json = zf.read("report.txt").decode("utf-8"), zf.read("report.json").decode("utf-8")
+                whole_trace = zf.read("render_trace.log").decode("utf-8")  # the whole log is in the zip, masked
         section = report_txt.split("--- Render trace ---\n", 1)[1].split("=== End of report ===")[0]
         self.assertIn("anomaly: tex.overlap_view_lost frame=812", section)  # the log tail
         self.assertIn("frame812.png", section)  # and the captures
         self.assertIn("render_traces\\20261118-000000\\render_trace.log", section)
+        self.assertIn("anomaly: tex.overlap_view_lost frame=812", whole_trace)
         for name in self.PRIVATE + (Path(game).parent.name.lower(), str(game).lower()):
             self.assertNotIn(name, section.lower(), name)
             self.assertNotIn(name, report_txt.lower(), name)
+            self.assertNotIn(name, whole_trace.lower(), name)
         self.assertNotIn("Render trace", report_json)  # report.json keeps its structure
 
     def test_without_a_render_trace_the_zip_says_why(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
             report_txt, _json = self.zip_report_text(app)
-        self.assertIn("--- Render trace ---\n  (none: Render debug trace was off, or it left no log or captures)\n"
+        self.assertIn("--- Render trace ---\n  (none: Tracer was off in this session, or it left no log or captures)\n"
                       "=== End of report ===", report_txt)
 
     def test_session_reports_keep_their_text_without_the_render_trace_part(self):

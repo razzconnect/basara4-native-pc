@@ -488,8 +488,34 @@ def content_info(cfg):
     return {"dlc": dlc, "cheats": list(cfg.get("cheats", [])), "dlc_dir": cfg.get("dlc_dir")}
 
 
-def render_trace_report():
-    """Crash-report section: the newest render trace log tail and captures, or why they are missing."""
+def session_artifacts(report):
+    """The files the session `report` describes (basara4_report.collect_session_artifacts) in this install's
+    folders: its own trace folder and captures and the logs it wrote, never another session's."""
+    return basara4_report.collect_session_artifacts(
+        report, traces_dir=RENDER_TRACES, captures_dir=CAPTURES_DIR, fallback_trace_log=RENDER_TRACE_LOG,
+        audio_log=AUDIO_LOG, run_log=LOG, prepare_log=PREPARE_LOG)
+
+
+def render_trace_report(report=None):
+    """Report section: the render trace tail and captures, or why they are missing. For a session `report`
+    it is that session's own trace and captures; without one, the newest trace log and captures."""
+    if report is not None:
+        art = session_artifacts(report)
+        text = ""
+        if art.trace_log:
+            try:
+                lines = basara4_report.read_text(art.trace_log).splitlines()
+            except OSError as exc:
+                lines = [f"{art.trace_label} could not be read: {exc.strerror or exc}"]
+            if lines:
+                text += (f"\n--- [Render Trace of this session ({art.trace_label}): last {min(12, len(lines))} "
+                         f"of {len(lines)} lines; render_trace.log in this zip has all of them] ---\n"
+                         + "\n".join(lines[-12:]) + "\n")
+        text += "".join(f"\n--- [Not read] {note}\n" for note in art.notes)
+        if art.captures:
+            text += ("\n--- [Captures of this session (captures\\ in this zip)] ---\n"
+                     + "\n".join(f"  - {name}" for name in art.captures) + "\n")
+        return text
     text = ""
     try:
         session = latest_trace_session()
@@ -516,11 +542,11 @@ def render_trace_report():
     return text
 
 
-def render_trace_summary():
-    """The render trace part of the report in the zip: render_trace_report(), or one line saying why there is
-    nothing (it is masked with the rest of report.txt)."""
-    text = render_trace_report().strip("\n")
-    return text or "  (none: Render debug trace was off, or it left no log or captures)"
+def render_trace_summary(report=None):
+    """The render trace part of the report in the zip: render_trace_report(report), or one line saying why
+    there is nothing (it is masked with the rest of report.txt)."""
+    text = render_trace_report(report).strip("\n")
+    return text or "  (none: Tracer was off in this session, or it left no log or captures)"
 
 
 def check_commit_limit_mb():
@@ -1188,23 +1214,26 @@ class Launcher(tk.Tk):
         # Baris 3: Checkboxes (VSync, RCAS, Audio log, WAV)
         self.vsync_var = tk.BooleanVar(value=self.cfg["vsync"])
         self.rcas_var = tk.BooleanVar(value=self.cfg["rcas"])
-        self.audio_var = tk.BooleanVar(value=self.cfg.get("audio_log", False))
+        # One Tracer option: the render trace (with the F11 captures) and the audio log are one set of notes
+        # about a session. It is kept as the two settings the game's environment reads (render_trace and
+        # audio_log), so a player who had either one on before keeps the Tracer on.
+        self.tracer_var = tk.BooleanVar(value=bool(self.cfg.get("render_trace") or self.cfg.get("audio_log")))
         self.wav_var = tk.BooleanVar(value=False)
-        self.render_trace_var = tk.BooleanVar(value=self.cfg.get("render_trace", False))
 
         chk_frame = ttk.Frame(opts, style="Panel.TFrame")
         chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 2))
         ttk.Checkbutton(chk_frame, text="VSync", variable=self.vsync_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="Sharpening (RCAS)", variable=self.rcas_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(chk_frame, text="Audio debug log", variable=self.audio_var, command=self._audio_toggled).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(chk_frame, text="+ WAV capture (up to 3 GB)", variable=self.wav_var, command=self._wav_toggled).pack(side="left")
+        ttk.Checkbutton(chk_frame, text="+ WAV capture (developers, up to 3 GB)", variable=self.wav_var,
+                        command=self._wav_toggled).pack(side="left")
 
-        # Baris 4: Render debug trace toggle
+        # Baris 4: the Tracer and the Report that sends what it recorded
         trace_frame = ttk.Frame(opts, style="Panel.TFrame")
         trace_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 4))
-        ttk.Checkbutton(trace_frame, text="Render debug trace", variable=self.render_trace_var).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(trace_frame, text="Tracer", variable=self.tracer_var, command=self._tracer_toggled).pack(side="left", padx=(0, 10))
+        ttk.Button(trace_frame, text="Report", command=lambda: self.send_report()).pack(side="left", padx=(0, 10))
         ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
-        ttk.Label(trace_frame, text="Logs GPU anomalies, auto-captures & enables F11 -> user\\captures",
+        ttk.Label(trace_frame, text="Tracer: GPU anomalies, audio log, F11 -> user\\captures. After a bug: F11, then Report",
                   style="Muted.TLabel").pack(side="left")
 
         # Baris 5: Keterangan / Tips
@@ -1469,15 +1498,15 @@ class Launcher(tk.Tk):
         saved_gpu = self.cfg.get("gpu_index", -1)
         self.gpu_var.set(next((name for idx, name, _ in SYSTEM_GPUS if idx == saved_gpu), SYSTEM_GPUS[0][1]))
 
-    def _audio_toggled(self):
-        if not self.audio_var.get():
-            self.wav_var.set(False)  # the capture belongs to the log
+    def _tracer_toggled(self):
+        if not self.tracer_var.get():
+            self.wav_var.set(False)  # the capture belongs to the Tracer
 
     def _wav_toggled(self):
         if not self.wav_var.get():
             return
         if messagebox.askyesno("WAV capture", WAV_WARNING, icon="warning", default="no", parent=self):
-            self.audio_var.set(True)
+            self.tracer_var.set(True)
         else:
             self.wav_var.set(False)
 
@@ -1505,9 +1534,9 @@ class Launcher(tk.Tk):
             game=self.game_var.get().strip(), display_mode=self.mode_var.get(), vsync=self.vsync_var.get(),
             rcas=self.rcas_var.get(), fps_limit=dict(FPS_LIMITS)[self.fps_var.get()],
             resolution=dict(RESOLUTIONS)[self.res_var.get()], upscale=dict(UPSCALERS)[self.up_var.get()],
-            anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.audio_var.get(),
-            audio_wav=self.audio_var.get() and self.wav_var.get(),
-            render_trace=self.render_trace_var.get(),
+            anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.tracer_var.get(),
+            audio_wav=self.tracer_var.get() and self.wav_var.get(),
+            render_trace=self.tracer_var.get(),
             gpu_index=selected_gpu_idx,
             input_mode=self.input_mode_var.get())
         save_config(self.cfg)
@@ -2028,6 +2057,12 @@ class Launcher(tk.Tk):
                 part("vulkan", lambda: vulkan_info(VULKAN, gpu_id), errors), part("settings", settings, errors),
                 part("content", lambda: content_info(self.cfg), errors))
             self.session_report["collect_errors"] = errors
+            # What belongs to this session, so a zip made later (Report, the crash window, after the launcher
+            # was closed and opened again) takes this session's files and no other's.
+            self.session_report["tracer"] = {
+                "on": bool(self.cfg.get("render_trace") or self.cfg.get("audio_log")),
+                "trace_folder": self.trace_session.name if self.trace_session else None,
+                "audio_log": bool(self.cfg.get("audio_log")), "started_epoch": now.timestamp()}
             name, n = f"session-{now:%Y%m%d-%H%M%S}", 1
             while (REPORTS / f"{name}.json").exists():
                 n += 1
@@ -2068,6 +2103,9 @@ class Launcher(tk.Tk):
                                        collect_errors=list(report.get("collect_errors") or []) + [f"finish: {why}"])
             self.session_tail = None
             self.stop_note = (self.stop_note + f" Session report incomplete ({why}).").strip()
+        # the end of the session's files: nothing written after this belongs to it
+        self.session_report["tracer"] = dict(self.session_report.get("tracer") or {},
+                                             ended_epoch=datetime.datetime.now().timestamp())
         try:
             self._write_session_report()
             if crashed:
@@ -2086,13 +2124,31 @@ class Launcher(tk.Tk):
             return None
         return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
+    @staticmethod
+    def _last_session_report():
+        """The newest session report on disk: a session from before this launcher run, such as one that
+        ended unfinished (the launcher closed, or the PC froze). None when there is none."""
+        try:
+            paths = sorted(REPORTS.glob("session-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            return None
+        for path in paths:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and "schema" in data:
+                return data
+        return None
+
     def send_report(self, parent=None):
         """Save report: one zip with the session report, the masked logs and this session's newest
         capture; then Explorer shows it and the "Report saved" window says how to post it. Returns the zip path.
         A crash dump never goes in the zip: a minidump holds the process environment (account and
         computer names, every user variable, tokens included), which cannot be masked. It stays in
         user\\crash; the report names it and its size so the team can ask for it privately."""
-        report = self.session_report or basara4_report.unknown("no game session in this launcher run")
+        report = (self.session_report or self._last_session_report()
+                  or basara4_report.unknown("no game session in this launcher run"))
         if not isinstance(report, dict) or "schema" not in report:
             errors = []
             report = {"schema": basara4_report.SCHEMA, "status": "no-session", "note": report,
@@ -2115,16 +2171,22 @@ class Launcher(tk.Tk):
             report["crash_dump_kept_on_pc"] = {"file": dump.name, "bytes": size, "folder": "user\\crash"}
             withheld.append(f"crash/{dump.name} ({size} bytes): " + ("kept on the PC, not included because it can hold personal data; sent only when the team asks, "
                 "in a private message"))
-        capture = self._newest_since(CAPTURES_DIR, "*")
-        binaries = [(f"captures/{capture.name}", capture)] if capture else []
-        logs = [(name, path) for name, path in (("last_run.log", LOG), ("audio_debug.log", AUDIO_LOG),
-                                                ("prepare.log", PREPARE_LOG)) if path.is_file()]
+        # The files of THIS session, picked by what the report says about it (its trace folder, its start and
+        # end), most important first; the zip is held to ZIP_BUDGET_BYTES and lists what did not fit.
+        art = session_artifacts(report)
+        withheld += art.notes
         target = REPORTS / f"report-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
         try:
             basara4_report.make_zip(target, report,
                                     basara4_report.render_text(report, getattr(self, "session_tail", None),
-                                                               sections=[("Render trace", render_trace_summary())]),
-                                    self._masker(), logs=logs, binaries=binaries, withheld=withheld)
+                                                               sections=[("Render trace", render_trace_summary(report))]),
+                                    self._masker(), logs=art.logs, binaries=art.binaries, withheld=withheld,
+                                    max_total_bytes=basara4_report.ZIP_BUDGET_BYTES)
+        except basara4_report.PrivacyError as exc:
+            messagebox.showerror("Report not saved",
+                                 f"The report was not saved: {exc}.\n\nNothing was written, and nothing leaves "
+                                 "your PC.", parent=parent or self)
+            return None
         except OSError as exc:
             messagebox.showerror("Report not saved",
                                  ("The report could not be saved in the user\\reports "
@@ -2591,7 +2653,7 @@ class Launcher(tk.Tk):
         if AUDIO_LOG.exists():
             os.startfile(AUDIO_LOG)
         else:
-            messagebox.showinfo("Audio log", "No audio log yet. Tick \"Audio debug log\", then start the game.")
+            messagebox.showinfo("Audio log", "No audio log yet. Tick \"Tracer\", then start the game.")
 
     def _finish_trace_session(self):
         """After a traced game ends, keep its last_run.log next to its render trace; return a notice on failure."""
@@ -2608,7 +2670,7 @@ class Launcher(tk.Tk):
         if log.exists():
             os.startfile(log)
         else:
-            messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Render debug trace\", then start the game.")
+            messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Tracer\", then start the game.")
 
     def open_captures(self):
         CAPTURES_DIR.mkdir(parents=True, exist_ok=True)

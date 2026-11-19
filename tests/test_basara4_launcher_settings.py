@@ -93,7 +93,7 @@ class IniTests(unittest.TestCase):
 class CollectTests(unittest.TestCase):
     def window(self, cfg, **choices):
         values = dict(game="", mode="windowed", vsync=False, rcas=True, fps="144", res=bl.RESOLUTIONS[3][0],
-                      up=bl.UPSCALERS[1][0], aniso="8x", audio=False, wav=False, render_trace=False,
+                      up=bl.UPSCALERS[1][0], aniso="8x", tracer=False, wav=False,
                       gpu=bl.SYSTEM_GPUS[0][1], input_mode="kbm")
         values.update(choices)
         return launcher_like(cfg, **{f"{name}_var": Var(value) for name, value in values.items()})
@@ -117,12 +117,14 @@ class CollectTests(unittest.TestCase):
                               "anisotropy": "8", "render_resolution": "720p", "fsr1": "1", "upscaler": "off",
                               "show_fps": "1"})
 
-    def test_wav_capture_is_saved_only_with_the_audio_log(self):
+    def test_wav_capture_is_saved_only_with_the_tracer(self):
         with tempfile.TemporaryDirectory() as tmp, launcher_folders(tmp) as paths:
-            bl.Launcher._collect(self.window({}, audio=False, wav=True))
+            bl.Launcher._collect(self.window({}, tracer=False, wav=True))
             self.assertFalse(json.loads(paths.config.read_text(encoding="utf-8"))["audio_wav"])
-            bl.Launcher._collect(self.window({}, audio=True, wav=True))
-            self.assertTrue(json.loads(paths.config.read_text(encoding="utf-8"))["audio_wav"])
+            bl.Launcher._collect(self.window({}, tracer=True, wav=True))
+            saved = json.loads(paths.config.read_text(encoding="utf-8"))
+            self.assertTrue(saved["audio_wav"])
+            self.assertTrue(saved["render_trace"] and saved["audio_log"])  # the one option sets both
 
 
 if __name__ == "__main__":

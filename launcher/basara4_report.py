@@ -10,10 +10,15 @@ Everything here is plain data and text, with no window, so the tests drive it di
 """
 import datetime
 import json
+import locale
 import os
 import re
+import time
+import unicodedata
 import zipfile
+import zlib
 from pathlib import Path
+from typing import NamedTuple
 
 SCHEMA = 1
 # What people read on the error path (crash window, report, warnings before the game starts) is in English
@@ -165,6 +170,23 @@ def signature(exit_code, analysis, build, gpu_vendor):
 PATH_START = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}|(?<![\w])/[\w.-]+/")
 
 
+MASK_TOKEN = re.compile(r"<(?:user|pc|game|app|dlc|folder|path)>")
+
+
+def _nfc(text):
+    return unicodedata.normalize("NFC", str(text))
+
+
+def _plain_text(text):
+    """Lower case without accents, for comparing a name with text that spells it another way."""
+    decomposed = unicodedata.normalize("NFKD", str(text))
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
+class PrivacyError(Exception):
+    """The report still held the account or computer name after masking: it is not written."""
+
+
 class Masker:
     """Replaces the user's folders and names in text. Longest paths first, any case, either slash."""
 
@@ -175,7 +197,7 @@ class Masker:
         # them. A path given twice keeps its first token; a drive root alone ("D:\") is never masked.
         for path, token in ((game_dir, "<game>"), (app_dir, "<app>"), (user_home, "<user>"), *folders):
             if path:
-                text = str(path).rstrip("\\/")
+                text = _nfc(str(path).rstrip("\\/"))
                 if len(text) > 3 and text.lower() not in seen:
                     seen.add(text.lower())
                     pairs.append((text, token))
@@ -186,10 +208,17 @@ class Masker:
                       for text, token in pairs]
         # A bare account or computer name is only masked when long enough not to hit ordinary words.
         # Longest first: a computer name often contains the account name ("PC-<account>").
-        names = sorted(((name, token) for name, token in ((user_name, "<user>"), (computer_name, "<pc>"))
+        names = sorted(((_nfc(name), token) for name, token in ((user_name, "<user>"), (computer_name, "<pc>"))
                         if name and len(name) >= 3), key=lambda pair: len(pair[0]), reverse=True)
         self.names = [(re.compile(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", re.I), token)
                       for name, token in names]
+        # A one or two letter name cannot be told from ordinary text, but it can when it is a whole folder
+        # name inside a path ("D:\Backup\Jo\x"): that form is masked, so such a name does not slip through.
+        self.short_names = [(re.compile(r"(?<=[\\/])" + re.escape(_nfc(name)) + r"(?=[\\/])", re.I), token)
+                            for name, token in ((user_name, "<user>"), (computer_name, "<pc>"))
+                            if name and len(name) < 3]
+        # What the leak check looks for: the same names, compared without case and without accents.
+        self.watched = [(_plain_text(name), token) for name, token in names]
 
     @classmethod
     def from_environment(cls, game_dir=None, app_dir=None, folders=()):
@@ -199,9 +228,18 @@ class Masker:
     def __call__(self, text):
         if not isinstance(text, str):
             return text
-        for pattern, token in self.paths + self.names:
+        text = _nfc(text)  # "ü" written as one character or as u + a combining mark is the same name
+        for pattern, token in self.paths + self.names + self.short_names:
             text = pattern.sub(token, text)
         return text
+
+    def leaks(self, text):
+        """The tokens ("<user>", "<pc>") of the account or computer name still readable in text, which must
+        be nothing after masking. Looser than the masking itself (accents and case are ignored), so a form
+        the masking missed is found here and the zip is refused instead of sent."""
+        clean = _plain_text(MASK_TOKEN.sub(" ", text))
+        return sorted({token for name, token in self.watched
+                       if re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", clean)})
 
     def data(self, value):
         if isinstance(value, dict):
@@ -300,7 +338,9 @@ def summary_line(report):
         return "Stopped" + f": {log['primary'][0]}"
     if not log.get("lines"):
         return f"The game stopped before writing a log (exit {end.get('exit_hex')})."
-    return f"The game exited with code {end.get('exit_hex')} and no error message in the log."
+    return (f"The game exited with code {end.get('exit_hex')} and no error message in the log. "
+            "No fault was logged, so it may have been closed from outside (Task Manager, taskkill) "
+            "or ended without a crash report.")
 
 
 def render_text(report, tail_lines=None, sections=()):
@@ -317,7 +357,7 @@ def render_text(report, tail_lines=None, sections=()):
     if report.get("signature"):
         out.append(f"Signature     : {report['signature']}")
     for title, key in (("Port", "launcher"), ("Game", "game"), ("System", "system"),
-                       ("Vulkan", "vulkan"), ("Settings", "settings"),
+                       ("Vulkan", "vulkan"), ("Settings", "settings"), ("Tracer", "tracer"),
                        ("Content", "content"),
                        ("Session end", "end")):
         section = report.get(key)
@@ -374,38 +414,224 @@ def tail_without_trace(lines, count=10):
     return [line for line in lines if not line.startswith("File trace: ")][-count:]
 
 
-def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld=(), max_file_bytes=64 << 20):
+ZIP_BUDGET_BYTES = 9 * 1024 * 1024  # a zip small enough to post on Discord; the exact limit is not verified
+SESSION_SLACK_SECONDS = 2  # a file written this close before the session started still belongs to it
+ZIP_ENTRY_OVERHEAD = 128  # file name (twice) and headers of one zip entry, with room to spare
+ZIP_NOTE_RESERVE = 16 * 1024  # room for the "Not included" lines and headers of report.txt
+
+
+def read_text(path):
+    """A text file as text: UTF-8, or the Windows code page when the bytes are not valid UTF-8 (a name written
+    in that code page must be readable to be masked); what neither can read is replaced, not dropped."""
+    data = Path(path).read_bytes()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False), errors="replace")
+
+
+# A path that is still a path after masking: a drive letter, and any folder up to the file name. Paths
+# under the Windows and Program Files folders name no user and stay, as the driver's vulkan-1.dll does.
+LEFTOVER_PATH = re.compile(r"(?<![\w<>])[A-Za-z]:[\\/]+(?:[^\\/\s\"'<>|*?]+[\\/]+)*([^\\/\s\"'<>|*?]*)")
+
+
+def _system_roots():
+    roots = (os.environ.get(name) for name in ("SystemRoot", "WINDIR", "ProgramFiles", "ProgramFiles(x86)",
+                                               "ProgramData"))
+    return tuple(r.rstrip("\\/").lower().replace("/", "\\") for r in roots if r)
+
+
+def scrub_paths(text, keep=None):
+    """Replaces every absolute path left in text by <path>\\<file name>, except paths under `keep` (default:
+    the Windows and Program Files folders). Masking hides the user's own folders; this catches the rest."""
+    keep = _system_roots() if keep is None else tuple(k.lower() for k in keep)
+
+    def replace(match):
+        shown = re.sub(r"[\\/]+", r"\\", match.group(0)).lower()
+        if any(shown == k or shown.startswith(k + "\\") for k in keep):
+            return match.group(0)
+        return "<path>\\" + match.group(1)
+    return LEFTOVER_PATH.sub(replace, text)
+
+
+def _scrub_data(value):
+    if isinstance(value, dict):
+        return {scrub_paths(str(k)): _scrub_data(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_data(v) for v in value]
+    return scrub_paths(value) if isinstance(value, str) else value
+
+
+def _hidden(masker, name, text):
+    """Text as it goes into the zip: masked, leftover paths scrubbed, and checked once more. Raises
+    PrivacyError when the account or computer name is still readable."""
+    shown = scrub_paths(masker(text))
+    leaks = masker.leaks(shown)
+    if leaks:
+        raise PrivacyError(f"{name} still shows your {' and '.join('account name' if t == '<user>' else 'PC name' for t in leaks)} "
+                           "after it was hidden")
+    return shown
+
+
+def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld=(), max_file_bytes=64 << 20,
+             max_total_bytes=None):
     """One zip to send: report.json/.txt, masked text logs, and binary files (a capture) as they are.
     Missing files are skipped; files over max_file_bytes are left out; both are listed, and so are the
-    `withheld` notes (files kept on the PC on purpose, such as a crash dump, named but not included)."""
+    `withheld` notes (files kept on the PC on purpose, such as a crash dump, named but not included).
+
+    `logs` then `binaries` are taken in the order given, which is the order of importance. With
+    max_total_bytes the zip never grows past it: what does not fit is left out, whole, and listed in
+    report.txt with its size, so a large screenshot never pushes a small text file out.
+    Every text is masked, its leftover paths are scrubbed, and it is checked for the account and computer
+    name; PrivacyError (nothing written) when one is still there."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     skipped = list(withheld)
     tmp = target.with_name(target.name + ".tmp")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, path in logs:
-            try:
-                text = Path(path).read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                skipped.append(f"{name}: {exc.strerror or exc}")
-                continue
-            zf.writestr(name, masker(text))
-        for name, path in binaries:
-            try:
-                size = Path(path).stat().st_size
-            except OSError as exc:
-                skipped.append(f"{name}: {exc.strerror or exc}")
-                continue
-            if size > max_file_bytes:
-                skipped.append(f"{name}: {size} bytes, over the {max_file_bytes} byte limit")
-                continue
-            zf.write(path, name)
-        note = report_text + ("\nNot included:\n"
-                              + "\n".join(f"  {s}" for s in skipped) + "\n" if skipped else "")
-        zf.writestr("report.txt", masker(note))
-        zf.writestr("report.json", json.dumps(masker.data(report), indent=2, ensure_ascii=False))
+    report_json = json.dumps(_scrub_data(masker.data(report)), indent=2, ensure_ascii=False)
+    leaks = masker.leaks(report_json)
+    if leaks:
+        raise PrivacyError("report.json still shows your account or PC name after it was hidden")
+    room = None
+    if max_total_bytes is not None:
+        room = (max_total_bytes - ZIP_NOTE_RESERVE - len(zlib.compress(report_json.encode("utf-8")))
+                - len(zlib.compress(masker(report_text).encode("utf-8"))) - 2 * ZIP_ENTRY_OVERHEAD)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            def fits(name, cost):
+                nonlocal room
+                if room is not None and cost > room:
+                    skipped.append(f"{name}: {cost} bytes in the zip, over the {max_total_bytes // (1 << 20)} MB zip "
+                                   "limit; it stays on the PC")
+                    return False
+                room = None if room is None else room - cost
+                return True
+            for name, path in logs:
+                try:
+                    text = read_text(path)
+                except OSError as exc:
+                    skipped.append(f"{name}: {exc.strerror or exc}")
+                    continue
+                shown = _hidden(masker, name, text)
+                if fits(name, len(zlib.compress(shown.encode("utf-8"))) + 2 * len(name) + ZIP_ENTRY_OVERHEAD):
+                    zf.writestr(name, shown)
+            for name, path in binaries:
+                try:
+                    size = Path(path).stat().st_size
+                except OSError as exc:
+                    skipped.append(f"{name}: {exc.strerror or exc}")
+                    continue
+                if size > max_file_bytes:
+                    skipped.append(f"{name}: {size} bytes, over the {max_file_bytes} byte limit")
+                    continue
+                if fits(name, size + 2 * len(name) + ZIP_ENTRY_OVERHEAD):
+                    zf.write(path, name)
+            note = report_text + ("\nNot included:\n"
+                                  + "\n".join(f"  {s}" for s in skipped) + "\n" if skipped else "")
+            zf.writestr("report.txt", _hidden(masker, "report.txt", note))
+            zf.writestr("report.json", report_json)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # never leave half a zip behind
+        raise
     os.replace(tmp, target)
     return skipped
+
+
+class Artifacts(NamedTuple):
+    """What one session left for the zip. logs: text files (zip name, path), most important first; binaries:
+    screenshots, most important first; trace_log/trace_label: the render trace of this session; captures:
+    names of this session's captures; notes: what could not be listed or read, for the "Not included" list."""
+    logs: list
+    binaries: list
+    trace_log: object
+    trace_label: str
+    captures: list
+    notes: list
+
+
+def _epoch(iso):
+    try:
+        return datetime.datetime.fromisoformat(iso).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def session_window(report, now=None):
+    """(first, last) second a file may carry to belong to the session this report describes, or None when
+    the report has no start. Written by the launcher into report["tracer"]; reports from before that were
+    written with an ISO "started" and "ended"."""
+    tracer = report.get("tracer") if isinstance(report.get("tracer"), dict) else {}
+    start = tracer.get("started_epoch")
+    if not isinstance(start, (int, float)):
+        start = _epoch(report.get("started"))
+    if start is None:
+        return None
+    end = tracer.get("ended_epoch")
+    if not isinstance(end, (int, float)):
+        end = _epoch(report.get("ended"))
+    if end is None:  # still running, or the launcher closed first: up to now
+        end = time.time() if now is None else now
+    return start - SESSION_SLACK_SECONDS, end + SESSION_SLACK_SECONDS
+
+
+CAPTURE_SAVED = re.compile(r"capture\.saved reason=(\S+) trace=.*?([^\\/]+)\.txt(?: screenshot=|\s*$)")
+
+
+def collect_session_artifacts(report, *, traces_dir, captures_dir, fallback_trace_log, audio_log, run_log,
+                              prepare_log, now=None):
+    """The files of the session `report` describes, chosen by what the session says about itself (its trace
+    folder, its start and end), never by "newest" or "latest N": a file from another session cannot get in.
+
+    Order, most important first: the render trace, the text next to every capture, the audio log, the game
+    log, the prepare log, then the screenshots (the F11 ones first). The same list serves the crash window,
+    a session the launcher lost track of, and the Report button."""
+    logs, binaries, notes, captures = [], [], [], []
+    window = session_window(report, now)
+    tracer = report.get("tracer") if isinstance(report.get("tracer"), dict) else {}
+
+    def in_window(path):
+        try:
+            return window is not None and window[0] <= Path(path).stat().st_mtime <= window[1]
+        except OSError:
+            return False
+
+    trace_log, label, reasons = None, "", {}
+    folder = tracer.get("trace_folder")
+    if isinstance(folder, str) and folder and not re.search(r"[\\/]", folder):
+        candidate = Path(traces_dir) / folder / "render_trace.log"
+        if candidate.is_file():
+            trace_log, label = candidate, f"render_traces\\{folder}\\render_trace.log"
+    elif tracer.get("on") and fallback_trace_log and in_window(fallback_trace_log):
+        trace_log, label = Path(fallback_trace_log), "render_trace.log"
+    if trace_log:
+        logs.append(("render_trace.log", trace_log))
+        try:
+            for line in read_text(trace_log).splitlines():
+                found = CAPTURE_SAVED.search(line)
+                if found:
+                    reasons[found.group(2)] = found.group(1)
+        except OSError as exc:
+            notes.append(f"{label}: {exc.strerror or exc}")
+    texts, pictures = [], []
+    if window is not None and captures_dir and Path(captures_dir).is_dir():
+        try:
+            entries = [p for p in Path(captures_dir).iterdir() if p.is_file() and in_window(p)]
+        except OSError as exc:
+            entries = []
+            notes.append(f"user\\captures could not be listed: {exc.strerror or exc}")
+        newest_first = sorted(entries, key=lambda p: p.stat().st_mtime, reverse=True)
+        texts = [p for p in newest_first if p.suffix.lower() == ".txt"]
+        pictures = [p for p in newest_first if p.suffix.lower() == ".png"]
+        captures = [p.name for p in newest_first if p.suffix.lower() in (".txt", ".png")]
+    logs += [(f"captures/{p.name}", p) for p in texts]
+    if audio_log and in_window(audio_log):
+        logs.append(("audio_debug.log", Path(audio_log)))
+    for name, path in (("last_run.log", run_log), ("prepare.log", prepare_log)):
+        if path and Path(path).is_file():
+            logs.append((name, Path(path)))
+    hotkey = [p for p in pictures if reasons.get(p.stem) == "hotkey_f11"]
+    binaries = [(f"captures/{p.name}", p) for p in hotkey + [p for p in pictures if p not in hotkey]]
+    return Artifacts(logs, binaries, trace_log, label, captures, notes)
 
 
 def mark_unfinished(folder):

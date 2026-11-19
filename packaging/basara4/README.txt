@@ -52,11 +52,15 @@ Controller
   as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
 
 Problems
-  Attach user\last_run.log (and user\prepare.log if the preparation failed) to your report.
+  After a crash, press Save report in the window that appears. It makes one zip in user\reports and shows it
+  in a folder window; drag that zip into your post on Discord. The zip holds your PC specs, settings and the
+  logs of that session with your account and folder names hidden, and no crash dump.
 
-Audio problems (missing music or voices)
-  Tick "Audio debug log" in the launcher and play until the problem happens. user\audio_debug.log has one line
-  per audio event: the sound ports, the sound-engine voices (what type, how long, whether they reach the
-  output), loud/silent windows, and the sound files and stages opened. Send that file with last_run.log.
-  The previous run's log is kept as audio_debug.previous.log. A log stops growing at 64 MB.
-  To read it yourself: python tools/audio_log_summary.py user/audio_debug.log (from the source repository).
+Graphics, shader and audio problems (a glitch, missing music or voices)
+  Tick Tracer in the launcher and play until the problem happens. Press F11 when you see it (it saves a
+  screenshot and the state of the frame), close the game, and press Report next to Tracer. The zip then also
+  holds the whole render trace, the audio log (user\audio_debug.log, one line per audio event), every F11
+  capture of that session, and a note of anything left out. Only files of that session go in, and the zip stays
+  below 9 MB: text first, screenshots last, with a list of what did not fit.
+  Raw audio (WAV) never goes in the zip. "+ WAV capture" is for developers.
+  To read the audio log yourself: python tools/audio_log_summary.py user/audio_debug.log (from the source repository).
