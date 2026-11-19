@@ -110,7 +110,7 @@ TEXT = {
     "not_started": "The mapper could not start: {reason}",
     "busy": "Finish or cancel the mapping in this window first.",
     "set": "not set", "skipped": "skipped", "no_input": "skipped (no input)", "waiting": "press now",
-    "map_all": "Map all", "map_sticks": "Map sticks", "skip": "Skip", "cancel": "Cancel", "reset": "Reset",
+    "map_all": "Map all", "map_sticks": "Map sticks", "map_sticks_only": "Map sticks only", "skip": "Skip", "cancel": "Cancel", "reset": "Reset",
     "done": "Done", "use": "Use this controller",
     "kind_xbox": "{name}: buttons are shown with their Xbox names.",
     "kind_playstation": "{name}: buttons are shown with their PlayStation names.",
@@ -325,11 +325,14 @@ class ControllerWindow(tk.Toplevel):
         self.buttons.pack(side="bottom", fill="x")
         self.map_all = ttk.Button(self.buttons, text=TEXT["map_sticks" if sticks_only else "map_all"],
                                   command=self.start)
+        # Map sticks only: the four stick entries, what the main window's own button used to start
+        self.map_sticks = ttk.Button(self.buttons, text=TEXT["map_sticks_only"], command=self.start_sticks_only)
+        self.temp_sticks = False  # Map sticks only switched the list to the sticks for one run
         self.skip = ttk.Button(self.buttons, text=TEXT["skip"], command=lambda: self._send("skip"))
         self.cancel = ttk.Button(self.buttons, text=TEXT["cancel"], command=lambda: self._send("cancel"))
         self.reset = ttk.Button(self.buttons, text=TEXT["reset"], command=self._reset)
         self.done = ttk.Button(self.buttons, text=TEXT["done"], command=self._done)
-        for button in (self.map_all, self.skip, self.cancel, self.reset):
+        for button in (self.map_all, self.map_sticks, self.skip, self.cancel, self.reset):
             button.pack(side="left", padx=(0, 8))
         self.done.pack(side="right")
 
@@ -409,6 +412,23 @@ class ControllerWindow(tk.Toplevel):
             self.map_all.config(text=TEXT["map_sticks" if sticks_only else "map_all"])
             self._fill_rows()
         return True
+
+    def start_sticks_only(self):
+        """Map sticks only: the same run the main window's "Map sticks only" button started (the mapper gets
+        --sticks and the list shows the four stick entries). When the run ends the window is as it was before."""
+        if self.mapper:
+            return
+        was_sticks_only = self.sticks_only
+        self.set_sticks_only(True)
+        self.temp_sticks = not was_sticks_only
+        self.start()
+        if not self.mapper:  # the mapper could not start: nothing runs, so nothing to give back later
+            self._leave_temporary_sticks()
+
+    def _leave_temporary_sticks(self):
+        if self.temp_sticks:
+            self.temp_sticks = False
+            self.set_sticks_only(False)
 
     # ---- the mapper ----
     def start(self):
@@ -510,6 +530,7 @@ class ControllerWindow(tk.Toplevel):
             if not explained:
                 self._say(TEXT["ended"])
             self._show_state("idle")
+            self._leave_temporary_sticks()
 
     @staticmethod
     def _step(target):
@@ -544,12 +565,12 @@ class ControllerWindow(tk.Toplevel):
             self.detail.config(text="")
 
     def _show_state(self, state):
-        """idle: Map all, Reset, Done. mapping: Skip, Cancel. review: Done (saves), Cancel.
+        """idle: Map all, Map sticks only, Reset, Done. mapping: Skip, Cancel. review: Done (saves), Cancel.
         check: Cancel (the check's own buttons lead on to review)."""
         self.state = state
-        enabled = {"idle": {self.map_all, self.reset, self.done}, "mapping": {self.skip, self.cancel},
+        enabled = {"idle": {self.map_all, self.map_sticks, self.reset, self.done}, "mapping": {self.skip, self.cancel},
                    "review": {self.done, self.cancel}, "check": {self.cancel}}[state]
-        for button in (self.map_all, self.skip, self.cancel, self.reset, self.done):
+        for button in (self.map_all, self.map_sticks, self.skip, self.cancel, self.reset, self.done):
             button.state(["!disabled"] if button in enabled else ["disabled"])
 
     # ---- the stick panel ----

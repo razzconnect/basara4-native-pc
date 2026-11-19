@@ -122,7 +122,7 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 ## Dukungan Controller
 
 - **XInput & SDL3**: Stik Xbox One/Series, DualShock 4, DualSense, dan Nintendo Switch Pro langsung terbaca otomatis.
-- **Mapping Controller**: XInput dan gamepad lain yang didukung SDL bisa langsung digunakan. Klik **Map controller** untuk mengubah tombol/stik di jendela Controller (**Map all**, tekan tiap tombol saat diminta, **Done** menyimpan); pilih controller jika lebih dari satu terhubung. Mapping controller lain tetap tersimpan di `user\gamepad_mapping.txt`. Untuk menjadikan Xbox A sebagai Circle, tekan Xbox B pada prompt Cross dan Xbox A pada prompt Circle.
+- **Mapping Controller**: XInput dan gamepad lain yang didukung SDL bisa langsung digunakan. Klik **Controller Mapping** untuk mengubah tombol/stik di jendela Controller (**Map all** atau **Map sticks only**, tekan tiap tombol saat diminta, **Done** menyimpan); pilih controller jika lebih dari satu terhubung. Mapping controller lain tetap tersimpan di `user\gamepad_mapping.txt`. Untuk menjadikan Xbox A sebagai Circle, tekan Xbox B pada prompt Cross dan Xbox A pada prompt Circle.
 
 ---
 

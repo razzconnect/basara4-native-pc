@@ -894,7 +894,7 @@ class ControlsTests(unittest.TestCase):
             window.focus_force()
             window.event_generate("<Key>", keysym="k", when="now")   # ... to K
             self.assertEqual(buttons["Mouse Left"].cget("text"), "K")
-            buttons["💾 Simpan Pengaturan"].invoke()
+            buttons["💾 Save Settings"].invoke()
             saved = json.loads(paths.config.read_text(encoding="utf-8"))
             self.assertEqual((saved["keymap"]["square"], saved["keymap"]["cross"]), ("K", "J"))
             self.assertEqual((saved["mouse_camera"], saved["mouse_sens"]), (True, 100))
@@ -906,8 +906,8 @@ class ControlsTests(unittest.TestCase):
                 (app, paths, _game, _), mock.patch.object(bl.messagebox, "showinfo"):
             window = self.keymap_window(app)
             buttons = self.buttons(window)
-            buttons["🔄 Reset ke Default PC"].invoke()
-            self.buttons(window)["💾 Simpan Pengaturan"].invoke()
+            buttons["🔄 Reset to PC Default"].invoke()
+            self.buttons(window)["💾 Save Settings"].invoke()
             saved = json.loads(paths.config.read_text(encoding="utf-8"))
             self.assertEqual(saved["keymap"], bl.DEFAULT_PC_KEYMAP)
             self.assertEqual((saved["mouse_camera"], saved["mouse_sens"]), (True, 100))

@@ -28,7 +28,7 @@ class TracerOptionTests(unittest.TestCase):
             report, tracer = widget(app, ttk.Button, "Report"), widget(app, ttk.Checkbutton, "Tracer")
             self.assertIs(report.master, tracer.master)  # the same row as the option
             siblings = {str(w.cget("text")) for w in report.master.winfo_children() if isinstance(w, ttk.Button)}
-            self.assertNotIn("Map controller", siblings)  # not in the controller row
+            self.assertNotIn("Controller Mapping", siblings)  # not in the controller row
             # The button asks what the player saw first (on_report), which then makes the report.
             with mock.patch.object(bl.Launcher, "on_report") as ask, mock.patch.object(bl.Launcher, "send_report") as send:
                 report.invoke()

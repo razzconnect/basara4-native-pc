@@ -632,20 +632,20 @@ DEFAULT_PC_KEYMAP = {
 }
 
 ACTION_DESCRIPTIONS = [
-    ("square", "Normal Attack (Serangan Biasa)", "Kotak / Square"),
-    ("triangle", "Special Skill 1 (Skill Utama)", "Segitiga / Triangle"),
-    ("cross", "Jump (Lompat)", "Silang / Cross"),
-    ("circle", "Basara Attack (Ultimate)", "Lingkaran / Circle"),
-    ("l1", "Guard / Tangkis / Dash", "L1"),
-    ("r1", "Special Skill 2 (Skill Tambahan)", "R1"),
-    ("r2", "Special Skill 3 (Skill Karakter)", "R2"),
+    ("square", "Normal Attack", "Square"),
+    ("triangle", "Special Skill 1 (Main Skill)", "Triangle"),
+    ("cross", "Jump", "Cross"),
+    ("circle", "Basara Attack (Ultimate)", "Circle"),
+    ("l1", "Guard / Block / Dash", "L1"),
+    ("r1", "Special Skill 2 (Extra Skill)", "R1"),
+    ("r2", "Special Skill 3 (Character Skill)", "R2"),
     ("l2", "Sengoku Drive / Boost", "L2"),
     ("touchpad", "Taunt / Provoke", "Touchpad / Tab"),
     ("options", "Pause / In-Game Menu", "Options / Enter"),
-    ("up", "D-Pad Up (Navigasi / Perintah)", "D-Pad Atas"),
-    ("down", "D-Pad Down (Navigasi / Perintah)", "D-Pad Bawah"),
-    ("left", "D-Pad Left (Navigasi / Perintah)", "D-Pad Kiri"),
-    ("right", "D-Pad Right (Navigasi / Perintah)", "D-Pad Kanan"),
+    ("up", "D-Pad Up (Navigate / Command)", "D-Pad Up"),
+    ("down", "D-Pad Down (Navigate / Command)", "D-Pad Down"),
+    ("left", "D-Pad Left (Navigate / Command)", "D-Pad Left"),
+    ("right", "D-Pad Right (Navigate / Command)", "D-Pad Right"),
     ("l3", "L3 Action", "L3"),
     ("r3", "R3 Action / Lock-on", "R3"),
 ]
@@ -782,7 +782,7 @@ def driver_version_text(vendor, raw):
 
 def gpu_choices(probe):
     """The Graphics card list: Auto, then each GPU as (index, display_name, is_discrete)."""
-    gpus = [(-1, "Auto (Prioritaskan GPU Diskrit)", True)]
+    gpus = [(-1, "Auto (Prefer discrete GPU)", True)]
     for i, (name, kind, _api) in enumerate(probe.devices):
         is_disc = (kind == 2)
         kind_tag = "dGPU" if is_disc else ("iGPU" if kind == 1 else "GPU")
@@ -892,6 +892,32 @@ def describe_vulkan(probe):
     return ", ".join(parts) + f"; needs {need}"
 
 
+def controller_icon(master, color):
+    """A small game controller drawn with Tk itself, pixel by pixel in `color` (no image file, no font, no
+    dependency, nothing copied from anywhere): 22 x 13 pixels and 4 clear ones on the right, to keep the text
+    of the button off it. The D-pad and the buttons are left open."""
+    filled = set()
+
+    def fill(x1, y1, x2, y2):
+        filled.update((x, y) for x in range(x1, x2 + 1) for y in range(y1, y2 + 1))
+
+    fill(4, 0, 17, 0)      # the top edge
+    fill(2, 1, 19, 1)
+    fill(1, 2, 20, 8)      # the body
+    fill(2, 9, 6, 11)      # the left grip
+    fill(15, 9, 19, 11)    # the right grip
+    fill(3, 12, 5, 12)
+    fill(16, 12, 18, 12)
+    for cell in ((5, 3), (5, 4), (5, 5), (5, 6), (5, 7), (3, 5), (4, 5), (6, 5), (7, 5),   # the D-pad
+                 (16, 3), (14, 5), (18, 5), (16, 7),                                      # the four buttons
+                 (9, 5), (12, 5)):                                                        # the small buttons
+        filled.discard(cell)
+    image = tk.PhotoImage(master=master, width=26, height=13)
+    for x, y in sorted(filled):
+        image.put(color, to=(x, y))
+    return image
+
+
 VULKAN = probe_vulkan()
 SYSTEM_GPUS = gpu_choices(VULKAN)
 DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless"),
@@ -902,8 +928,8 @@ NATIVE_SIZE = (1920, 1080)
 # The size shown is the render size (basara4_patches.RESOLUTION_SIZES), so the label always matches it.
 RESOLUTIONS = [
     (f"{w} x {h}  ({desc})", key)
-    for key, desc in (("360p", "360p - Ultra Kentang"), ("480p", "480p - Super Kentang"),
-                      ("540p", "540p - Spek Kentang"), ("720p", "720p HD"), ("900p", "900p HD+"),
+    for key, desc in (("360p", "360p - Ultra Potato"), ("480p", "480p - Super Potato"),
+                      ("540p", "540p - Potato Specs"), ("720p", "720p HD"), ("900p", "900p HD+"),
                       ("native", "1080p Native"), ("1440p", "1440p 2K"), ("1800p", "1800p QHD+"),
                       ("4K", "4K UHD"))
     for w, h in [basara4_patches.RESOLUTION_SIZES.get(key, NATIVE_SIZE)]
@@ -1161,7 +1187,12 @@ class Launcher(tk.Tk):
         right.grid(row=0, column=1, sticky="nsew", padx=(0, 16), pady=16)
         right.columnconfigure(1, weight=1)
         r = 0
-        ttk.Label(right, text="Game", style="Head.TLabel").grid(row=r, column=0, columnspan=3, sticky="w")
+        ttk.Label(right, text="Game", style="Head.TLabel").grid(row=r, column=0, sticky="w")
+        # Cheats and Manage DLC are about the game: they sit in its section, at the right of the heading
+        game_tools = ttk.Frame(right, style="Panel.TFrame")
+        game_tools.grid(row=r, column=1, columnspan=2, sticky="e")
+        ttk.Button(game_tools, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
+        ttk.Button(game_tools, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
         r += 1
         self.game_var = tk.StringVar(value=self.cfg["game"])
         self.game_var.trace_add("write", lambda *_: self._refresh_image_label())
@@ -1259,9 +1290,9 @@ class Launcher(tk.Tk):
         input_mode_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 6))
         ttk.Label(input_mode_frame, text="Input Mode:", style="Panel.TLabel").pack(side="left", padx=(0, 10))
         self.input_mode_var = tk.StringVar(value=self.cfg.get("input_mode", "controller"))
-        ttk.Radiobutton(input_mode_frame, text="🎮 Controller Utama (Stik 1 = P1, Stik 2 = P2)",
+        ttk.Radiobutton(input_mode_frame, text="🎮 Controller (Stick 1 = P1, Stick 2 = P2)",
                         value="controller", variable=self.input_mode_var).pack(side="left", padx=(0, 14))
-        ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stik 1 = P2)",
+        ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stick 1 = P2)",
                         value="kbm_coop", variable=self.input_mode_var).pack(side="left")
         r += 1
 
@@ -1269,20 +1300,19 @@ class Launcher(tk.Tk):
         tools1 = ttk.Frame(right, style="Panel.TFrame")
         tools1.grid(row=r, column=0, columnspan=3, sticky="w", pady=(4, 4))
         ttk.Button(tools1, text="⌨️ Keyboard & Mouse Controls", command=self.open_keymap_ui).pack(side="left", padx=(0, 8))
-        ttk.Button(tools1, text="Map controller", command=lambda: self.map_pad([])).pack(side="left", padx=(0, 8))
-        ttk.Button(tools1, text="Map sticks only", command=lambda: self.map_pad(["--sticks"])).pack(side="left", padx=(0, 8))
-        ttk.Button(tools1, text="Reset mapping", command=self.reset_map).pack(side="left")
+        # One button: the Controller window has Map all, Map sticks only and Reset
+        self._pad_icon = controller_icon(self, FG)
+        ttk.Button(tools1, text="Controller Mapping", image=self._pad_icon, compound="left",
+                   command=lambda: self.map_pad([])).pack(side="left")
         r += 1
 
         # Row 2 of tools
         tools2 = ttk.Frame(right, style="Panel.TFrame")
         tools2.grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
         ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 6))
         ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 6))
         ttk.Button(tools2, text="Open captures", command=self.open_captures).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
+        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left")
         r += 1
         r += 1
         self.pad_label = ttk.Label(right, text="", style="Muted.TLabel")
@@ -1429,7 +1459,7 @@ class Launcher(tk.Tk):
             ttk.Checkbutton(
                 frame, text=f"{basara4_cheats.CHEATS[cheat_id]['name']}  ·  by {basara4_cheats.AUTHOR}",
                 variable=var).pack(anchor="w", pady=4)
-        ttk.Label(frame, text="Cave dan hook tiap cheat dipisahkan agar semuanya bisa aktif bersamaan.",
+        ttk.Label(frame, text="Each cheat keeps its own code cave and hook, so all of them can be on together.",
                   style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
         source_row = ttk.Frame(frame, style="Panel.TFrame")
@@ -1828,7 +1858,7 @@ class Launcher(tk.Tk):
         self.version_label.config(text=f"v{VERSION}  (Update: {tag})", fg=GOLD)
         self.update_btn = tk.Button(
             self.mark_frame,
-            text=f"Update ke {tag}",
+            text=f"Update to {tag}",
             bg=GOLD,
             fg=BG,
             font=("Segoe UI", 9, "bold"),
@@ -1841,7 +1871,7 @@ class Launcher(tk.Tk):
         self.update_btn.pack(pady=(4, 0))
 
     def check_update_manual(self):
-        self.status.config(text="Memeriksa pembaruan...")
+        self.status.config(text="Checking for updates...")
 
         def run():
             info = check_latest_release()
@@ -1855,7 +1885,7 @@ class Launcher(tk.Tk):
             else:
                 self.after(0, lambda: (
                     self.status.config(text="Ready"),
-                    messagebox.showinfo("Update", f"Anda sudah menggunakan versi terbaru (v{VERSION}).")
+                    messagebox.showinfo("Update", f"You are already on the latest version (v{VERSION}).")
                 ))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1866,11 +1896,11 @@ class Launcher(tk.Tk):
         tag = self.update_info["tag"]
         size_mb = self.update_info["size"] / (1024 * 1024)
         if messagebox.askyesno(
-            "Update Tersedia",
-            f"Versi baru {tag} tersedia di GitHub!\nUkuran unduhan: ~{size_mb:.1f} MB.\n\n"
-            "Launcher akan mengunduh dan menerapkan update secara otomatis.\n"
-            "Data game (folder game\\) dan save data Anda (folder user\\) TIDAK akan terhapus.\n\n"
-            "Unduh dan pasang update sekarang?"
+            "Update Available",
+            f"Version {tag} is available on GitHub!\nDownload size: ~{size_mb:.1f} MB.\n\n"
+            "The launcher will download and apply the update automatically.\n"
+            "Your game data (the game\\ folder) and save data (the user\\ folder) will NOT be deleted.\n\n"
+            "Download and install the update now?"
         ):
             self._download_and_apply_update(self.update_info)
 
@@ -1882,8 +1912,8 @@ class Launcher(tk.Tk):
         win.resizable(False, False)
         win.grab_set()
 
-        tk.Label(win, text=f"Mengunduh Pembaruan {info['tag']}...", bg=BG, fg=GOLD, font=("Segoe UI", 11, "bold")).pack(pady=(18, 8))
-        status_lbl = tk.Label(win, text="Menghubungkan ke GitHub...", bg=BG, fg=FG, font=("Segoe UI", 9))
+        tk.Label(win, text=f"Downloading update {info['tag']}...", bg=BG, fg=GOLD, font=("Segoe UI", 11, "bold")).pack(pady=(18, 8))
+        status_lbl = tk.Label(win, text="Connecting to GitHub...", bg=BG, fg=FG, font=("Segoe UI", 9))
         status_lbl.pack(pady=(0, 8))
 
         prog = ttk.Progressbar(win, orient="horizontal", length=360, mode="determinate")
@@ -1913,7 +1943,7 @@ class Launcher(tk.Tk):
                             tot_mb = total / (1024 * 1024)
                             win.after(0, lambda p=percent, c=cur_mb, t=tot_mb: (
                                 prog.configure(value=p),
-                                status_lbl.configure(text=f"Mengunduh: {c:.1f} MB / {t:.1f} MB ({p}%)")
+                                status_lbl.configure(text=f"Downloading: {c:.1f} MB / {t:.1f} MB ({p}%)")
                             ))
 
                 win.after(0, lambda: self._apply_update_and_restart(win))
@@ -1935,13 +1965,13 @@ class Launcher(tk.Tk):
             "setlocal enabledelayedexpansion\r\n"
             "title Basara 4 PC - Updater\r\n"
             "cd /d \"%~dp0\"\r\n"
-            "echo Menunggu launcher menutup...\r\n"
+            "echo Waiting for the launcher to close...\r\n"
             "timeout /t 2 /nobreak >nul\r\n"
             "set \"ZIP=%~dp0updates\\update.zip\"\r\n"
             "set \"EXTRACT=%~dp0updates\\extract\"\r\n"
             "set \"DEST=%~dp0..\"\r\n"
             "if not exist \"!ZIP!\" exit /b 1\r\n"
-            "echo Mengekstrak pembaruan...\r\n"
+            "echo Extracting the update...\r\n"
             "if exist \"!EXTRACT!\" rmdir /s /q \"!EXTRACT!\"\r\n"
             "mkdir \"!EXTRACT!\"\r\n"
             "tar -xf \"!ZIP!\" -C \"!EXTRACT!\" 2>nul\r\n"
@@ -1954,7 +1984,7 @@ class Launcher(tk.Tk):
             "        if exist \"%%~fD\\Sengoku Basara 4.exe\" set \"SRC=%%~fD\"\r\n"
             "    )\r\n"
             ")\r\n"
-            "echo Menerapkan file baru...\r\n"
+            "echo Applying the new files...\r\n"
             "if exist \"!SRC!\\_internal\" xcopy /e /y /i \"!SRC!\\_internal\" \"!DEST!\\_internal\" >nul\r\n"
             "if exist \"!SRC!\\bin\" xcopy /e /y /i \"!SRC!\\bin\" \"!DEST!\\bin\" >nul\r\n"
             "if exist \"!SRC!\\scripts\" xcopy /e /y /i \"!SRC!\\scripts\" \"!DEST!\\scripts\" >nul\r\n"
@@ -1965,7 +1995,7 @@ class Launcher(tk.Tk):
             "if exist \"!SRC!\\LICENSE\" copy /y \"!SRC!\\LICENSE\" \"!DEST!\\\" >nul\r\n"
             "rmdir /s /q \"!EXTRACT!\" 2>nul\r\n"
             "del /f /q \"!ZIP!\" 2>nul\r\n"
-            "echo Memulai versi baru...\r\n"
+            "echo Starting the new version...\r\n"
             "start \"\" \"!DEST!\\Sengoku Basara 4.exe\"\r\n"
             "del /f /q \"%~f0\" 2>nul\r\n"
             "exit /b 0\r\n"
@@ -2516,17 +2546,17 @@ class Launcher(tk.Tk):
         top_frame = ttk.Frame(win, style="Panel.TFrame", padding=12)
         top_frame.pack(fill="x", padx=14, pady=(12, 6))
 
-        tk.Label(top_frame, text="⚙️ Pengaturan Kontrol Keyboard & Mouse", bg=PANEL, fg=GOLD, font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        tk.Label(top_frame, text="Klik tombol untuk mengubah tombol pemetaan. Tekan tombol Keyboard atau Mouse untuk mengikat.", bg=PANEL, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        tk.Label(top_frame, text="⚙️ Keyboard & Mouse Control Settings", bg=PANEL, fg=GOLD, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        tk.Label(top_frame, text="Click a button to change its binding. Press a keyboard key or a mouse button to bind it.", bg=PANEL, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
         # Mouse Settings Bar
         mouse_bar = ttk.Frame(top_frame, style="Panel.TFrame")
         mouse_bar.pack(fill="x", pady=(10, 0))
-        ttk.Checkbutton(mouse_bar, text="Aktifkan Kamera Mouse (Mouse Look)", variable=mouse_cam_var).pack(side="left")
+        ttk.Checkbutton(mouse_bar, text="Enable Mouse Look (mouse camera)", variable=mouse_cam_var).pack(side="left")
 
         sens_frame = ttk.Frame(mouse_bar, style="Panel.TFrame")
         sens_frame.pack(side="right")
-        ttk.Label(sens_frame, text="Sensitivitas: ", style="Panel.TLabel").pack(side="left")
+        ttk.Label(sens_frame, text="Sensitivity: ", style="Panel.TLabel").pack(side="left")
         sens_lbl = ttk.Label(sens_frame, text=f"{mouse_sens_var.get()}%", style="Panel.TLabel", width=5)
         sens_lbl.pack(side="right")
         def on_sens_scroll(val):
@@ -2594,7 +2624,7 @@ class Launcher(tk.Tk):
             active_listening[0] = action_name
             btn = btn_widgets.get(action_name)
             if btn:
-                btn.config(text="[ TEKAN TOMBOL... ]", bg=RED, fg="#fff")
+                btn.config(text="[ PRESS A KEY... ]", bg=RED, fg="#fff")
 
             def on_key_event(event):
                 # Translate tkinter keysym to SDL scancode name
@@ -2664,7 +2694,7 @@ class Launcher(tk.Tk):
         notice_frame.pack(fill="x", pady=(8, 4), padx=4)
         tk.Label(
             notice_frame,
-            text="ℹ️ Pergerakan Karakter otomatis terikat pada W, A, S, D (Standar PC). Kamera mouse mengontrol analog kanan.",
+            text="ℹ️ Character movement is bound to W, A, S, D (PC standard). The mouse camera controls the right analog stick.",
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 8, "italic")
@@ -2682,7 +2712,7 @@ class Launcher(tk.Tk):
             sens_lbl.config(text="100%")
             for k, b in btn_widgets.items():
                 b.config(text=format_binding_display(cur_map.get(k, "")), bg="#2c2824", fg=GOLD)
-            messagebox.showinfo("Reset Preset", "Pengaturan kontrol berhasil dikembalikan ke Preset Default PC!", parent=win)
+            messagebox.showinfo("Reset Preset", "The controls were reset to the PC default preset!", parent=win)
 
         def save_and_close():
             self.cfg["keymap"] = cur_map
@@ -2690,17 +2720,17 @@ class Launcher(tk.Tk):
             self.cfg["mouse_sens"] = int(mouse_sens_var.get())
             save_config(self.cfg)
             win.destroy()
-            messagebox.showinfo("Tersimpan", "Pengaturan kontrol Keyboard & Mouse berhasil disimpan!", parent=self)
+            messagebox.showinfo("Saved", "The Keyboard & Mouse controls were saved!", parent=self)
 
-        ttk.Button(bottom_bar, text="🔄 Reset ke Default PC", command=reset_defaults).pack(side="left", padx=4)
-        ttk.Button(bottom_bar, text="Batal", command=win.destroy).pack(side="right", padx=4)
-        ttk.Button(bottom_bar, text="💾 Simpan Pengaturan", style="Play.TButton", command=save_and_close).pack(side="right", padx=4)
+        ttk.Button(bottom_bar, text="🔄 Reset to PC Default", command=reset_defaults).pack(side="left", padx=4)
+        ttk.Button(bottom_bar, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(bottom_bar, text="💾 Save Settings", style="Play.TButton", command=save_and_close).pack(side="right", padx=4)
 
     def _check_exit_error(self, code):
         if code in (0, None) or not LOG.is_file():
             return None
         self._show_crash_dialog(code)
-        return f"Game crash (exit code {code & 0xFFFFFFFF:#x}). Silakan cek jendela diagnostik."
+        return f"Game crash (exit code {code & 0xFFFFFFFF:#x}). Please check the diagnostics window."
 
     def _poll(self):
         if self.proc and self.proc.poll() is not None:

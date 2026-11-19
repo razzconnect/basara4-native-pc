@@ -29,7 +29,7 @@ Launcher options
   Upscaling         Off, or FSR 1 to the window size
   Frame limit       60 (default), 90, 120, 144, 165, 240, Unlimited
   VSync, sharpening (RCAS), anisotropic filtering 2x-16x
-  Controller        Map controller / Map sticks only / Reset mapping
+  Controller        Controller Mapping (Map all, Map sticks only, Reset)
   Credits           shows NOTICE.md
 
 Frame rates above 60
@@ -47,7 +47,7 @@ In-game menu
   Insert, or R3 + L2 on the controller. F12 takes a screenshot. L1/R1 or Q/E switch tabs.
 
 Controller
-  XInput and SDL-supported pads work directly. "Map controller" opens the Controller window: press
+  XInput and SDL-supported pads work directly. "Controller Mapping" opens the Controller window: press
   Map all, press each button when it is asked for, then Done saves. It can customize any pad, lets you
   select one when multiple are connected, and keeps mappings for other pads. To make Xbox A act
   as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.

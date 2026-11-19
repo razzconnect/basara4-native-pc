@@ -19,23 +19,23 @@ typedef struct { const char *sdl, *prompt; int axis; } Target;
  * SDL's a/b/x/y are positions (south, east, west, north), which the game reads as Cross, Circle, Square
  * and Triangle. Under --ui only the entry ids are sent; the window names them for the controller type. */
 static const Target targets[] = {
-    {"a", "Tombol BAWAH (A / Cross)  -> Cross di game", 0},
-    {"b", "Tombol KANAN (B / Circle)  -> Circle di game", 0},
-    {"x", "Tombol KIRI (X / Square)  -> Square di game", 0},
-    {"y", "Tombol ATAS (Y / Triangle)  -> Triangle di game", 0},
-    {"leftshoulder", "Bahu kiri atas (LB / L1)  -> L1", 0},
-    {"rightshoulder", "Bahu kanan atas (RB / R1)  -> R1", 0},
-    {"lefttrigger", "Pelatuk kiri bawah (LT / L2)  -> L2", 0},
-    {"righttrigger", "Pelatuk kanan bawah (RT / R2)  -> R2", 0},
-    {"back", "Tombol kecil kiri (View / Share / Select)  -> touchpad (menu pause)", 0},
-    {"start", "Tombol kecil kanan (Menu / Options / Start)  -> Options", 0},
-    {"leftstick", "Tekan stick kiri ke dalam (LS / L3)  -> L3", 0},
-    {"rightstick", "Tekan stick kanan ke dalam (RS / R3)  -> R3", 0},
-    {"guide", "Tombol tengah / logo (diam 15 detik bila tidak ada)", 0},
-    {"dpup", "D-PAD ATAS", 0},                     {"dpdown", "D-PAD BAWAH", 0},
-    {"dpleft", "D-PAD KIRI", 0},                   {"dpright", "D-PAD KANAN", 0},
-    {"leftx", "STICK KIRI ke KANAN", 1},           {"lefty", "STICK KIRI ke BAWAH", 1},
-    {"rightx", "STICK KANAN ke KANAN", 1},         {"righty", "STICK KANAN ke BAWAH", 1},
+    {"a", "Bottom button (A / Cross)  -> Cross in the game", 0},
+    {"b", "Right button (B / Circle)  -> Circle in the game", 0},
+    {"x", "Left button (X / Square)  -> Square in the game", 0},
+    {"y", "Top button (Y / Triangle)  -> Triangle in the game", 0},
+    {"leftshoulder", "Upper left shoulder (LB / L1)  -> L1", 0},
+    {"rightshoulder", "Upper right shoulder (RB / R1)  -> R1", 0},
+    {"lefttrigger", "Lower left trigger (LT / L2)  -> L2", 0},
+    {"righttrigger", "Lower right trigger (RT / R2)  -> R2", 0},
+    {"back", "Small left button (View / Share / Select)  -> touchpad (pause menu)", 0},
+    {"start", "Small right button (Menu / Options / Start)  -> Options", 0},
+    {"leftstick", "Press the left stick in (LS / L3)  -> L3", 0},
+    {"rightstick", "Press the right stick in (RS / R3)  -> R3", 0},
+    {"guide", "Centre button / logo (leave it alone for 15 seconds if there is none)", 0},
+    {"dpup", "D-PAD UP", 0},                     {"dpdown", "D-PAD DOWN", 0},
+    {"dpleft", "D-PAD LEFT", 0},                   {"dpright", "D-PAD RIGHT", 0},
+    {"leftx", "LEFT STICK to RIGHT", 1},           {"lefty", "LEFT STICK to DOWN", 1},
+    {"rightx", "RIGHT STICK to RIGHT", 1},         {"righty", "RIGHT STICK to DOWN", 1},
 };
 #define TARGET_COUNT ((int)(sizeof targets / sizeof *targets))
 enum { MAX_AXES = 16, BINDING_SIZE = 16 };
@@ -282,7 +282,7 @@ static int diagnose_xinput(void) {
     int connected_slots = 0;
     int input_changes = 0;
     const Uint64 deadline = SDL_GetTicks() + 15000;
-    printf("XInput native: pantau slot 0-%d selama 15 detik.\n", XUSER_MAX_COUNT - 1);
+    printf("Native XInput: watching slots 0-%d for 15 seconds.\n", XUSER_MAX_COUNT - 1);
     fflush(stdout);
     while (SDL_GetTicks() < deadline) {
         for (DWORD slot = 0; slot < XUSER_MAX_COUNT; ++slot) {
@@ -290,7 +290,7 @@ static int diagnose_xinput(void) {
             const DWORD result = XInputGetState(slot, &current);
             if (result != 0) {
                 if (connected[slot]) {
-                    printf("XInput slot %lu terputus.\n", (unsigned long)slot);
+                    printf("XInput slot %lu disconnected.\n", (unsigned long)slot);
                     connected[slot] = 0;
                 }
                 continue;
@@ -299,7 +299,7 @@ static int diagnose_xinput(void) {
                 connected[slot] = 1;
                 ++connected_slots;
                 previous[slot] = current;
-                printf("XInput slot %lu terhubung.\n", (unsigned long)slot);
+                printf("XInput slot %lu connected.\n", (unsigned long)slot);
             } else if (memcmp(&current.Gamepad, &previous[slot].Gamepad, sizeof current.Gamepad)) {
                 const XINPUT_GAMEPAD *pad = &current.Gamepad;
                 printf("XInput slot %lu: buttons=0x%04x LT=%u RT=%u LX=%d LY=%d RX=%d RY=%d\n",
@@ -311,8 +311,8 @@ static int diagnose_xinput(void) {
         }
         SDL_Delay(10);
     }
-    if (!connected_slots) printf("XInput native tidak melaporkan controller terhubung.\n");
-    else if (!input_changes) printf("XInput native terhubung, tetapi tidak ada perubahan kontrol.\n");
+    if (!connected_slots) printf("Native XInput reports no connected controller.\n");
+    else if (!input_changes) printf("Native XInput is connected, but no control changed.\n");
     return input_changes;
 }
 #endif
@@ -325,7 +325,7 @@ static int diagnose(SDL_Joystick *j, SDL_JoystickID id) {
     Sint16 *previous_axes = calloc((size_t)(axes ? axes : 1), sizeof *previous_axes);
     Uint8 *previous_hats = calloc((size_t)(hats ? hats : 1), sizeof *previous_hats);
     if (!previous_buttons || !previous_axes || !previous_hats) {
-        printf("Memori tidak cukup untuk mode diagnosis.\n");
+        printf("Not enough memory for the diagnosis mode.\n");
         free(previous_buttons);
         free(previous_axes);
         free(previous_hats);
@@ -339,20 +339,20 @@ static int diagnose(SDL_Joystick *j, SDL_JoystickID id) {
     if (is_gamepad) {
         gamepad = SDL_OpenGamepad(id);
         if (!gamepad) {
-            printf("SDL mengenali gamepad, tetapi gagal membukanya: %s\n", SDL_GetError());
+            printf("SDL recognises the gamepad but could not open it: %s\n", SDL_GetError());
         } else {
             printf("SDL Gamepad API: %s\n", SDL_GetGamepadName(gamepad));
         }
     } else {
-        printf("SDL Gamepad API: perangkat ini tidak dikenali sebagai gamepad standar.\n");
+        printf("SDL Gamepad API: this device is not recognised as a standard gamepad.\n");
     }
 
     SDL_UpdateJoysticks();
     for (int b = 0; b < buttons; ++b) previous_buttons[b] = SDL_GetJoystickButton(j, b);
     for (int a = 0; a < axes; ++a) previous_axes[a] = (Sint16)SDL_GetJoystickAxis(j, a);
     for (int h = 0; h < hats; ++h) previous_hats[h] = SDL_GetJoystickHat(j, h);
-    printf("Diagnosis 15 detik: tekan tombol, gerakkan D-pad dan stick pada controller terpilih.\n");
-    printf("Input joystick dilaporkan dengan nomor index mulai dari 0; input gamepad memakai nama standar SDL.\n");
+    printf("15-second diagnosis: press buttons, move the D-pad and the sticks on the chosen controller.\n");
+    printf("Joystick input is reported by index number starting at 0; gamepad input uses the standard SDL names.\n");
     fflush(stdout);
 
     int changes = 0;
@@ -406,7 +406,7 @@ static int diagnose(SDL_Joystick *j, SDL_JoystickID id) {
         fflush(stdout);
         SDL_Delay(10);
     }
-    if (!changes) printf("Tidak ada perubahan input yang terbaca oleh SDL pada kedua API.\n");
+    if (!changes) printf("SDL read no input change on either API.\n");
 #ifdef _WIN32
     diagnose_xinput();
 #endif
@@ -534,8 +534,8 @@ static int find_stick(int target, char *out, size_t size) {
     if (verdict != STICK_OK) {
         COUNT_STICK_REJECTION();
         if (ui_mode) emit("warn", targets[target].sdl, "reason", verdict == STICK_ROTATED ? "stick_rotated" : "stick_two_axes");
-        else printf(verdict == STICK_ROTATED ? "[stick diputar atau didorong balik; dorong lurus sekali] "
-                                             : "[stick bergerak ke dua arah; dorong lurus sekali] ");
+        else printf(verdict == STICK_ROTATED ? "[the stick was spun or pushed back; push straight once] "
+                                             : "[the stick moved in two directions; push straight once] ");
         fflush(stdout);
         return FOUND_REJECTED;
     }
@@ -567,7 +567,7 @@ static int capture(int target, char *out, size_t size) {
                 char base[BINDING_SIZE];
                 binding_base(out, base);
                 if (ui_mode) emit("used", targets[target].sdl, "binding", base);
-                else printf("[%s sudah dipakai] ", base);
+                else printf("[%s is already used] ", base);
                 fflush(stdout);
             }
             if (!wait_release()) return CAP_CANCEL;
@@ -588,7 +588,7 @@ static int ask(int target) {
         snprintf(index, sizeof index, "%d", target);
         emit("prompt", targets[target].sdl, "index", index);
     } else {
-        printf("Tekan %s ... ", targets[target].prompt);
+        printf("Press %s ... ", targets[target].prompt);
         fflush(stdout);
     }
     char binding[BINDING_SIZE];
@@ -624,21 +624,21 @@ static int read_mapping_file(const char *path, MappingFile *file) {
     FILE *f = fopen(path, "r");
     if (!f) {
         if (errno == ENOENT) return 1;
-        printf("Tidak bisa membaca %s\n", path);
+        printf("Cannot read %s\n", path);
         return 0;
     }
     char line[MAX_MAPPING_LINE];
     while (fgets(line, sizeof line, f)) {
         const size_t length = strlen(line);
         if (length == sizeof line - 1 && line[length - 1] != '\n' && !feof(f)) {
-            printf("Baris mapping terlalu panjang di %s\n", path);
+            printf("A mapping line is too long in %s\n", path);
             fclose(f);
             free_mapping_file(file);
             return 0;
         }
         char *copy = malloc(length + 1);
         if (!copy) {
-            printf("Memori tidak cukup untuk membaca mapping %s\n", path);
+            printf("Not enough memory to read the mapping %s\n", path);
             fclose(f);
             free_mapping_file(file);
             return 0;
@@ -646,7 +646,7 @@ static int read_mapping_file(const char *path, MappingFile *file) {
         char **lines = realloc(file->lines, (file->count + 1) * sizeof *file->lines);
         if (!lines) {
             free(copy);
-            printf("Memori tidak cukup untuk membaca mapping %s\n", path);
+            printf("Not enough memory to read the mapping %s\n", path);
             fclose(f);
             free_mapping_file(file);
             return 0;
@@ -656,7 +656,7 @@ static int read_mapping_file(const char *path, MappingFile *file) {
         file->lines[file->count++] = copy;
     }
     if (ferror(f)) {
-        printf("Tidak bisa membaca %s\n", path);
+        printf("Cannot read %s\n", path);
         fclose(f);
         free_mapping_file(file);
         return 0;
@@ -682,12 +682,12 @@ static int save_mapping_file(const char *path, const MappingFile *file,
                              const char *guid, const char *mapping) {
     char temp[1024];
     if ((size_t)snprintf(temp, sizeof temp, "%s.tmp", path) >= sizeof temp) {
-        if (!ui_mode) printf("Path terlalu panjang: %s\n", path);
+        if (!ui_mode) printf("The path is too long: %s\n", path);
         return 0;
     }
     FILE *f = fopen(temp, "w");
     if (!f) {
-        if (!ui_mode) printf("Tidak bisa menulis %s\n", temp);
+        if (!ui_mode) printf("Cannot write %s\n", temp);
         return 0;
     }
     int failed = 0;
@@ -702,7 +702,7 @@ static int save_mapping_file(const char *path, const MappingFile *file,
 #endif
     if (failed) {
         remove(temp);
-        if (!ui_mode) printf("Gagal menyimpan mapping ke %s\n", path);
+        if (!ui_mode) printf("Failed to save the mapping to %s\n", path);
         return 0;
     }
     return 1;
@@ -892,7 +892,7 @@ int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD)) {
         if (ui_mode) emit("error", NULL, "message", "The controller system could not start.");
-        else printf("SDL_Init gagal: %s\n", SDL_GetError());
+        else printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
     if (ui_mode) {
@@ -909,7 +909,7 @@ int main(int argc, char **argv) {
     SDL_JoystickID *ids = SDL_GetJoysticks(&count);
     if (!ids || count < 1) {
         if (ui_mode) emit("error", NULL, "message", "No controller found. Plug one in, then try again.");
-        else printf("Tidak ada controller terdeteksi. Colokkan lalu jalankan lagi.\n");
+        else printf("No controller detected. Plug one in and run again.\n");
         return finish(NULL, ids, 1);
     }
     int selected = 0;
@@ -928,17 +928,17 @@ int main(int argc, char **argv) {
         }
         if (count > 1) {
             char input[32];
-            printf("Pilih controller yang akan di-mapping [1-%d]: ", count);
+            printf("Choose the controller to map [1-%d]: ", count);
             fflush(stdout);
             if (!fgets(input, sizeof input, stdin)) {
-                printf("Pilihan controller tidak terbaca.\n");
+                printf("The controller choice could not be read.\n");
                 return finish(NULL, ids, 1);
             }
             char *end = NULL;
             const long choice = strtol(input, &end, 10);
             while (end && isspace((unsigned char)*end)) ++end;
             if (end == input || (end && *end) || choice < 1 || choice > count) {
-                printf("Pilihan controller tidak valid.\n");
+                printf("The controller choice is not valid.\n");
                 return finish(NULL, ids, 1);
             }
             selected = (int)choice - 1;
@@ -947,7 +947,7 @@ int main(int argc, char **argv) {
     SDL_Joystick *j = SDL_OpenJoystick(ids[selected]);
     if (!j) {
         if (ui_mode) emit("error", NULL, "message", "The controller could not be opened.");
-        else printf("Tidak bisa membuka controller: %s\n", SDL_GetError());
+        else printf("Cannot open the controller: %s\n", SDL_GetError());
         return finish(NULL, ids, 1);
     }
     joy = j;
@@ -966,10 +966,10 @@ int main(int argc, char **argv) {
         printf("}\n");
         fflush(stdout);
     } else {
-        printf("Controller: %s (GUID %s), %d tombol, %d axis, %d hat\n", joy_name ? joy_name : "?", guid,
+        printf("Controller: %s (GUID %s), %d buttons, %d axes, %d hats\n", joy_name ? joy_name : "?", guid,
                SDL_GetNumJoystickButtons(j), SDL_GetNumJoystickAxes(j), SDL_GetNumJoystickHats(j));
-        printf("Lepaskan semua tombol dan stick. Tiap langkah: tekan sekali lalu lepas; diam 15 detik = lewati.\n");
-        printf("Untuk menjadikan Xbox A = Circle game: saat prompt Cross tekan Xbox B, lalu saat prompt Circle tekan Xbox A.\n");
+        printf("Release all buttons and sticks. Each step: press once, then release; 15 seconds of nothing = skip.\n");
+        printf("To make Xbox A = game Circle: at the Cross prompt press Xbox B, then at the Circle prompt press Xbox A.\n");
     }
     SDL_Delay(800);
     sample_rest();
@@ -989,11 +989,11 @@ int main(int argc, char **argv) {
         const char *saved = mapping_for_guid(&old_mappings, guid);
         if (!saved || !keep_buttons(saved)) {
             if (ui_mode) emit("error", NULL, "message", "This controller has no saved mapping yet: map all first.");
-            else printf("Tidak ada mapping lama untuk controller ini di %s; jalankan tanpa --sticks.\n", path);
+            else printf("No earlier mapping for this controller in %s; run without --sticks.\n", path);
             free_mapping_file(&old_mappings);
             return finish(j, ids, 1);
         }
-        if (!ui_mode) printf("Tombol lama dipakai lagi; sekarang hanya stick.\n");
+        if (!ui_mode) printf("The earlier buttons are used again; only the sticks now.\n");
     }
     for (int t = 0; t < TARGET_COUNT; ++t) {
         if (sticks_only && !targets[t].axis) continue;
@@ -1011,7 +1011,7 @@ int main(int argc, char **argv) {
     char mapping[2048];
     if (!build_mapping(mapping, sizeof mapping, guid, name)) {
         if (ui_mode) emit("error", NULL, "message", "The mapping is too long to save.");
-        else printf("Mapping terlalu besar.\n");
+        else printf("The mapping is too big.\n");
         free_mapping_file(&old_mappings);
         return finish(j, ids, 1);
     }
@@ -1022,7 +1022,7 @@ int main(int argc, char **argv) {
         return finish(j, ids, 1);
     }
     if (ui_mode) emit("saved", NULL, "mapping", mapping);
-    else printf("\nMapping disimpan ke %s:\n%s\n", path, mapping);
+    else printf("\nMapping saved to %s:\n%s\n", path, mapping);
     return finish(j, ids, 0);
 }
 #endif
