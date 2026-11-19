@@ -18,6 +18,7 @@ import time
 import unicodedata
 import zipfile
 import zlib
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
@@ -886,7 +887,10 @@ def mark_unfinished(folder):
     return names
 
 
-def prune(folder, keep=20):
+KEEP_SESSIONS = 20  # session reports and zips the launcher keeps, and with them the Tracer files of those sessions
+
+
+def prune(folder, keep=KEEP_SESSIONS):
     """Keep the newest `keep` session reports and zips (both written by the launcher)."""
     folder = Path(folder)
     if not folder.is_dir():
@@ -898,3 +902,142 @@ def prune(folder, keep=20):
                 old.unlink()
             except OSError:
                 pass
+
+
+# What the game and the launcher write into user\captures and user\render_traces, by exact name. Nothing else in
+# those two folders is ever removed.
+CAPTURE_NAME = re.compile(r"frame_[0-9]{8}-[0-9]{6}_[0-9]+\.(png|txt)", re.ASCII)
+TRACE_FOLDER_NAME = re.compile(r"([0-9]{8}-[0-9]{6})(-[0-9]+)?", re.ASCII)
+TRACE_FOLDER_FILES = frozenset(("render_trace.log", "launcher.json", "basara4.ini", "last_run.log"))
+
+
+def _is_link(path):
+    """A symbolic link or a junction: it may lead out of the folder, so it is never followed or removed."""
+    try:
+        return Path(path).is_symlink() or bool(getattr(os.path, "isjunction", lambda _p: False)(path))
+    except OSError:
+        return True  # cannot tell: treat it as something that must not be touched
+
+
+@dataclass
+class CleanResult:
+    files: int = 0
+    folders: int = 0
+    bytes: int = 0
+    failed: list = field(default_factory=list)  # one English line per thing that could not be read or removed
+    skipped: str = ""  # why nothing was looked at, when that is the case
+    problem: bool = False  # `skipped` is something the player should hear about, not just "nothing to do"
+
+    def summary(self):
+        """One short English line for the launcher status, or "" when there is nothing to tell."""
+        if self.skipped and self.problem:
+            return f"Tracer cleanup skipped: {self.skipped}."
+        parts = []
+        if self.files or self.folders:
+            size = (f"{self.bytes / (1024 * 1024):.1f} MB" if self.bytes >= 1024 * 1024
+                    else f"{max(1, round(self.bytes / 1024))} KB")
+            parts.append(f"removed {self.files} file{'s' * (self.files != 1)} and "
+                         f"{self.folders} folder{'s' * (self.folders != 1)} ({size})")
+        if self.failed:
+            parts.append(f"{len(self.failed)} could not be removed ({self.failed[0]})")
+        return f"Tracer cleanup: {'; '.join(parts)}." if parts else ""
+
+
+def clean_tracer_files(reports_dir, captures_dir, traces_dir, keep=KEEP_SESSIONS, now=None):
+    """Remove the Tracer files that belong to no kept session: the F11 capture pairs in `captures_dir` and the
+    per-run folders in `traces_dir`. Called once when the launcher starts (never while a game runs). Never raises:
+    what cannot be read or removed is listed in the result and the rest goes on.
+
+    Rule: a session stays as long as its report stays (the newest `keep` session reports, the same set prune()
+    keeps), and so does everything the Tracer wrote for it. A session's files are found the way the report finds
+    them (session_window: its started and ended time, and the trace folder it names), so the oldest kept session
+    gives one line, `cutoff`: its start. A capture pair or trace folder is removed only when it is OLDER than the
+    cutoff and no kept report points to it. Everything at or after the cutoff stays, even a file in a gap between
+    two sessions, one written after a session was marked unfinished (its game may still be running from an earlier
+    launcher) or one from the session being run now: when it is not certain that a file belongs to no kept
+    session, it stays. Without a readable kept report there is no cutoff, and nothing is removed.
+
+    Only exact names are touched: captures frame_<date>-<time>_<n>.png/.txt (a pair stays whole: it goes only
+    when both are older, the picture first), and render_traces\\<date>-<time>[-n] folders that hold nothing but
+    the four files the tracer puts there. Links, other names, other folders, the zips and reports are never
+    touched."""
+    result = CleanResult()
+    try:
+        names = sorted(Path(reports_dir).glob("session-*.json"))[-keep:] if Path(reports_dir).is_dir() else []
+    except OSError as exc:
+        result.failed.append(f"user\\reports could not be listed: {exc.strerror or exc}")
+        result.skipped, result.problem = "the session reports could not be listed", True
+        return result
+    if not names:
+        result.skipped = "no session report is kept, so nothing can be told apart"
+        return result
+    starts, pointed = [], set()
+    for path in names:
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+            window = session_window(report, now)
+        except (OSError, ValueError, AttributeError) as exc:
+            result.failed.append(f"{path.name} cannot be read ({getattr(exc, 'strerror', None) or exc})")
+            result.skipped, result.problem = "a kept session report cannot be read, so nothing was removed", True
+            return result
+        if window is None:
+            result.failed.append(f"{path.name} has no start time")
+            result.skipped, result.problem = "a kept session report has no start time, so nothing was removed", True
+            return result
+        starts.append(window[0])
+        tracer = report.get("tracer") if isinstance(report.get("tracer"), dict) else {}
+        if isinstance(tracer.get("trace_folder"), str):
+            pointed.add(tracer["trace_folder"])
+    cutoff = min(starts)
+
+    def remove(path, folder=False):
+        try:
+            size = 0 if folder else path.stat().st_size
+            path.rmdir() if folder else path.unlink()
+        except OSError as exc:
+            result.failed.append(f"{path.name}: {exc.strerror or exc}")
+            return False
+        result.bytes += size
+        result.folders += folder
+        result.files += not folder
+        return True
+
+    for folder, what in ((captures_dir, "captures"), (traces_dir, "render_traces")):
+        folder = Path(folder)
+        try:
+            if not folder.is_dir() or _is_link(folder):
+                continue
+            entries = list(folder.iterdir())
+        except OSError as exc:
+            result.failed.append(f"user\\{what} could not be listed: {exc.strerror or exc}")
+            continue
+        if what == "captures":
+            pairs = {}
+            for entry in entries:
+                if CAPTURE_NAME.fullmatch(entry.name) and entry.is_file():
+                    pairs.setdefault(entry.stem, []).append(entry)
+            for members in pairs.values():
+                try:
+                    old = not any(_is_link(m) for m in members) and max(m.stat().st_mtime for m in members) < cutoff
+                except OSError:
+                    continue
+                if old:
+                    for member in sorted(members, key=lambda m: m.suffix != ".png"):  # the picture first
+                        if not remove(member):
+                            break  # its text stays with it
+            continue
+        for entry in entries:
+            match = TRACE_FOLDER_NAME.fullmatch(entry.name)
+            if not match or entry.name in pointed or _is_link(entry) or not entry.is_dir():
+                continue
+            try:
+                made = time.mktime(time.strptime(match.group(1), "%Y%m%d-%H%M%S"))
+                inside = list(entry.iterdir())
+            except (OSError, ValueError, OverflowError) as exc:
+                result.failed.append(f"{entry.name}: {getattr(exc, 'strerror', None) or exc}")
+                continue
+            if made >= cutoff or any(i.name not in TRACE_FOLDER_FILES or _is_link(i) or not i.is_file() for i in inside):
+                continue  # not older than every kept session, or something in it the tracer did not write
+            if all([remove(i) for i in inside]):
+                remove(entry, folder=True)
+    return result

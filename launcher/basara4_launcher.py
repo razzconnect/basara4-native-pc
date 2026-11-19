@@ -1042,6 +1042,7 @@ class Launcher(tk.Tk):
         self._style()
         self._art()
         self._build()
+        self._clean_tracer_files()
         self._load_ini_into_ui()
         self._refresh_image_label()
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -2032,6 +2033,20 @@ class Launcher(tk.Tk):
         except Exception as exc:  # any failure: written down with its reason, never hidden, never fatal
             errors.append(f"{what}: {basara4_report.reason(exc)}")
             return basara4_report.unknown(basara4_report.reason(exc))
+
+    def _clean_tracer_files(self):
+        """Once, when the launcher starts: remove the F11 pictures and trace folders of sessions whose reports are no
+        longer kept (basara4_report.clean_tracer_files says exactly which). Never while a game of this launcher
+        runs, and a failure here only shows in the status line: the launcher and the game go on."""
+        if self.proc is not None and self.proc.poll() is None:
+            return
+        try:
+            result = basara4_report.clean_tracer_files(REPORTS, CAPTURES_DIR, RENDER_TRACES)
+            text = result.summary()
+        except Exception as exc:  # whatever it was, the launcher opens
+            text = f"Tracer cleanup stopped: {basara4_report.reason(exc)}."
+        if text:
+            self.status.config(text=text)
 
     def _start_session_report(self, game):
         """Write this session's report just before the game starts, so it exists even when the game
