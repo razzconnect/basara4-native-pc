@@ -1137,6 +1137,7 @@ class Launcher(tk.Tk):
         self.trace_session = None  # user\render_traces\<stamp> of the running traced game
         self.forced_stop = False  # the running game was killed (Force stop, closing the launcher)
         self.session_report = None  # the report of the running or last game session (basara4_report)
+        self.last_description = ""  # what the player typed in the Report window, kept only when no zip was made
         self.session_report_path = None
         self.session_started_at = None
         basara4_report.mark_unfinished(REPORTS)  # sessions whose launcher closed before their game ended
@@ -1232,7 +1233,7 @@ class Launcher(tk.Tk):
         trace_frame = ttk.Frame(opts, style="Panel.TFrame")
         trace_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 4))
         ttk.Checkbutton(trace_frame, text="Tracer", variable=self.tracer_var, command=self._tracer_toggled).pack(side="left", padx=(0, 10))
-        ttk.Button(trace_frame, text="Report", command=lambda: self.send_report()).pack(side="left", padx=(0, 10))
+        ttk.Button(trace_frame, text="Report", command=lambda: self.on_report()).pack(side="left", padx=(0, 10))
         ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
         # Short: the row must fit the panel (the dropdown columns above it are sized by its widest row)
         ttk.Label(trace_frame, text="At the bug: F11, then Report", style="Muted.TLabel").pack(side="left")
@@ -2142,9 +2143,11 @@ class Launcher(tk.Tk):
                 return data
         return None
 
-    def send_report(self, parent=None):
-        """Save report: one zip with the session report, the masked logs and this session's newest
-        capture; then Explorer shows it and the "Report saved" window says how to post it. Returns the zip path.
+    def send_report(self, parent=None, description=None):
+        """Save report: one zip with the session report, the masked logs and this session's captures; then Explorer
+        shows it and the "Report saved" window says how to post it. Returns the zip path. `description` is what
+        the player typed in the Report window (None: not asked, as in the crash window); it goes into the report
+        like every other text, after it is hidden, and in its own section marked as the player's own words.
         A crash dump never goes in the zip: a minidump holds the process environment (account and
         computer names, every user variable, tokens included), which cannot be masked. It stays in
         user\\crash; the report names it and its size so the team can ask for it privately."""
@@ -2159,6 +2162,8 @@ class Launcher(tk.Tk):
                           VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)), errors),
                       "collect_errors": errors}
         report = dict(report)
+        note = basara4_report.clean_note(description)
+        report["user_note"] = note
         log = report.get("log") if isinstance(report.get("log"), dict) else {}
         dump = Path(log["crash_dump"]) if log.get("crash_dump") else None
         if dump is None or not dump.is_file():
@@ -2182,11 +2187,15 @@ class Launcher(tk.Tk):
                                     basara4_report.render_text(report, getattr(self, "session_tail", None),
                                                                sections=[("Render trace", render_trace_summary(report))]),
                                     self._masker(), logs=art.logs, binaries=art.binaries, withheld=withheld,
-                                    max_total_bytes=basara4_report.ZIP_BUDGET_BYTES)
+                                    max_total_bytes=basara4_report.ZIP_BUDGET_BYTES, priority=art.priority or 1)
         except basara4_report.PrivacyError as exc:
+            # the typed text is kept for the next try: the player may only need to take a name out of it
+            self.last_description = note.get("text", "")
+            hint = ("\n\nIf your name is in what you typed in the description, take it out and try again."
+                    if note.get("text") else "")
             messagebox.showerror("Report not saved",
-                                 f"The report was not saved: {exc}.\n\nNothing was written, and nothing leaves "
-                                 "your PC.", parent=parent or self)
+                                 f"The report was not saved: {exc}.{hint}\n\nNothing was written, and nothing "
+                                 "leaves your PC.", parent=parent or self)
             return None
         except OSError as exc:
             messagebox.showerror("Report not saved",
@@ -2194,11 +2203,92 @@ class Launcher(tk.Tk):
                                                           "folder.") + f"\n\n{exc.strerror or exc}",
                                  parent=parent or self)
             return None
+        self.last_description = ""  # the report is made: what was typed is in it
         # Explorer first, then the dialog: the dialog is the newest window and stays above Explorer, which
         # may draw its window a moment later.
         shown = self.show_report_file(target, parent or self)
         self._show_report_saved(target, parent or self, file_shown=shown)
         return target
+
+    def on_report(self):
+        """The Report button: asks what the player saw and pressed (optional), then makes the report. Cancelling the
+        window makes no report; leaving it empty makes one without a description."""
+        text = self.ask_description()
+        if text is None:
+            return
+        # Compressing the big pictures takes a few seconds: the busy cursor says so, instead of a window that seems
+        # stuck. Only here: the crash window's Save report keeps its timing (its layout tests depend on it).
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            self.send_report(description=text)
+        finally:
+            self.config(cursor="")
+
+    def ask_description(self):
+        """Shows the description window and waits for it. Returns the typed text, or None when it was cancelled."""
+        open_window = getattr(self, "describe_window", None)
+        if open_window is not None and open_window.winfo_exists():
+            open_window.lift()  # a second press of Report must not open a second window
+            return None
+        win = self._describe_window()
+        self.describe_window = win
+        self.wait_window(win)
+        self.describe_window = None
+        return win.result
+
+    def _describe_window(self):
+        """The window before Report: one small text box, one counter, and two buttons of the same size. It is a
+        window of its own, so the launcher window and the other dialogs keep their size."""
+        win = tk.Toplevel(self)
+        win.title("Report")
+        win.configure(bg=BG)
+        win.transient(self)
+        win.resizable(False, False)
+        win.result = None
+        tk.Label(win, text="What did you see, and what did you press? (optional)", bg=BG, fg=FG,
+                 font=("Segoe UI", 10, "bold"), wraplength=520, justify="left").pack(padx=18, pady=(16, 4), anchor="w")
+        tk.Label(win, text="Say what went wrong and which buttons or keys you pressed. Your account name and PC name "
+                           "are hidden automatically. You can leave this empty.", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9), wraplength=520, justify="left").pack(padx=18, pady=(0, 8), anchor="w")
+        text = tk.Text(win, width=64, height=7, wrap="word", font=("Segoe UI", 10), bg=PANEL, fg=FG,
+                       insertbackground=FG, relief="flat", padx=8, pady=6, undo=True)
+        text.pack(padx=18, anchor="w")
+        counter = tk.Label(win, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
+        counter.pack(padx=18, pady=(2, 0), anchor="e")
+        win.text, win.counter = text, counter
+
+        def changed(_event=None):
+            if not text.edit_modified():
+                return
+            text.edit_modified(False)
+            over = len(text.get("1.0", "end-1c")) - basara4_report.NOTE_MAX_CHARS
+            if over > 0:  # typing or pasting past the limit: the end is cut off
+                text.delete(f"end-1c-{over}c", "end-1c")
+            counter.config(text=f"{len(text.get('1.0', 'end-1c'))} / {basara4_report.NOTE_MAX_CHARS}")
+        text.bind("<<Modified>>", changed)
+        if self.last_description:
+            text.insert("1.0", self.last_description)
+        text.edit_modified(True)
+        changed()
+
+        def finish(value):
+            win.result = value
+            win.destroy()
+        buttons = ttk.Frame(win, style="TFrame", padding=(14, 10, 14, 14))
+        buttons.pack(fill="x")
+        win.cancel = ttk.Button(buttons, text="Cancel", style="Dialog.TButton", command=lambda: finish(None))
+        win.ok = ttk.Button(buttons, text="Make report", style="DialogAccent.TButton",
+                            command=lambda: finish(text.get("1.0", "end-1c")))
+        win.cancel.pack(side="right")
+        win.ok.pack(side="right", padx=(0, 8))
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+        win.bind("<Escape>", lambda _event: finish(None))
+        win.lift()
+        win.focus_force()
+        text.focus_set()
+        win.grab_set()
+        return win
 
     def show_report_file(self, target, parent=None):
         """Shows the saved zip in Explorer, selected. When Explorer cannot select it, its folder is opened; when

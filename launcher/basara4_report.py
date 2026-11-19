@@ -9,6 +9,7 @@ Windows user folder, the game folder and the program folder become <user>, <game
 Everything here is plain data and text, with no window, so the tests drive it directly.
 """
 import datetime
+import io
 import json
 import locale
 import os
@@ -356,6 +357,18 @@ def render_text(report, tail_lines=None, sections=()):
            f"Summary       : {summary_line(report)}"]
     if report.get("signature"):
         out.append(f"Signature     : {report['signature']}")
+    note = report.get("user_note")
+    if isinstance(note, dict):
+        # first, so the team reads what the user saw before the technical parts; it is the user's own text
+        out.append("--- What the user wrote (typed by the user, not checked) ---")
+        if not note.get("asked"):
+            out.append("  (not asked in this report)")
+        elif not note.get("text"):
+            out.append("  (left empty)")
+        else:
+            out += [f"  {line}" for line in str(note["text"]).split("\n")]
+            if note.get("cut"):
+                out.append(f"  (cut at {note.get('limit', NOTE_MAX_CHARS)} characters)")
     for title, key in (("Port", "launcher"), ("Game", "game"), ("System", "system"),
                        ("Vulkan", "vulkan"), ("Settings", "settings"), ("Tracer", "tracer"),
                        ("Content", "content"),
@@ -419,6 +432,21 @@ SESSION_SLACK_SECONDS = 2  # a file written this close before the session starte
 ZIP_ENTRY_OVERHEAD = 128  # file name (twice) and headers of one zip entry, with room to spare
 ZIP_NOTE_RESERVE = 16 * 1024  # room for the "Not included" lines and headers of report.txt
 
+# What the user typed in the Report window. Long enough to say what was seen and which keys were pressed, short
+# enough that it stays a note and cannot become a way to paste a whole log (or a lot of private text).
+NOTE_MAX_CHARS = 1000
+
+
+def clean_note(text):
+    """The note the user typed, ready for the report: line breaks and tabs kept, other control characters
+    dropped, spaces around it trimmed, written the same way whatever way the keyboard produced it (NFC), and cut
+    at NOTE_MAX_CHARS with a flag so the report can say so. None means the user was not asked (a crash report)."""
+    if text is None:
+        return {"asked": False}
+    text = unicodedata.normalize("NFC", str(text)).replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(ch for ch in text if ch in "\n\t" or unicodedata.category(ch) != "Cc").strip()
+    return {"asked": True, "text": text[:NOTE_MAX_CHARS], "cut": len(text) > NOTE_MAX_CHARS, "limit": NOTE_MAX_CHARS}
+
 
 def read_text(path):
     """A text file as text: UTF-8, or the Windows code page when the bytes are not valid UTF-8 (a name written
@@ -473,9 +501,167 @@ def _hidden(masker, name, text):
     return shown
 
 
+# The F11 pictures. A capture of a 1440p frame is a 7 MB PNG that one picture fills most of the zip; compressed for the
+# zip only (the file in user\captures is never touched) several of them fit. First without any loss; when that
+# is not enough, every colour value is rounded to fewer bits (never by more than a few of 255), the least that lets
+# the pictures that matter fit, and report.txt says which and by how much.
+PICTURE_LEVELS = (8, 7, 6, 5)  # bits kept per colour channel, best first; 8 is lossless
+PICTURE_TARGET = 4  # how many of the leading pictures (the F11 ones) the level is chosen to fit
+PICTURE_MIN_BYTES = 512 * 1024  # a smaller picture (an automatic capture) is not worth the time
+PICTURE_MAX_PIXELS = 64_000_000  # larger than 8K: stored as it is rather than decoded into memory
+PICTURE_MAX_ENCODES = 24  # most compressions in one zip; ~0.2-0.5 s each, so the Report never waits for long
+PICTURE_COMPRESS_LEVEL = 6  # zlib: level 9 takes 8 times as long (2.3 s per 1440p picture) to save 6%
+
+
+class PictureError(Exception):
+    """A picture that cannot be compressed: it is stored as it is, and the report says why."""
+
+
+def _load_pillow():
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise PictureError(f"Pillow is not available ({exc})") from exc
+    return Image
+
+
+def compress_picture(path, bits=8):
+    """The PNG at `path` written anew, smaller: (bytes, info). bits=8 loses nothing (a fully opaque alpha channel is
+    dropped, the rows get PNG filters); fewer bits rounds each colour value to a multiple of 2**(8-bits) and keeps
+    black and white exact, so no value changes by more than 2**(8-bits)-1. Nothing of the original file is copied
+    but the pixels, so no metadata chunk comes along. PictureError when it cannot be done."""
+    Image = _load_pillow()
+    errors = (OSError, ValueError, SyntaxError, EOFError, zlib.error, Image.DecompressionBombError)
+    try:
+        original = Path(path).read_bytes()
+        with Image.open(io.BytesIO(original)) as img:
+            if img.format != "PNG":
+                raise PictureError("it is not a PNG picture")
+            width, height = img.size
+            if width * height > PICTURE_MAX_PIXELS:
+                raise PictureError(f"{width}x{height} is too many pixels to compress safely")
+            img.load()
+            mode = img.mode
+            dropped = False
+            if mode == "RGBA" and img.getchannel("A").getextrema() == (255, 255):
+                work, dropped = img.convert("RGB"), True
+            elif mode in ("RGB", "RGBA", "L"):
+                work = img.copy()
+            else:
+                raise PictureError(f"picture mode {mode} is not handled")
+        if bits < 8:
+            shift = 8 - bits
+            lut = [((i >> shift) << shift) | (i >> bits) for i in range(256)]  # black and white stay exact
+            work = work.point(lut * 3 + list(range(256)) if work.mode == "RGBA" else lut * len(work.getbands()))
+        buf = io.BytesIO()
+        work.save(buf, "PNG", compress_level=PICTURE_COMPRESS_LEVEL)
+    except PictureError:
+        raise
+    except errors as exc:
+        raise PictureError(f"the picture cannot be read: {exc}") from exc
+    data = buf.getvalue()
+    info = {"method": "lossless" if bits == 8 else "near-lossless", "bits": bits,
+            "max_change": 0 if bits == 8 else (1 << (8 - bits)) - 1, "alpha_dropped": dropped,
+            "width": width, "height": height}
+    if bits == 8 and len(data) >= len(original):
+        return original, dict(info, method="unchanged")  # already as small as it gets: not rewritten
+    return data, info
+
+
+def _picture_line(name, info, before, after):
+    if info["method"] == "lossless":
+        return f"{name}: lossless, {before} -> {after} bytes" + (" (opaque alpha channel dropped)" if info["alpha_dropped"] else "")
+    if info["method"] == "unchanged":
+        return f"{name}: stored as it is, it is already as small as it gets"
+    return (f"{name}: near-lossless, {info['bits']} bits per colour channel, no value changed by more than "
+            f"{info['max_change']} of 255; finer detail than that is lost, {before} -> {after} bytes")
+
+
+def _pack_binaries(entries, room, priority, limit_mb):
+    """Which of `entries` (name, path, size), the screenshots in order of importance, go into the zip and as what.
+    Returns (items, notes, infos, left_out): items are (name, path, data, mtime) with data None for "copy the file";
+    notes and infos say what was done to the pictures (for report.txt and report.json); left_out are the
+    "Not included" lines. The first `priority` entries are the ones that matter (the F11 pictures): one level is
+    chosen for all of them, the best that lets them fit, and the pictures after them are added at that level
+    while room is left. Without a room limit nothing is compressed."""
+    def cost(name, nbytes):
+        return nbytes + 2 * len(name) + ZIP_ENTRY_OVERHEAD
+
+    def big(i):
+        return entries[i][0].lower().endswith(".png") and entries[i][2] >= PICTURE_MIN_BYTES
+
+    cache, count = {}, [0]
+
+    def encoded(i, bits):
+        if (i, bits) not in cache:
+            if count[0] >= PICTURE_MAX_ENCODES:
+                cache[i, bits] = PictureError("there are too many pictures to compress in one report")
+            else:
+                count[0] += 1
+                try:
+                    cache[i, bits] = compress_picture(entries[i][1], bits)
+                except PictureError as exc:
+                    cache[i, bits] = exc
+        return cache[i, bits]
+
+    lead = range(min(PICTURE_TARGET if priority is None else priority, len(entries)))
+    wanted = [i for i in lead if big(i)][:PICTURE_TARGET] if room is not None else []
+    level = PICTURE_LEVELS[-1]
+    if wanted:
+        for bits in PICTURE_LEVELS:
+            total = sum(cost(entries[i][0], entries[i][2]) for i in lead if i not in wanted)
+            for i in wanted:
+                got = encoded(i, bits)
+                total += cost(entries[i][0], entries[i][2] if isinstance(got, PictureError) else len(got[0]))
+                if total > room:
+                    break
+            if total <= room:
+                level = bits
+                break
+    items, notes, infos, left_out, remaining = [], [], [], [], room
+    for i, (name, path, size) in enumerate(entries):
+        options, why = [], None
+        if room is not None and big(i):
+            for bits in PICTURE_LEVELS:
+                if bits > level:
+                    continue
+                got = encoded(i, bits)
+                if isinstance(got, PictureError):
+                    why = str(got)
+                    break
+                options.append(got)
+        raw = (None, None)
+        choices = ([(data, info, cost(name, len(data))) for data, info in options]
+                   or [(raw[0], raw[1], cost(name, size))])
+        picked = next((c for c in choices if remaining is None or c[2] <= remaining), None)
+        if picked is None:
+            left_out.append(f"{name}: {min(c[2] for c in choices)} bytes in the zip, over the {limit_mb} MB zip limit; "
+                            "it stays on the PC")
+            continue
+        data, info, spent = picked
+        remaining = None if remaining is None else remaining - spent
+        if info is not None and info["method"] == "unchanged":
+            data = None
+        try:
+            mtime = Path(path).stat().st_mtime
+        except OSError:
+            mtime = time.time()
+        items.append((name, path, data, mtime))
+        if info is not None:
+            notes.append(_picture_line(name, info, size, spent - 2 * len(name) - ZIP_ENTRY_OVERHEAD))
+            infos.append({"file": name, "method": info["method"], "bits": info["bits"], "max_change": info["max_change"],
+                          "alpha_dropped": info["alpha_dropped"], "from_bytes": size,
+                          "to_bytes": spent - 2 * len(name) - ZIP_ENTRY_OVERHEAD})
+        elif why:
+            notes.append(f"{name}: stored as it is, it could not be compressed: {why}")
+            infos.append({"file": name, "method": "stored as it is", "reason": why, "from_bytes": size})
+    return items, notes, infos, left_out
+
+
 def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld=(), max_file_bytes=64 << 20,
-             max_total_bytes=None):
-    """One zip to send: report.json/.txt, masked text logs, and binary files (a capture) as they are.
+             max_total_bytes=None, priority=None):
+    """One zip to send: report.json/.txt, masked text logs, and the screenshots. A big PNG is written anew, smaller
+    (see compress_picture; the first `priority` pictures, the F11 ones, decide how much), and report.txt says so.
     Missing files are skipped; files over max_file_bytes are left out; both are listed, and so are the
     `withheld` notes (files kept on the PC on purpose, such as a crash dump, named but not included).
 
@@ -515,6 +701,7 @@ def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld
                 shown = _hidden(masker, name, text)
                 if fits(name, len(zlib.compress(shown.encode("utf-8"))) + 2 * len(name) + ZIP_ENTRY_OVERHEAD):
                     zf.writestr(name, shown)
+            entries = []
             for name, path in binaries:
                 try:
                     size = Path(path).stat().st_size
@@ -524,11 +711,31 @@ def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld
                 if size > max_file_bytes:
                     skipped.append(f"{name}: {size} bytes, over the {max_file_bytes} byte limit")
                     continue
-                if fits(name, size + 2 * len(name) + ZIP_ENTRY_OVERHEAD):
+                entries.append((name, path, size))
+            items, picture_notes, picture_infos, left_out = _pack_binaries(
+                entries, room, priority, (max_total_bytes or 0) // (1 << 20))
+            skipped += left_out
+            for name, path, data, mtime in items:
+                if data is None:
                     zf.write(path, name)
-            note = report_text + ("\nNot included:\n"
-                                  + "\n".join(f"  {s}" for s in skipped) + "\n" if skipped else "")
+                else:  # a picture written anew: PNG data is already compressed, so it is stored as it is
+                    stamp = time.localtime(mtime)[:6]
+                    info = zipfile.ZipInfo(name, date_time=stamp if stamp[0] >= 1980 else (1980, 1, 1, 0, 0, 0))
+                    zf.writestr(info, data, compress_type=zipfile.ZIP_STORED)
+            note = report_text
+            if picture_notes:
+                note += ("\nPictures in this zip (compressed for the zip only; the files in user\\captures are "
+                         "not changed):\n" + "\n".join(f"  {s}" for s in picture_notes) + "\n")
+                if any(i["method"] in ("lossless", "near-lossless") for i in picture_infos):
+                    note += "  PNG metadata is not copied: each compressed picture is written anew.\n"
+            if skipped:
+                note += "\nNot included:\n" + "\n".join(f"  {s}" for s in skipped) + "\n"
             zf.writestr("report.txt", _hidden(masker, "report.txt", note))
+            if picture_infos:
+                report_json = json.dumps(_scrub_data(masker.data(dict(report, pictures=picture_infos))), indent=2,
+                                         ensure_ascii=False)
+                if masker.leaks(report_json):
+                    raise PrivacyError("report.json still shows your account or PC name after it was hidden")
             zf.writestr("report.json", report_json)
     except BaseException:
         tmp.unlink(missing_ok=True)  # never leave half a zip behind
@@ -540,13 +747,15 @@ def make_zip(target, report, report_text, masker, logs=(), binaries=(), withheld
 class Artifacts(NamedTuple):
     """What one session left for the zip. logs: text files (zip name, path), most important first; binaries:
     screenshots, most important first; trace_log/trace_label: the render trace of this session; captures:
-    names of this session's captures; notes: what could not be listed or read, for the "Not included" list."""
+    names of this session's captures; notes: what could not be listed or read, for the "Not included" list;
+    priority: how many of the leading screenshots are F11 captures (the ones the zip is sized to keep)."""
     logs: list
     binaries: list
     trace_log: object
     trace_label: str
     captures: list
     notes: list
+    priority: int = 0
 
 
 def _epoch(iso):
@@ -631,7 +840,7 @@ def collect_session_artifacts(report, *, traces_dir, captures_dir, fallback_trac
             logs.append((name, Path(path)))
     hotkey = [p for p in pictures if reasons.get(p.stem) == "hotkey_f11"]
     binaries = [(f"captures/{p.name}", p) for p in hotkey + [p for p in pictures if p not in hotkey]]
-    return Artifacts(logs, binaries, trace_log, label, captures, notes)
+    return Artifacts(logs, binaries, trace_log, label, captures, notes, len(hotkey))
 
 
 def mark_unfinished(folder):

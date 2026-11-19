@@ -61,9 +61,13 @@ Problems
 
 Graphics, shader and audio problems (a glitch, missing music or voices)
   Tick Tracer in the launcher and play until the problem happens. Press F11 when you see it (it saves a
-  screenshot and the state of the frame), close the game, and press Report next to Tracer. The zip then also
-  holds the whole render trace, the audio log (user\audio_debug.log, one line per audio event), every F11
-  capture of that session, and a note of anything left out. Only files of that session go in, and the zip stays
-  below 9 MB: text first, screenshots last, with a list of what did not fit.
+  screenshot and the state of the frame), close the game, and press Report next to Tracer. A small window asks
+  "What did you see, and what did you press?": a few words (up to 1000 characters, optional) help most. Your
+  account and PC name are hidden in them like everywhere else. The zip then also holds the whole render trace,
+  the audio log (user\audio_debug.log, one line per audio event), every F11 capture of that session, and a note
+  of anything left out. Only files of that session go in, and the zip stays below 9 MB: text first,
+  screenshots last, with a list of what did not fit. The F11 screenshots are compressed inside the zip so that
+  several fit (the files in user\captures are not changed): without loss when there is room, otherwise every
+  colour value is rounded by at most a few of 255; report.txt lists each picture and which of the two was used.
   Raw audio (WAV) never goes in the zip. "+ WAV capture" is for developers.
   To read the audio log yourself: python tools/audio_log_summary.py user/audio_debug.log (from the source repository).

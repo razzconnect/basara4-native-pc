@@ -29,9 +29,11 @@ class TracerOptionTests(unittest.TestCase):
             self.assertIs(report.master, tracer.master)  # the same row as the option
             siblings = {str(w.cget("text")) for w in report.master.winfo_children() if isinstance(w, ttk.Button)}
             self.assertNotIn("Map controller", siblings)  # not in the controller row
-            with mock.patch.object(bl.Launcher, "send_report") as send:
+            # The button asks what the player saw first (on_report), which then makes the report.
+            with mock.patch.object(bl.Launcher, "on_report") as ask, mock.patch.object(bl.Launcher, "send_report") as send:
                 report.invoke()
-            send.assert_called_once_with()
+            ask.assert_called_once_with()
+            send.assert_not_called()
 
     def test_the_tracer_row_fits_its_panel_and_does_not_widen_it(self):
         # The hint beside the Tracer was cut off ("...then R") and pushed the dropdown columns to the right:
