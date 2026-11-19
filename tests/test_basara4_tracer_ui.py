@@ -40,18 +40,32 @@ class TracerOptionTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
                 app.attributes("-alpha", 0.0)
                 app.geometry("+-3000+0")
-                app.tk.call("tk", "scaling", 96 / 72 * scale)
-                app.update()
-                row = widget(app, ttk.Checkbutton, "Tracer").master
-                panel = row.master
-                with_row = panel.winfo_reqwidth()
-                self.assertLessEqual(row.winfo_reqwidth(), panel.winfo_width(), f"cut off at {scale}")
-                hint = [w for w in row.winfo_children() if isinstance(w, ttk.Label)]
-                self.assertEqual(len(hint), 1)
-                self.assertIn("Report", str(hint[0].cget("text")))  # the part that matters is still said
-                row.grid_remove()
-                app.update()
-                self.assertEqual(panel.winfo_reqwidth(), with_row, f"the row widens the panel at {scale}")
+                # The scaling belongs to the Tk interpreter that the next test's window shares: give it back
+                # inside the with-block (a cleanup would run after the window is gone).
+                original_scaling = app.tk.call("tk", "scaling")
+                try:
+                    app.tk.call("tk", "scaling", 96 / 72 * scale)
+                    app.update()
+                    row = widget(app, ttk.Checkbutton, "Tracer").master
+                    panel = row.master
+                    with_row = panel.winfo_reqwidth()
+                    self.assertLessEqual(row.winfo_reqwidth(), panel.winfo_width(), f"cut off at {scale}")
+                    hint = [w for w in row.winfo_children() if isinstance(w, ttk.Label)]
+                    self.assertEqual(len(hint), 1)
+                    self.assertIn("Report", str(hint[0].cget("text")))  # the part that matters is still said
+                    row.grid_remove()
+                    app.update()
+                    self.assertEqual(panel.winfo_reqwidth(), with_row, f"the row widens the panel at {scale}")
+                finally:
+                    app.tk.call("tk", "scaling", original_scaling)
+
+    def test_the_width_test_leaves_the_tk_scaling_as_it_found_it(self):
+        """The width test must not change what the next window is measured with."""
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            before = float(app.tk.call("tk", "scaling"))
+        self.test_the_tracer_row_fits_its_panel_and_does_not_widen_it()
+        with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+            self.assertEqual(float(app.tk.call("tk", "scaling")), before)
 
     def test_the_tracer_off_turns_the_wav_capture_off_and_the_wav_turns_the_tracer_on(self):
         with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
