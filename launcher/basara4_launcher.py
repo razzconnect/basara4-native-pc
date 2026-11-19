@@ -602,6 +602,7 @@ except ImportError:  # still works, just without artwork
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import basara4_patches  # noqa: E402
 import basara4_cheats  # noqa: E402
+import basara4_controller  # noqa: E402
 import basara4_report  # noqa: E402
 
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
@@ -2634,9 +2635,17 @@ class Launcher(tk.Tk):
         env = os.environ.copy()
         env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
         USER.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen([str(exe), str(MAPPING)] + extra, env=env, creationflags=0x00000010)  # new console
-        self.status.config(text="Follow the prompts in the mapper window, then press PLAY.")
-        self.after(4000, self._pad_text)
+        window = getattr(self, "pad_window", None)
+        if window is not None and window.winfo_exists():
+            # one mapper at a time (a second one would fight over the same file): the open window switches
+            # to what this button maps, unless it is mapping now
+            window.set_sticks_only("--sticks" in extra)
+            window.lift()
+            return
+        self.pad_window = basara4_controller.ControllerWindow(
+            self, exe, MAPPING, env, sticks_only="--sticks" in extra, on_saved=self._pad_text,
+            on_reset=self.reset_map, colors={"bg": BG, "panel": PANEL, "fg": FG, "accent": GOLD})
+        self.status.config(text="Map the controller in the Controller window, then press PLAY.")
 
     def reset_map(self):
         if MAPPING.exists() and messagebox.askyesno("Reset mapping", "Delete the saved controller mapping?"):

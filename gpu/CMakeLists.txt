@@ -227,6 +227,12 @@ if (WIN32)
     target_compile_options(pad-map-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     target_include_directories(pad-map-test PRIVATE .. ../src)
     target_link_libraries(pad-map-test PRIVATE PkgConfig::SDL3 bcrypt -pthread)
+    # The controller mapper (tools/gamepad_mapper.c, packaged as basara4-pad-mapper.exe) with an SDL3
+    # virtual joystick.
+    add_executable(mapper-test EXCLUDE_FROM_ALL ../tests/test_gamepad_mapper.c)
+    set_target_properties(mapper-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+    target_compile_options(mapper-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    target_link_libraries(mapper-test PRIVATE PkgConfig::SDL3 xinput1_4)
     add_executable(audio-test EXCLUDE_FROM_ALL ../tests/test_audio.c ../src/compat_win.c)
     set_target_properties(audio-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
     target_compile_options(audio-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
