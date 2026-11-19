@@ -2,6 +2,7 @@
 like every other text), and the F11 pictures are compressed inside the zip so that several of them fit into the
 size budget. Files in user\\captures are never touched. No window of the real launcher stays open: the dialogs are
 driven from the test, and Explorer and the browser are replaced."""
+import collections
 import hashlib
 import io
 import json
@@ -200,6 +201,41 @@ class PictureTests(unittest.TestCase):
             names = zf.namelist()
         self.assertEqual([n for n in names if n.startswith("captures/")], [pics[0][0], pics[1][0]])
         self.assertEqual(len(skipped), 2)
+
+    def spy(self):
+        """compress_picture as _pack_binaries calls it, with every call (path, bits) recorded."""
+        calls, real = [], rp.compress_picture
+
+        def counting(path, bits=8):
+            calls.append((str(path), bits))
+            return real(path, bits)
+        return calls, mock.patch.object(rp, "compress_picture", counting)
+
+    def test_the_number_of_compressions_in_one_zip_is_limited_and_the_rest_is_stored_as_it_is(self):
+        pics = self.pictures(5)
+        calls, spy = self.spy()
+        with mock.patch.object(rp, "PICTURE_MAX_ENCODES", 3), spy:
+            target, _skipped = self.zip_up(pics, 50_000_000, priority=5)
+        self.assertEqual(len(calls), 3)  # not one more than the limit
+        with zipfile.ZipFile(target) as zf:
+            names = zf.namelist()
+            txt = report_txt(zf)
+            stored = [n for n, p in pics[3:] if zf.read(n) == p.read_bytes()]
+        self.assertEqual(len([n for n in names if n.startswith("captures/")]), 5)
+        self.assertEqual(len(stored), 2)
+        self.assertIn("stored as it is, it could not be compressed: there are too many pictures to compress", txt)
+
+    def test_every_picture_is_compressed_once_per_level_however_many_levels_are_tried(self):
+        pics = self.pictures(4)
+        near6 = [len(rp.compress_picture(p, 6)[0]) for _n, p in pics]
+        budget = zip_budget(*[(n, s) for (n, _p), s in zip(pics, near6)]) + 40000
+        calls, spy = self.spy()
+        with spy:
+            target, _skipped = self.zip_up(pics, budget, priority=4)
+        self.assertGreaterEqual(len(calls), 4 * 3)  # levels 8, 7 and 6 were tried for the four pictures
+        self.assertEqual(max(collections.Counter(calls).values()), 1)  # none twice (the cache)
+        with zipfile.ZipFile(target) as zf:
+            self.assertEqual(len(json.loads(zf.read("report.json"))["pictures"]), 4)
 
     def test_a_picture_with_real_transparency_keeps_its_alpha(self):
         path = self.dir / "alpha.png"

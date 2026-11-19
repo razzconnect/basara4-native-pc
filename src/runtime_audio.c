@@ -142,7 +142,8 @@ static void level_write100(int id, const char *type, const LevelBin *b) {
 /* Is a 100 ms bin starting at start_ms within the window of a marker that is already known? */
 static int level_wanted(uint64_t start_ms, unsigned known) {
     for (unsigned i=known>LVL_MARKERS ? known-LVL_MARKERS : 0; i<known; ++i) {
-        uint64_t m=marker_ms[i%LVL_MARKERS];
+        /* read without a lock while audio_marker_at may rewrite the slot (only after LVL_MARKERS more markers) */
+        uint64_t m=__atomic_load_n(&marker_ms[i%LVL_MARKERS],__ATOMIC_RELAXED);
         if (start_ms+LVL_BIN_MS>m-(m<LVL_WINDOW_MS ? m : LVL_WINDOW_MS) && start_ms<=m+LVL_WINDOW_MS) return 1;
     }
     return 0;
@@ -206,7 +207,7 @@ static void level_flush(int id, const char *type) {
  * are written. */
 static void audio_marker_at(uint64_t now_ms, uint64_t wall, const char *reason) {
     pthread_mutex_lock(&alog_lock);
-    marker_ms[marker_count%LVL_MARKERS]=now_ms;
+    __atomic_store_n(&marker_ms[marker_count%LVL_MARKERS],now_ms,__ATOMIC_RELAXED);
     __atomic_store_n(&marker_count,marker_count+1,__ATOMIC_RELEASE);
     pthread_mutex_unlock(&alog_lock);
     runtime_audio_log("capture.marker reason=%s epoch_ms=%llu window_s=%u",reason ? reason : "?",
@@ -364,8 +365,9 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     if (id<0) { pthread_mutex_unlock(&table_lock); return open_fail(ERR_PORT_FULL,type,length,freq,param); }
     Port *p=&ports[id];
     memset(p,0,sizeof(*p));
-    memset(&levels[id],0,sizeof levels[id]); /* the bins of a port that was closed before are not this port's */
-    levels[id].markers_seen=__atomic_load_n(&marker_count,__ATOMIC_ACQUIRE);
+    /* The bins of a port that was closed before are not this port's. The markers it has "seen" start at 0, which is
+     * right: its ring is empty, so catching up on the markers set before it opened writes nothing. */
+    memset(&levels[id],0,sizeof levels[id]);
     pthread_mutex_init(&p->lock,NULL);
     p->used=1; p->type=type; p->channels=channels[format]; p->is_float=format>=3 && format!=6;
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
