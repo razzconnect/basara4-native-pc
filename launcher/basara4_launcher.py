@@ -1153,10 +1153,23 @@ class ScrolledPanel(ttk.Frame):
         return False
 
     def wheel(self, event):
-        """<MouseWheel> over the panel scrolls it (a drop-down list keeps its own wheel)."""
-        widget = self.winfo_containing(event.x_root, event.y_root)
-        if self.scrolls and widget is not None and self.contains(widget) and widget.winfo_class() != "TCombobox":
-            self.canvas.yview_scroll(-60 if event.delta > 0 else 60, "units")  # 60 px a notch (a unit is 1 px)
+        """<MouseWheel> over the panel scrolls it. A drop-down keeps its own wheel: not over the box and not over
+        its open list.
+
+        The widget under the pointer is asked for by its Tk path, not as a Python widget: the open list of a
+        drop-down is a window Tcl makes (".../popdown") that tkinter has no widget object for, so
+        winfo_containing() raises KeyError there."""
+        if not self.scrolls:
+            return
+        path = str(self.tk.call("winfo", "containing", "-displayof", str(self), event.x_root, event.y_root))
+        body = str(self.body)
+        if not (path == body or path.startswith(body + ".")):
+            return  # over the left panel, another window, or no window of this program
+        if str(self.tk.call("winfo", "toplevel", path)) != str(self.winfo_toplevel()):
+            return  # over a window of its own (the open list of a drop-down)
+        if str(self.tk.call("winfo", "class", path)) == "TCombobox":
+            return
+        self.canvas.yview_scroll(-60 if event.delta > 0 else 60, "units")  # 60 px a notch (a unit is 1 px)
 
     def reveal(self, widget, margin=8):
         """Scroll so that `widget` (a widget of the body) is inside the visible part."""

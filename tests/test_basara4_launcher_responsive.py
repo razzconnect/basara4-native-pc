@@ -199,33 +199,91 @@ class PanelFitTests(unittest.TestCase):
         finally:
             set_scaling(original)
 
-    def test_the_mouse_wheel_scrolls_the_panel_but_not_a_drop_down_or_other_windows(self):
+    def hit_testable(self, app, size):
+        """Like show(), but alpha 0.01 instead of 0: a window with alpha 0 lets the pointer through, so
+        winfo_containing (what the wheel handler asks) would find no widget under it."""
+        show(app, size)
+        app.attributes("-alpha", 0.01)
+        app.update()
+
+    def over(self, app, widget):
+        """Root coordinates just inside the widget, checked to be the widget Tk finds there."""
+        x = widget.winfo_rootx() + min(6, widget.winfo_width() // 2)
+        y = widget.winfo_rooty() + min(6, widget.winfo_height() // 2)
+        self.assertEqual(str(app.tk.call("winfo", "containing", x, y)), str(widget), "the test point is not over the widget")
+        return x, y
+
+    def spin(self, app, widget, delta):
+        """A real <MouseWheel> event on the widget, at the pointer over it (down: delta < 0)."""
+        x, y = self.over(app, widget)
+        widget.event_generate("<MouseWheel>", rootx=x, rooty=y, delta=delta)
+        app.update()
+
+    def test_the_mouse_wheel_scrolls_the_panel_through_the_real_binding_but_not_over_a_drop_down_or_the_left_panel(self):
         original = current_scaling()
         try:
             set_scaling(96 / 72 * 1.5)
             with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
-                show(app, "1020x650")
+                self.hit_testable(app, "1020x650")
                 panel = app.right_panel
-                button = find(app, ttk.Button, "Open saves")
                 combo = next(w for w in descendants(panel.body) if isinstance(w, ttk.Combobox))
-                event = mock.Mock(x_root=0, y_root=0, delta=-120)  # one notch down
-                with mock.patch.object(panel, "winfo_containing", return_value=combo):
-                    panel.wheel(event)
-                self.assertEqual(panel.canvas.canvasy(0), 0, "the wheel over a drop-down must leave the panel alone")
-                with mock.patch.object(panel, "winfo_containing", return_value=app.play):
-                    panel.wheel(event)
+                self.spin(app, app.folder_label, -120)  # one notch down over a label of the panel
+                self.assertEqual(panel.canvas.canvasy(0), 60, "one notch is 60 px")
+                self.spin(app, app.folder_label, 120)  # one notch up
+                self.assertEqual(panel.canvas.canvasy(0), 0)
+                self.spin(app, app.play, -120)
                 self.assertEqual(panel.canvas.canvasy(0), 0, "the wheel over the left panel must not scroll the right one")
-                with mock.patch.object(panel, "winfo_containing", return_value=button):
-                    panel.wheel(event)
-                    first = panel.canvas.canvasy(0)
-                    self.assertGreater(first, 0)
-                    panel.wheel(mock.Mock(x_root=0, y_root=0, delta=120))  # one notch up
-                self.assertLess(panel.canvas.canvasy(0), first)
+                panel.reveal(combo)
+                app.update()
+                top = panel.canvas.canvasy(0)
+                self.spin(app, combo, -120)
+                self.assertEqual(panel.canvas.canvasy(0), top, "the wheel over a drop-down must leave the panel alone")
                 # a window big enough for everything has nothing to scroll
-                show(app, "1500x1100")
+                self.hit_testable(app, "1500x1100")
                 self.assertFalse(panel.scrolls)
-                with mock.patch.object(panel, "winfo_containing", return_value=button):
-                    panel.wheel(event)
+                self.spin(app, app.folder_label, -120)
+                self.assertEqual(panel.canvas.canvasy(0), 0)
+        finally:
+            set_scaling(original)
+
+    def test_the_wheel_over_the_open_list_of_a_drop_down_neither_fails_nor_scrolls_the_panel(self):
+        original = current_scaling()
+        try:
+            set_scaling(96 / 72 * 1.5)
+            with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+                self.hit_testable(app, "1020x650")
+                panel = app.right_panel
+                combo = next(w for w in descendants(panel.body) if isinstance(w, ttk.Combobox))
+                panel.reveal(combo)
+                app.update()
+                top = panel.canvas.canvasy(0)
+                app.tk.call("ttk::combobox::Post", str(combo))
+                try:
+                    app.update()
+                    listbox = f"{combo}.popdown.f.l"
+                    self.assertTrue(int(app.tk.call("winfo", "ismapped", listbox)), "the list of the drop-down is not open")
+                    x = int(app.tk.call("winfo", "rootx", listbox)) + 6
+                    y = int(app.tk.call("winfo", "rooty", listbox)) + 6
+                    self.assertEqual(str(app.tk.call("winfo", "containing", x, y)), listbox)
+                    # the handler is called directly: Tk does not carry a wheel event of the list to the main window,
+                    # but the pointer can be over the list when it asks which widget is under it (it asked tkinter,
+                    # which raised KeyError: 'popdown')
+                    panel.wheel(mock.Mock(x_root=x, y_root=y, delta=-120))
+                    self.assertEqual(panel.canvas.canvasy(0), top, "the wheel over the open list must not scroll the panel")
+                finally:
+                    app.tk.call("ttk::combobox::Unpost", str(combo))
+        finally:
+            set_scaling(original)
+
+    def test_the_wheel_over_no_window_of_the_program_does_nothing(self):
+        original = current_scaling()
+        try:
+            set_scaling(96 / 72 * 1.5)
+            with tempfile.TemporaryDirectory() as tmp, launcher(tmp) as (app, paths, game, _):
+                self.hit_testable(app, "1020x650")
+                panel = app.right_panel
+                self.assertTrue(panel.scrolls)
+                panel.wheel(mock.Mock(x_root=-20000, y_root=-20000, delta=-120))
                 self.assertEqual(panel.canvas.canvasy(0), 0)
         finally:
             set_scaling(original)
