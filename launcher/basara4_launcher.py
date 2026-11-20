@@ -925,6 +925,11 @@ DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless
 FPS_LIMITS = [("60 (game default)", 60), ("90", 90), ("120", 120), ("144", 144), ("165", 165),
               ("240", 240), ("Unlimited", 0)]
 NATIVE_SIZE = (1920, 1080)
+# The Game section: Browse, Cheats and Manage DLC are one width (characters; the longest text, "Manage DLC…", is 11),
+# 8 px between the buttons, and the Add-ons row sits a little under the note about the game image.
+GAME_BUTTON_WIDTH = 12
+GAME_BUTTON_GAP = 8
+ADDONS_GAP = 13
 # The size shown is the render size (basara4_patches.RESOLUTION_SIZES), so the label always matches it.
 RESOLUTIONS = [
     (f"{w} x {h}  ({desc})", key)
@@ -1047,6 +1052,132 @@ def prepare_content_profile(game, dlc_dir):
     return None
 
 
+class FlowRow(ttk.Frame):
+    """A row of widgets that goes on to a second line when the row is narrower than the widgets are together.
+
+    The widgets are placed by hand (not packed) and the row only asks for a small width, so a long row never makes
+    the panel wider than the window: the row is as wide as the panel gives it and as tall as its lines need."""
+
+    def __init__(self, master, line_gap=4):
+        super().__init__(master, style="Panel.TFrame", width=1, height=1)
+        self.line_gap = line_gap
+        self.items = []  # (widget, space after it)
+        self._signature = None
+        self.bind("<Configure>", lambda _e: self.relayout(), add="+")
+
+    def add(self, widget, gap=0):
+        self.items.append((widget, gap))
+        widget.bind("<Configure>", lambda _e: self.relayout(), add="+")  # a text that changes size changes the lines
+        self.relayout()
+        return widget
+
+    def lines(self, width):
+        """The widgets split into lines for `width` (None: one line): [[(widget, x, w, h), ...], ...]."""
+        lines, line, x = [], [], 0
+        for widget, gap in self.items:
+            w, h = widget.winfo_reqwidth(), widget.winfo_reqheight()
+            if line and width is not None and x + w > width:
+                lines.append(line)
+                line, x = [], 0
+            line.append((widget, x, w, h))
+            x += w + gap
+        if line:
+            lines.append(line)
+        return lines
+
+    def relayout(self):
+        width = self.winfo_width()
+        lines = self.lines(width if width > 1 else None)
+        signature = (width, tuple((w, x, ww, h) for line in lines for w, x, ww, h in line))
+        if signature == self._signature:
+            return
+        self._signature = signature
+        y = 0
+        for line in lines:
+            height = max(h for _w, _x, _ww, h in line)
+            for widget, x, _w, h in line:
+                widget.place(x=x, y=y + (height - h) // 2)
+            y += height + self.line_gap
+        total = max(1, y - self.line_gap)
+        if int(self.cget("height")) != total:
+            self.configure(height=total)
+
+
+class ScrolledPanel(ttk.Frame):
+    """The panel with the settings: it is as wide as the space it is given and, when what it holds is taller than
+    that space, it scrolls (scroll bar, mouse wheel, and the focus keys bring the focused widget into view).
+
+    `body` is the frame the widgets go into. The bar's column is always reserved, so showing or hiding the bar
+    never changes the width the body has (a changed width would change how the lines wrap, and with it the height)."""
+
+    PAD = 18
+
+    def __init__(self, master):
+        super().__init__(master, style="Panel.TFrame")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self, bg=PANEL, highlightthickness=0, bd=0, yscrollincrement=1,
+                                takefocus=0)  # Tab goes through the widgets, not to the canvas
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.bar.grid(row=0, column=1, sticky="ns")
+        self.columnconfigure(1, minsize=max(12, self.bar.winfo_reqwidth()))
+        self.body = ttk.Frame(self.canvas, style="Panel.TFrame", padding=self.PAD)
+        self.window = self.canvas.create_window(0, 0, window=self.body, anchor="nw")
+        self.canvas.bind("<Configure>", self._canvas_changed, add="+")
+        self.body.bind("<Configure>", lambda _e: self.update_scroll(), add="+")
+
+    def _canvas_changed(self, event):
+        self.canvas.itemconfigure(self.window, width=event.width)
+        self.update_scroll()
+
+    @property
+    def scrolls(self):
+        return self.body.winfo_reqheight() > self.canvas.winfo_height() > 1
+
+    def update_scroll(self):
+        need, shown = self.body.winfo_reqheight(), self.canvas.winfo_height()
+        self.canvas.configure(scrollregion=(0, 0, self.canvas.winfo_width(), max(need, shown)))
+        if need > shown > 1:
+            self.bar.grid()
+        else:
+            self.bar.grid_remove()
+            self.canvas.yview_moveto(0)
+
+    def contains(self, widget):
+        while widget is not None:
+            if widget is self.body:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def wheel(self, event):
+        """<MouseWheel> over the panel scrolls it (a drop-down list keeps its own wheel)."""
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        if self.scrolls and widget is not None and self.contains(widget) and widget.winfo_class() != "TCombobox":
+            self.canvas.yview_scroll(-60 if event.delta > 0 else 60, "units")  # 60 px a notch (a unit is 1 px)
+
+    def reveal(self, widget, margin=8):
+        """Scroll so that `widget` (a widget of the body) is inside the visible part."""
+        if not (self.scrolls and self.contains(widget)):
+            return
+        top, w = 0, widget
+        while w is not self.body:
+            top += w.winfo_y()
+            w = w.master
+        bottom = top + widget.winfo_height()
+        total = max(self.body.winfo_reqheight(), 1)
+        view_top = self.canvas.canvasy(0)
+        view_bottom = view_top + self.canvas.winfo_height()
+        if top - margin < view_top:
+            # a widget near the top of the panel: show the panel from its very top (the heading above it)
+            target = top - margin if top - margin >= 60 else 0
+            self.canvas.yview_moveto(target / total)
+        elif bottom + margin > view_bottom:
+            self.canvas.yview_moveto(max(0, (bottom + margin - self.canvas.winfo_height()) / total))
+
+
 class Launcher(tk.Tk):
     def __init__(self, play_now=False):
         super().__init__()
@@ -1109,6 +1240,10 @@ class Launcher(tk.Tk):
         s.configure("Dialog.TButton", padding=(14, 6), width=14)
         s.configure("DialogAccent.TButton", background=RED, foreground="#fff", padding=(14, 6), width=14)
         s.map("DialogAccent.TButton", background=[("active", "#b8362d"), ("disabled", "#4a2522")])
+        # The scroll bar of the settings panel in the launcher's colours (it shows only when the panel is taller than the window)
+        s.configure("Vertical.TScrollbar", background="#4a423a", troughcolor=PANEL, bordercolor=PANEL,
+                    lightcolor="#4a423a", darkcolor="#4a423a", arrowcolor=GOLD, gripcount=0)
+        s.map("Vertical.TScrollbar", background=[("active", "#5c5248"), ("pressed", "#5c5248")])
         s.configure("TCombobox", arrowcolor=GOLD, selectbackground=PANEL, selectforeground=FG)
         s.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", FG)])
         self.option_add("*TCombobox*Listbox.background", PANEL)
@@ -1183,25 +1318,39 @@ class Launcher(tk.Tk):
         ttk.Button(btn_row, text="Credits", command=self.show_credits).pack(side="left", fill="x", expand=True, padx=(0, 2))
         ttk.Button(btn_row, text="Check Update", command=self.check_update_manual).pack(side="right", fill="x", expand=True, padx=(2, 0))
 
-        right = ttk.Frame(root, style="Panel.TFrame", padding=18)
-        right.grid(row=0, column=1, sticky="nsew", padx=(0, 16), pady=16)
+        # The settings panel scrolls when it is taller than the window, and its lines wrap when it is narrower than
+        # they are (the Windows scale makes buttons and text bigger); the PLAY button and the left panel stay put.
+        self.right_panel = ScrolledPanel(root)
+        self.right_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 16), pady=16)
+        right = self.right_panel.body
         right.columnconfigure(1, weight=1)
         r = 0
-        ttk.Label(right, text="Game", style="Head.TLabel").grid(row=r, column=0, sticky="w")
-        # Cheats and Manage DLC are about the game: they sit in its section, at the right of the heading
-        game_tools = ttk.Frame(right, style="Panel.TFrame")
-        game_tools.grid(row=r, column=1, columnspan=2, sticky="e")
-        ttk.Button(game_tools, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
-        ttk.Button(game_tools, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
+        ttk.Label(right, text="Game", style="Head.TLabel").grid(row=r, column=0, columnspan=3, sticky="w")
         r += 1
         self.game_var = tk.StringVar(value=self.cfg["game"])
         self.game_var.trace_add("write", lambda *_: self._refresh_image_label())
-        ttk.Label(right, text="Game folder", style="Panel.TLabel").grid(row=r, column=0, sticky="w", pady=4)
+        self.folder_label = ttk.Label(right, text="Game folder", style="Panel.TLabel")
+        self.folder_label.grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(right, textvariable=self.game_var).grid(row=r, column=1, sticky="ew", padx=8)
-        ttk.Button(right, text="Browse…", command=self._browse).grid(row=r, column=2)
+        # Browse, Cheats and Manage DLC are one size (a width in characters, so it follows the font and the Windows
+        # scale): the three read as one group
+        self.browse_button = ttk.Button(right, text="Browse…", width=GAME_BUTTON_WIDTH, command=self._browse)
+        self.browse_button.grid(row=r, column=2)
         r += 1
-        self.image_label = ttk.Label(right, text="", style="Muted.TLabel")
-        self.image_label.grid(row=r, column=1, sticky="w", padx=8)
+        # justify left: the note wraps to the width of the column (_fit_texts) instead of running past the Browse column
+        self.image_label = ttk.Label(right, text="", style="Muted.TLabel", justify="left")
+        self.image_label.grid(row=r, column=1, columnspan=2, sticky="w", padx=8)
+        r += 1
+        # What belongs to the game besides its folder: its own row under the folder and its note, labelled in the
+        # label column, the buttons starting where the folder entry starts. Cheats and Manage DLC used to sit in the
+        # heading row, right above Browse.
+        self.addons_label = ttk.Label(right, text="Add-ons", style="Panel.TLabel")
+        self.addons_label.grid(row=r, column=0, sticky="w", pady=(ADDONS_GAP, 0))
+        game_tools = ttk.Frame(right, style="Panel.TFrame")
+        game_tools.grid(row=r, column=1, columnspan=2, sticky="w", padx=8, pady=(ADDONS_GAP, 0))
+        ttk.Button(game_tools, text="Cheats…", width=GAME_BUTTON_WIDTH, command=self.open_cheats_manager).pack(
+            side="left", padx=(0, GAME_BUTTON_GAP))
+        ttk.Button(game_tools, text="Manage DLC…", width=GAME_BUTTON_WIDTH, command=self.open_dlc_manager).pack(side="left")
         r += 1
 
         ttk.Separator(right).grid(row=r, column=0, columnspan=3, sticky="ew", pady=12)
@@ -1209,41 +1358,51 @@ class Launcher(tk.Tk):
         ttk.Label(right, text="Display", style="Head.TLabel").grid(row=r, column=0, columnspan=3, sticky="w")
         r += 1
         self.mode_var = tk.StringVar(value=self.cfg["display_mode"])
-        modes = ttk.Frame(right, style="Panel.TFrame")
-        modes.grid(row=r, column=0, columnspan=3, sticky="w", pady=4)
+        modes = FlowRow(right)
+        modes.grid(row=r, column=0, columnspan=3, sticky="ew", pady=4)
         for label, key in DISPLAY_MODES:
-            ttk.Radiobutton(modes, text=label, value=key, variable=self.mode_var).pack(side="left", padx=(0, 18))
+            modes.add(ttk.Radiobutton(modes, text=label, value=key, variable=self.mode_var), 18)
         r += 1
 
         opts = ttk.Frame(right, style="Panel.TFrame")
         opts.grid(row=r, column=0, columnspan=3, sticky="ew", pady=6)
 
         # Baris 0: Graphics Card (Col 0: Label, Col 1..3: Combobox melebar rapi)
-        ttk.Label(opts, text="Graphics card", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        gpu_label = ttk.Label(opts, text="Graphics card", style="Panel.TLabel")
+        gpu_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.gpu_var = tk.StringVar()
         gpu_display_names = [name for _, name, _ in SYSTEM_GPUS]
         ttk.Combobox(opts, textvariable=self.gpu_var, state="readonly", width=58,
                      values=gpu_display_names).grid(row=0, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(0, 8))
 
-        # Baris 1: Frame limit & Anisotropic
-        ttk.Label(opts, text="Frame limit", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        # Baris 1-4: Frame limit & Anisotropic, Resolution & Upscaling. Two pairs side by side when the panel is wide
+        # enough; the second pair of each moves to its own row (2 and 4, empty and so 0 high until then) when it is not
+        # (_fit_options). Rows 1 and 3 hold the first pair.
+        fps_label = ttk.Label(opts, text="Frame limit", style="Panel.TLabel")
+        fps_label.grid(row=1, column=0, sticky="w", pady=4)
         self.fps_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.fps_var, state="readonly", width=31,
-                     values=[n for n, _ in FPS_LIMITS]).grid(row=1, column=1, sticky="w", padx=(8, 16), pady=4)
-        ttk.Label(opts, text="Anisotropic", style="Panel.TLabel").grid(row=1, column=2, sticky="w", pady=4)
+        fps_combo = ttk.Combobox(opts, textvariable=self.fps_var, state="readonly", width=31,
+                                 values=[n for n, _ in FPS_LIMITS])
+        fps_combo.grid(row=1, column=1, sticky="w", padx=(8, 16), pady=4)
+        aniso_label = ttk.Label(opts, text="Anisotropic", style="Panel.TLabel")
         self.aniso_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.aniso_var, state="readonly", width=18,
-                     values=[n for n, _ in ANISO]).grid(row=1, column=3, sticky="w", padx=(8, 0), pady=4)
+        aniso_combo = ttk.Combobox(opts, textvariable=self.aniso_var, state="readonly", width=18,
+                                   values=[n for n, _ in ANISO])
 
-        # Baris 2: Resolution & Upscaling
-        ttk.Label(opts, text="Resolution", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=4)
+        res_label = ttk.Label(opts, text="Resolution", style="Panel.TLabel")
+        res_label.grid(row=3, column=0, sticky="w", pady=4)
         self.res_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.res_var, state="readonly", width=31,
-                     values=[n for n, _ in RESOLUTIONS]).grid(row=2, column=1, sticky="w", padx=(8, 16), pady=4)
-        ttk.Label(opts, text="Upscaling", style="Panel.TLabel").grid(row=2, column=2, sticky="w", pady=4)
+        res_combo = ttk.Combobox(opts, textvariable=self.res_var, state="readonly", width=31,
+                                 values=[n for n, _ in RESOLUTIONS])
+        res_combo.grid(row=3, column=1, sticky="w", padx=(8, 16), pady=4)
+        up_label = ttk.Label(opts, text="Upscaling", style="Panel.TLabel")
         self.up_var = tk.StringVar()
-        ttk.Combobox(opts, textvariable=self.up_var, state="readonly", width=18,
-                     values=[n for n, _ in UPSCALERS]).grid(row=2, column=3, sticky="w", padx=(8, 0), pady=4)
+        up_combo = ttk.Combobox(opts, textvariable=self.up_var, state="readonly", width=18,
+                                values=[n for n, _ in UPSCALERS])
+        self.option_pairs = [(fps_combo, aniso_label, aniso_combo, 1, 2), (res_combo, up_label, up_combo, 3, 4)]
+        self._option_labels = [gpu_label, fps_label, res_label]  # the label column when the pairs are side by side
+        self.option_sides = None  # "side" (second pair beside the first) or "below"; set by _fit_options
+        self._fit_options(wide=True)
 
         # Baris 3: Checkboxes (VSync, RCAS, Audio log, WAV)
         self.vsync_var = tk.BooleanVar(value=self.cfg["vsync"])
@@ -1254,29 +1413,30 @@ class Launcher(tk.Tk):
         self.tracer_var = tk.BooleanVar(value=bool(self.cfg.get("render_trace") or self.cfg.get("audio_log")))
         self.wav_var = tk.BooleanVar(value=False)
 
-        chk_frame = ttk.Frame(opts, style="Panel.TFrame")
-        chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 2))
-        ttk.Checkbutton(chk_frame, text="VSync", variable=self.vsync_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(chk_frame, text="Sharpening (RCAS)", variable=self.rcas_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(chk_frame, text="+ WAV capture (developers, up to 3 GB)", variable=self.wav_var,
-                        command=self._wav_toggled).pack(side="left")
+        chk_frame = FlowRow(opts)
+        chk_frame.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+        chk_frame.add(ttk.Checkbutton(chk_frame, text="VSync", variable=self.vsync_var), 16)
+        chk_frame.add(ttk.Checkbutton(chk_frame, text="Sharpening (RCAS)", variable=self.rcas_var), 16)
+        chk_frame.add(ttk.Checkbutton(chk_frame, text="+ WAV capture (developers, up to 3 GB)", variable=self.wav_var,
+                                      command=self._wav_toggled))
 
         # Baris 4: the Tracer and the Report that sends what it recorded
-        trace_frame = ttk.Frame(opts, style="Panel.TFrame")
-        trace_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 4))
-        ttk.Checkbutton(trace_frame, text="Tracer", variable=self.tracer_var, command=self._tracer_toggled).pack(side="left", padx=(0, 10))
-        ttk.Button(trace_frame, text="Report", command=lambda: self.on_report()).pack(side="left", padx=(0, 10))
-        ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
-        # Short: the row must fit the panel (the dropdown columns above it are sized by its widest row)
-        ttk.Label(trace_frame, text="At the bug: F11, then Report", style="Muted.TLabel").pack(side="left")
+        trace_frame = FlowRow(opts)
+        trace_frame.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 4))
+        trace_frame.add(ttk.Checkbutton(trace_frame, text="Tracer", variable=self.tracer_var, command=self._tracer_toggled), 10)
+        trace_frame.add(ttk.Button(trace_frame, text="Report", command=lambda: self.on_report()), 10)
+        trace_frame.add(ttk.Button(trace_frame, text="Open render log", command=self.open_render_log), 10)
+        trace_frame.add(ttk.Label(trace_frame, text="At the bug: F11, then Report", style="Muted.TLabel"))
 
-        # Baris 5: Keterangan / Tips
-        ttk.Label(opts, text="The game draws at 1080p. Window size sets windowed mode. FSR 1 sharpens if screen > 1080p.\n"
-                             "Above 60 turns off internal frame limiter. VSync caps rate at monitor refresh.",
-                  style="Muted.TLabel", wraplength=600).grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        # Baris 5: Keterangan / Tips (wraps to the panel's width: _fit_texts)
+        self.tips_label = ttk.Label(opts, text="The game draws at 1080p. Window size sets windowed mode. FSR 1 sharpens if screen > 1080p.\n"
+                                               "Above 60 turns off internal frame limiter. VSync caps rate at monitor refresh.",
+                                    style="Muted.TLabel", wraplength=600, justify="left")
+        self.tips_label.grid(row=7, column=0, columnspan=4, sticky="w", pady=(4, 0))
         r += 1
-        ttk.Label(right, text="In-game menu: Insert, or R3 + L2 on the pad (it changes these too).",
-                  style="Muted.TLabel").grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        self.menu_label = ttk.Label(right, text="In-game menu: Insert, or R3 + L2 on the pad (it changes these too).",
+                                    style="Muted.TLabel", justify="left")
+        self.menu_label.grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 0))
         r += 1
 
         ttk.Separator(right).grid(row=r, column=0, columnspan=3, sticky="ew", pady=12)
@@ -1286,38 +1446,80 @@ class Launcher(tk.Tk):
         r += 1
 
         # Mode Input Bar: Radio selector Controller vs KBM Co-op
-        input_mode_frame = ttk.Frame(right, style="Panel.TFrame")
-        input_mode_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 6))
-        ttk.Label(input_mode_frame, text="Input Mode:", style="Panel.TLabel").pack(side="left", padx=(0, 10))
+        input_mode_frame = FlowRow(right)
+        input_mode_frame.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(2, 6))
+        input_mode_frame.add(ttk.Label(input_mode_frame, text="Input Mode:", style="Panel.TLabel"), 10)
         self.input_mode_var = tk.StringVar(value=self.cfg.get("input_mode", "controller"))
-        ttk.Radiobutton(input_mode_frame, text="🎮 Controller (Stick 1 = P1, Stick 2 = P2)",
-                        value="controller", variable=self.input_mode_var).pack(side="left", padx=(0, 14))
-        ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stick 1 = P2)",
-                        value="kbm_coop", variable=self.input_mode_var).pack(side="left")
+        input_mode_frame.add(ttk.Radiobutton(input_mode_frame, text="🎮 Controller (Stick 1 = P1, Stick 2 = P2)",
+                                             value="controller", variable=self.input_mode_var), 14)
+        input_mode_frame.add(ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stick 1 = P2)",
+                                             value="kbm_coop", variable=self.input_mode_var))
         r += 1
 
         # Row 1 of tools
-        tools1 = ttk.Frame(right, style="Panel.TFrame")
-        tools1.grid(row=r, column=0, columnspan=3, sticky="w", pady=(4, 4))
-        ttk.Button(tools1, text="⌨️ Keyboard & Mouse Controls", command=self.open_keymap_ui).pack(side="left", padx=(0, 8))
+        tools1 = FlowRow(right)
+        tools1.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+        tools1.add(ttk.Button(tools1, text="⌨️ Keyboard & Mouse Controls", command=self.open_keymap_ui), 8)
         # One button: the Controller window has Map all, Map sticks only and Reset
         self._pad_icon = controller_icon(self, FG)
-        ttk.Button(tools1, text="Controller Mapping", image=self._pad_icon, compound="left",
-                   command=lambda: self.map_pad([])).pack(side="left")
+        tools1.add(ttk.Button(tools1, text="Controller Mapping", image=self._pad_icon, compound="left",
+                              command=lambda: self.map_pad([])))
         r += 1
 
         # Row 2 of tools
-        tools2 = ttk.Frame(right, style="Panel.TFrame")
-        tools2.grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Open captures", command=self.open_captures).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left")
+        tools2 = FlowRow(right)
+        tools2.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        tools2.add(ttk.Button(tools2, text="Open log", command=self.open_log), 6)
+        tools2.add(ttk.Button(tools2, text="Open audio log", command=self.open_audio_log), 6)
+        tools2.add(ttk.Button(tools2, text="Open captures", command=self.open_captures), 6)
+        tools2.add(ttk.Button(tools2, text="Open saves", command=self.open_saves))
         r += 1
         r += 1
-        self.pad_label = ttk.Label(right, text="", style="Muted.TLabel")
+        self.pad_label = ttk.Label(right, text="", style="Muted.TLabel", justify="left")
         self.pad_label.grid(row=r, column=0, columnspan=3, sticky="w")
         self._pad_text()
+        # The long notes wrap to the width the panel has; a widget that takes the focus (Tab) is scrolled into view
+        right.bind("<Configure>", lambda _e: self._fit_texts(), add="+")
+        self.bind("<MouseWheel>", self.right_panel.wheel, add="+")
+        self.bind("<FocusIn>", lambda e: self.right_panel.reveal(e.widget), add="+")
+        self._fit_texts()
+
+    def _fit_texts(self):
+        """The notes of the settings panel wrap to the width they have, so none is cut off at any Windows scale or
+        window size (the texts themselves are not changed)."""
+        inner = self.right_panel.body.winfo_width() - 2 * ScrolledPanel.PAD
+        if inner <= 1:
+            return
+        label_column = max(self.folder_label.winfo_reqwidth(), self.addons_label.winfo_reqwidth())
+        wraps = [(self.image_label, inner - label_column - 16), (self.tips_label, inner),
+                 (self.menu_label, inner), (self.pad_label, inner)]
+        for label, width in wraps:
+            width = max(120, width)
+            if str(label.cget("wraplength")) != str(width):
+                label.configure(wraplength=width)
+        self._fit_options(wide=self._options_need() <= inner)
+
+    def _options_need(self):
+        """The width the two pairs side by side ask for (from the widgets: it does not depend on how they are placed)."""
+        label_column = max(w.winfo_reqwidth() for w in self._option_labels)
+        return max(label_column + 8 + first.winfo_reqwidth() + 16 + label.winfo_reqwidth() + 8 + second.winfo_reqwidth()
+                   for first, label, second, _row, _below in self.option_pairs)
+
+    def _fit_options(self, wide):
+        """Anisotropic and Upscaling sit beside Frame limit and Resolution when the panel is wide enough; under them
+        (same columns as the first pair) when it is not, so no drop-down is cut off at a large Windows scale."""
+        side = "side" if wide else "below"
+        if side == self.option_sides:
+            return
+        self.option_sides = side
+        for first, label, second, row, below_row in self.option_pairs:
+            if wide:
+                label.grid(row=row, column=2, sticky="w", pady=4)
+                second.grid(row=row, column=3, sticky="w", padx=(8, 0), pady=4)
+            else:
+                label.grid(row=below_row, column=0, sticky="w", pady=4)
+                second.grid(row=below_row, column=1, sticky="w", padx=(8, 16), pady=4)
+
 
     # ---- helpers ----
     def _browse(self):
