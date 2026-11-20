@@ -106,7 +106,7 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 | **Anisotropic Filtering**| Off, 2x, 4x, 8x, 16x | Kualitas filter tekstur untuk sudut pandang miring. |
 | **Frame Limit** | 60 (Default), 90, 120, 144, 165, 240, Unlimited | Membuka cap FPS bawaan game menggunakan signature patch. |
 | **VSync** | Aktif / Nonaktif | Sinkronisasi frame rate dengan refresh rate monitor. |
-| **Tracer** | Aktif / Nonaktif | Mencatat render trace, capture F11, dan log audio (`user\audio_debug.log`, detail suara Ngs2) satu sesi; tombol **Report** di sebelahnya membuat satu zip dari sesi itu. |
+| **Tracer** | Aktif / Nonaktif | Mencatat render trace, capture F11, dan log audio (`user\audio_debug.log`, detail suara Ngs2) satu sesi; tombol **Report** di sebelahnya membuat satu zip dari sesi itu. Launcher menyimpan berkas Tracer 20 sesi terakhir dan menghapus yang lebih lama saat start. |
 | **Cheats** | Gold, special coin, growth points, weapon points, weapon rank points | Cheat GoldHEN oleh **Q8Despair**, untuk CUSA01159 update 01.02. Semua cheat dapat diaktifkan bersamaan; launcher memisahkan trampoline agar alamat patch tidak bertabrakan. |
 
 ---
@@ -176,12 +176,23 @@ Launcher mendeteksi DLC hasil ekstrak di folder `DLC` di samping folder instalas
 
 ## Troubleshooting & Log
 
-Jika menemukan bug atau crash, sertakan berkas log dari folder `user\`:
-- **`user\last_run.log`**: Log runtime utama (inisialisasi, compile shader Vulkan, crash dump).
-- **`user\prepare.log`**: Log proses ekstraksi dan penautan modul.
-- **`user\audio_debug.log`**: Detail pembacaan suara dan musik Ngs2.
+Untuk melaporkan masalah, buat zip laporan dari launcher:
+- **Crash:** tekan **Save report** di jendela yang muncul. Satu zip dibuat di `user\reports` dan disorot di Explorer; **Open Discord** membuka kanal laporan bug, tempat kamu menyeret zip ke postinganmu. Tidak ada yang diunggah otomatis.
+- **Masalah gambar, shader, atau suara:** centang **Tracer** (enable Tracer), main sampai masalahnya terjadi, tekan **F11** saat terlihat, tutup game dengan **Stop game**, lalu tekan **Report** dan tulis apa yang kamu lihat dan tekan (opsional).
 
-Menganalisis log audio lewat terminal:
+Kirim **hanya zip**. Isinya spek PC, pengaturan, dan log sesi itu dengan nama akun dan nama folder disamarkan (dengan Tracer juga render trace, log audio, dan gambar F11), tidak pernah dump crash atau rekaman WAV, dan di bawah 9 MiB. Penyamaran ada batasnya: nama 1-2 huruf di teks bebas, nama yang menempel pada huruf atau angka, nama profil Windows yang berbeda dari nama akun, path berspasi, dan metadata PNG tidak diperiksa, jadi periksa zipnya bila ragu.
+
+Berkas mentah di `user\` **tidak disamarkan: jangan dikirim**. Berkas itu untuk kamu baca sendiri:
+- **`user\last_run.log`**: Log runtime utama (inisialisasi, compile shader Vulkan, crash dump); tombol **Open log** membukanya.
+- **`user\prepare.log`**: Log proses ekstraksi dan penautan modul.
+- **`user\audio_debug.log`**: Detail pembacaan suara dan musik Ngs2 (aktif dengan Tracer).
+- **`user\render_traces\`**, **`user\captures\`** (Tracer) dan **`user\crash\*.dmp`** (sebagian memori game).
+
+Jangan pernah kirim file game (dump, `.pkg`, `eboot.bin`, atau isi `game\`).
+
+Launcher menyimpan berkas Tracer 20 sesi terakhir (sesi biasa ikut dihitung) dan menghapus yang lebih lama saat start: salin dulu gambar F11 yang ingin kamu simpan. `user\audio_wav` (WAV capture developer, tidak pernah masuk zip) tidak dihapus otomatis; launcher bertanya dulu sebelum menghapusnya.
+
+Merangkum log audio milikmu lewat terminal:
 ```bash
 python tools/audio_log_summary.py user/audio_debug.log
 ```

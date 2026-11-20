@@ -29,7 +29,9 @@ Launcher options
   Upscaling         Off, or FSR 1 to the window size
   Frame limit       60 (default), 90, 120, 144, 165, 240, Unlimited
   VSync, sharpening (RCAS), anisotropic filtering 2x-16x
-  Controller        Controller Mapping (Map all, Map sticks only, Reset)
+  Controller        Controller Mapping (Map all, Map sticks only, Reset), Keyboard & Mouse Controls
+  Game              Cheats..., Manage DLC... (at the right of the Game heading)
+  Tracer, Report    for reporting a graphics or audio problem (see below)
   Credits           shows NOTICE.md
 
 Frame rates above 60
@@ -48,8 +50,9 @@ In-game menu
 
 Controller
   XInput and SDL-supported pads work directly. "Controller Mapping" opens the Controller window: press
-  Map all, press each button when it is asked for, then Done saves. It can customize any pad, lets you
-  select one when multiple are connected, and keeps mappings for other pads. To make Xbox A act
+  Map all, press each button when it is asked for, then Done saves; Map sticks only maps just the sticks;
+  Reset deletes the saved mapping (it asks first). It can customize any pad, lets you select one when
+  multiple are connected, and keeps mappings for other pads. To make Xbox A act
   as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
   For the sticks the window shows which way to push. Afterwards it shows what the game will receive
   from each stick: if that goes another way than your thumb, tick Flip, or map the stick again.
@@ -58,6 +61,8 @@ Problems
   After a crash, press Save report in the window that appears. It makes one zip in user\reports and shows it
   in a folder window; drag that zip into your post on Discord. The zip holds your PC specs, settings and the
   logs of that session with your account and folder names hidden, and no crash dump.
+  Send only that zip. The raw files in user\ (last_run.log, prepare.log, audio_debug.log, render_traces,
+  captures, crash\*.dmp) are not masked: do not send them. Never send game files.
 
 Graphics, shader and audio problems (a glitch, missing music or voices)
   Tick Tracer in the launcher and play until the problem happens. Press F11 when you see it (it saves a
@@ -71,3 +76,9 @@ Graphics, shader and audio problems (a glitch, missing music or voices)
   colour value is rounded by at most a few of 255; report.txt lists each picture and which of the two was used.
   Raw audio (WAV) never goes in the zip. "+ WAV capture" is for developers.
   To read the audio log yourself: python tools/audio_log_summary.py user/audio_debug.log (from the source repository).
+
+Automatic cleanup
+  When the launcher starts it keeps the Tracer files (F11 pictures and render trace folders) of the last 20
+  sessions and removes older ones. Normal sessions without Tracer count too, so copy any F11 picture you want
+  to keep first. The zips in user\reports are also kept to the last 20. user\audio_wav (the developer WAV
+  capture) is not removed automatically: the launcher asks before deleting it (above 50 MB, default No).
