@@ -2,6 +2,7 @@
 // RenderTrace telemetry, deduped anomaly ring, auto-capture queue, and SPARTAN_RENDER_TRACE log.
 // No game or Vulkan device required.
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -157,6 +158,16 @@ int main() {
     assert(stdout_text.find("Present summary: presented=180 ") == 0);
 
     const std::string written = ReadAll(log_path);
+    {
+        // The wall-clock time of the log's 0 ms, so this log can be laid beside the audio log (which has its own).
+        const std::string key = "log.start format=1 epoch_ms=";
+        assert(CountOccurrences(written, key) == 1);
+        const long long epoch = std::stoll(written.substr(written.find(key) + key.size()));
+        const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch()).count();
+        assert(epoch <= now && now - epoch < 10 * 60 * 1000);
+        assert(written.find(key) < written.find("gpu.info ")); // before the other header lines
+    }
     assert(CountOccurrences(written, "gpu.info ") == 1);
     assert(CountOccurrences(written, "gpu.caps ") == 1);
     assert(CountOccurrences(written, "config ") == 1);

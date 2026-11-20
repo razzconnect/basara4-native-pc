@@ -80,7 +80,7 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(result.loaded)
         self.assertIn("vulkan-1.dll", result.error)
         self.assertEqual(problem(result), "missing")
-        self.assertEqual(bl.gpu_choices(result), [(-1, "Auto (Prioritaskan GPU Diskrit)", True)])
+        self.assertEqual(bl.gpu_choices(result), [(-1, "Auto (Prefer discrete GPU)", True)])
 
     def test_vulkan_1_0_loader_is_old(self):
         # The user report: exit 0xC0000139, empty log, no GPU listed. A 1.0 loader has no
@@ -147,7 +147,7 @@ class ProbeTests(unittest.TestCase):
         result, _ = probe(devices=[("NVIDIA GeForce RTX 4070", DGPU, (1, 4)),
                                    ("AMD Radeon(TM) Graphics", IGPU, (1, 4)), ("llvmpipe", CPU, (1, 3))])
         self.assertEqual(bl.gpu_choices(result), [
-            (-1, "Auto (Prioritaskan GPU Diskrit)", True),
+            (-1, "Auto (Prefer discrete GPU)", True),
             (0, "GPU 0: NVIDIA GeForce RTX 4070 (dGPU)", True),
             (1, "GPU 1: AMD Radeon(TM) Graphics (iGPU)", False),
             (2, "GPU 2: llvmpipe (GPU)", False)])

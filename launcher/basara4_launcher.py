@@ -488,8 +488,34 @@ def content_info(cfg):
     return {"dlc": dlc, "cheats": list(cfg.get("cheats", [])), "dlc_dir": cfg.get("dlc_dir")}
 
 
-def render_trace_report():
-    """Crash-report section: the newest render trace log tail and captures, or why they are missing."""
+def session_artifacts(report):
+    """The files the session `report` describes (basara4_report.collect_session_artifacts) in this install's
+    folders: its own trace folder and captures and the logs it wrote, never another session's."""
+    return basara4_report.collect_session_artifacts(
+        report, traces_dir=RENDER_TRACES, captures_dir=CAPTURES_DIR, fallback_trace_log=RENDER_TRACE_LOG,
+        audio_log=AUDIO_LOG, run_log=LOG, prepare_log=PREPARE_LOG)
+
+
+def render_trace_report(report=None):
+    """Report section: the render trace tail and captures, or why they are missing. For a session `report`
+    it is that session's own trace and captures; without one, the newest trace log and captures."""
+    if report is not None:
+        art = session_artifacts(report)
+        text = ""
+        if art.trace_log:
+            try:
+                lines = basara4_report.read_text(art.trace_log).splitlines()
+            except OSError as exc:
+                lines = [f"{art.trace_label} could not be read: {exc.strerror or exc}"]
+            if lines:
+                text += (f"\n--- [Render Trace of this session ({art.trace_label}): last {min(12, len(lines))} "
+                         f"of {len(lines)} lines; render_trace.log in this zip has all of them] ---\n"
+                         + "\n".join(lines[-12:]) + "\n")
+        text += "".join(f"\n--- [Not read] {note}\n" for note in art.notes)
+        if art.captures:
+            text += ("\n--- [Captures of this session (captures\\ in this zip)] ---\n"
+                     + "\n".join(f"  - {name}" for name in art.captures) + "\n")
+        return text
     text = ""
     try:
         session = latest_trace_session()
@@ -516,11 +542,11 @@ def render_trace_report():
     return text
 
 
-def render_trace_summary():
-    """The render trace part of the report in the zip: render_trace_report(), or one line saying why there is
-    nothing (it is masked with the rest of report.txt)."""
-    text = render_trace_report().strip("\n")
-    return text or "  (none: Render debug trace was off, or it left no log or captures)"
+def render_trace_summary(report=None):
+    """The render trace part of the report in the zip: render_trace_report(report), or one line saying why
+    there is nothing (it is masked with the rest of report.txt)."""
+    text = render_trace_report(report).strip("\n")
+    return text or "  (none: Tracer was off in this session, or it left no log or captures)"
 
 
 def check_commit_limit_mb():
@@ -576,6 +602,7 @@ except ImportError:  # still works, just without artwork
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import basara4_patches  # noqa: E402
 import basara4_cheats  # noqa: E402
+import basara4_controller  # noqa: E402
 import basara4_report  # noqa: E402
 
 DEFAULTS = {"game": "", "dlc_dir": str(DEFAULT_DLC_DIR),
@@ -605,20 +632,20 @@ DEFAULT_PC_KEYMAP = {
 }
 
 ACTION_DESCRIPTIONS = [
-    ("square", "Normal Attack (Serangan Biasa)", "Kotak / Square"),
-    ("triangle", "Special Skill 1 (Skill Utama)", "Segitiga / Triangle"),
-    ("cross", "Jump (Lompat)", "Silang / Cross"),
-    ("circle", "Basara Attack (Ultimate)", "Lingkaran / Circle"),
-    ("l1", "Guard / Tangkis / Dash", "L1"),
-    ("r1", "Special Skill 2 (Skill Tambahan)", "R1"),
-    ("r2", "Special Skill 3 (Skill Karakter)", "R2"),
+    ("square", "Normal Attack", "Square"),
+    ("triangle", "Special Skill 1 (Main Skill)", "Triangle"),
+    ("cross", "Jump", "Cross"),
+    ("circle", "Basara Attack (Ultimate)", "Circle"),
+    ("l1", "Guard / Block / Dash", "L1"),
+    ("r1", "Special Skill 2 (Extra Skill)", "R1"),
+    ("r2", "Special Skill 3 (Character Skill)", "R2"),
     ("l2", "Sengoku Drive / Boost", "L2"),
     ("touchpad", "Taunt / Provoke", "Touchpad / Tab"),
     ("options", "Pause / In-Game Menu", "Options / Enter"),
-    ("up", "D-Pad Up (Navigasi / Perintah)", "D-Pad Atas"),
-    ("down", "D-Pad Down (Navigasi / Perintah)", "D-Pad Bawah"),
-    ("left", "D-Pad Left (Navigasi / Perintah)", "D-Pad Kiri"),
-    ("right", "D-Pad Right (Navigasi / Perintah)", "D-Pad Kanan"),
+    ("up", "D-Pad Up (Navigate / Command)", "D-Pad Up"),
+    ("down", "D-Pad Down (Navigate / Command)", "D-Pad Down"),
+    ("left", "D-Pad Left (Navigate / Command)", "D-Pad Left"),
+    ("right", "D-Pad Right (Navigate / Command)", "D-Pad Right"),
     ("l3", "L3 Action", "L3"),
     ("r3", "R3 Action / Lock-on", "R3"),
 ]
@@ -755,7 +782,7 @@ def driver_version_text(vendor, raw):
 
 def gpu_choices(probe):
     """The Graphics card list: Auto, then each GPU as (index, display_name, is_discrete)."""
-    gpus = [(-1, "Auto (Prioritaskan GPU Diskrit)", True)]
+    gpus = [(-1, "Auto (Prefer discrete GPU)", True)]
     for i, (name, kind, _api) in enumerate(probe.devices):
         is_disc = (kind == 2)
         kind_tag = "dGPU" if is_disc else ("iGPU" if kind == 1 else "GPU")
@@ -865,6 +892,32 @@ def describe_vulkan(probe):
     return ", ".join(parts) + f"; needs {need}"
 
 
+def controller_icon(master, color):
+    """A small game controller drawn with Tk itself, pixel by pixel in `color` (no image file, no font, no
+    dependency, nothing copied from anywhere): 22 x 13 pixels and 4 clear ones on the right, to keep the text
+    of the button off it. The D-pad and the buttons are left open."""
+    filled = set()
+
+    def fill(x1, y1, x2, y2):
+        filled.update((x, y) for x in range(x1, x2 + 1) for y in range(y1, y2 + 1))
+
+    fill(4, 0, 17, 0)      # the top edge
+    fill(2, 1, 19, 1)
+    fill(1, 2, 20, 8)      # the body
+    fill(2, 9, 6, 11)      # the left grip
+    fill(15, 9, 19, 11)    # the right grip
+    fill(3, 12, 5, 12)
+    fill(16, 12, 18, 12)
+    for cell in ((5, 3), (5, 4), (5, 5), (5, 6), (5, 7), (3, 5), (4, 5), (6, 5), (7, 5),   # the D-pad
+                 (16, 3), (14, 5), (18, 5), (16, 7),                                      # the four buttons
+                 (9, 5), (12, 5)):                                                        # the small buttons
+        filled.discard(cell)
+    image = tk.PhotoImage(master=master, width=26, height=13)
+    for x, y in sorted(filled):
+        image.put(color, to=(x, y))
+    return image
+
+
 VULKAN = probe_vulkan()
 SYSTEM_GPUS = gpu_choices(VULKAN)
 DISPLAY_MODES = [("Windowed", "windowed"), ("Borderless fullscreen", "borderless"),
@@ -875,8 +928,8 @@ NATIVE_SIZE = (1920, 1080)
 # The size shown is the render size (basara4_patches.RESOLUTION_SIZES), so the label always matches it.
 RESOLUTIONS = [
     (f"{w} x {h}  ({desc})", key)
-    for key, desc in (("360p", "360p - Ultra Kentang"), ("480p", "480p - Super Kentang"),
-                      ("540p", "540p - Spek Kentang"), ("720p", "720p HD"), ("900p", "900p HD+"),
+    for key, desc in (("360p", "360p - Ultra Potato"), ("480p", "480p - Super Potato"),
+                      ("540p", "540p - Potato Specs"), ("720p", "720p HD"), ("900p", "900p HD+"),
                       ("native", "1080p Native"), ("1440p", "1440p 2K"), ("1800p", "1800p QHD+"),
                       ("4K", "4K UHD"))
     for w, h in [basara4_patches.RESOLUTION_SIZES.get(key, NATIVE_SIZE)]
@@ -1015,6 +1068,7 @@ class Launcher(tk.Tk):
         self._style()
         self._art()
         self._build()
+        self._clean_tracer_files()
         self._load_ini_into_ui()
         self._refresh_image_label()
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -1110,6 +1164,7 @@ class Launcher(tk.Tk):
         self.trace_session = None  # user\render_traces\<stamp> of the running traced game
         self.forced_stop = False  # the running game was killed (Force stop, closing the launcher)
         self.session_report = None  # the report of the running or last game session (basara4_report)
+        self.last_description = ""  # what the player typed in the Report window, kept only when no zip was made
         self.session_report_path = None
         self.session_started_at = None
         basara4_report.mark_unfinished(REPORTS)  # sessions whose launcher closed before their game ended
@@ -1132,7 +1187,12 @@ class Launcher(tk.Tk):
         right.grid(row=0, column=1, sticky="nsew", padx=(0, 16), pady=16)
         right.columnconfigure(1, weight=1)
         r = 0
-        ttk.Label(right, text="Game", style="Head.TLabel").grid(row=r, column=0, columnspan=3, sticky="w")
+        ttk.Label(right, text="Game", style="Head.TLabel").grid(row=r, column=0, sticky="w")
+        # Cheats and Manage DLC are about the game: they sit in its section, at the right of the heading
+        game_tools = ttk.Frame(right, style="Panel.TFrame")
+        game_tools.grid(row=r, column=1, columnspan=2, sticky="e")
+        ttk.Button(game_tools, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
+        ttk.Button(game_tools, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
         r += 1
         self.game_var = tk.StringVar(value=self.cfg["game"])
         self.game_var.trace_add("write", lambda *_: self._refresh_image_label())
@@ -1188,24 +1248,27 @@ class Launcher(tk.Tk):
         # Baris 3: Checkboxes (VSync, RCAS, Audio log, WAV)
         self.vsync_var = tk.BooleanVar(value=self.cfg["vsync"])
         self.rcas_var = tk.BooleanVar(value=self.cfg["rcas"])
-        self.audio_var = tk.BooleanVar(value=self.cfg.get("audio_log", False))
+        # One Tracer option: the render trace (with the F11 captures) and the audio log are one set of notes
+        # about a session. It is kept as the two settings the game's environment reads (render_trace and
+        # audio_log), so a player who had either one on before keeps the Tracer on.
+        self.tracer_var = tk.BooleanVar(value=bool(self.cfg.get("render_trace") or self.cfg.get("audio_log")))
         self.wav_var = tk.BooleanVar(value=False)
-        self.render_trace_var = tk.BooleanVar(value=self.cfg.get("render_trace", False))
 
         chk_frame = ttk.Frame(opts, style="Panel.TFrame")
         chk_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 2))
         ttk.Checkbutton(chk_frame, text="VSync", variable=self.vsync_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(chk_frame, text="Sharpening (RCAS)", variable=self.rcas_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(chk_frame, text="Audio debug log", variable=self.audio_var, command=self._audio_toggled).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(chk_frame, text="+ WAV capture (up to 3 GB)", variable=self.wav_var, command=self._wav_toggled).pack(side="left")
+        ttk.Checkbutton(chk_frame, text="+ WAV capture (developers, up to 3 GB)", variable=self.wav_var,
+                        command=self._wav_toggled).pack(side="left")
 
-        # Baris 4: Render debug trace toggle
+        # Baris 4: the Tracer and the Report that sends what it recorded
         trace_frame = ttk.Frame(opts, style="Panel.TFrame")
         trace_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 4))
-        ttk.Checkbutton(trace_frame, text="Render debug trace", variable=self.render_trace_var).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(trace_frame, text="Tracer", variable=self.tracer_var, command=self._tracer_toggled).pack(side="left", padx=(0, 10))
+        ttk.Button(trace_frame, text="Report", command=lambda: self.on_report()).pack(side="left", padx=(0, 10))
         ttk.Button(trace_frame, text="Open render log", command=self.open_render_log).pack(side="left", padx=(0, 10))
-        ttk.Label(trace_frame, text="Logs GPU anomalies, auto-captures & enables F11 -> user\\captures",
-                  style="Muted.TLabel").pack(side="left")
+        # Short: the row must fit the panel (the dropdown columns above it are sized by its widest row)
+        ttk.Label(trace_frame, text="At the bug: F11, then Report", style="Muted.TLabel").pack(side="left")
 
         # Baris 5: Keterangan / Tips
         ttk.Label(opts, text="The game draws at 1080p. Window size sets windowed mode. FSR 1 sharpens if screen > 1080p.\n"
@@ -1227,9 +1290,9 @@ class Launcher(tk.Tk):
         input_mode_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 6))
         ttk.Label(input_mode_frame, text="Input Mode:", style="Panel.TLabel").pack(side="left", padx=(0, 10))
         self.input_mode_var = tk.StringVar(value=self.cfg.get("input_mode", "controller"))
-        ttk.Radiobutton(input_mode_frame, text="🎮 Controller Utama (Stik 1 = P1, Stik 2 = P2)",
+        ttk.Radiobutton(input_mode_frame, text="🎮 Controller (Stick 1 = P1, Stick 2 = P2)",
                         value="controller", variable=self.input_mode_var).pack(side="left", padx=(0, 14))
-        ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stik 1 = P2)",
+        ttk.Radiobutton(input_mode_frame, text="⌨️ KBM Co-op (KBM = P1, Stick 1 = P2)",
                         value="kbm_coop", variable=self.input_mode_var).pack(side="left")
         r += 1
 
@@ -1237,20 +1300,19 @@ class Launcher(tk.Tk):
         tools1 = ttk.Frame(right, style="Panel.TFrame")
         tools1.grid(row=r, column=0, columnspan=3, sticky="w", pady=(4, 4))
         ttk.Button(tools1, text="⌨️ Keyboard & Mouse Controls", command=self.open_keymap_ui).pack(side="left", padx=(0, 8))
-        ttk.Button(tools1, text="Map controller", command=lambda: self.map_pad([])).pack(side="left", padx=(0, 8))
-        ttk.Button(tools1, text="Map sticks only", command=lambda: self.map_pad(["--sticks"])).pack(side="left", padx=(0, 8))
-        ttk.Button(tools1, text="Reset mapping", command=self.reset_map).pack(side="left")
+        # One button: the Controller window has Map all, Map sticks only and Reset
+        self._pad_icon = controller_icon(self, FG)
+        ttk.Button(tools1, text="Controller Mapping", image=self._pad_icon, compound="left",
+                   command=lambda: self.map_pad([])).pack(side="left")
         r += 1
 
         # Row 2 of tools
         tools2 = ttk.Frame(right, style="Panel.TFrame")
         tools2.grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        ttk.Button(tools2, text="Cheats…", command=self.open_cheats_manager).pack(side="left", padx=(0, 6))
         ttk.Button(tools2, text="Open log", command=self.open_log).pack(side="left", padx=(0, 6))
         ttk.Button(tools2, text="Open audio log", command=self.open_audio_log).pack(side="left", padx=(0, 6))
         ttk.Button(tools2, text="Open captures", command=self.open_captures).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left", padx=(0, 6))
-        ttk.Button(tools2, text="Manage DLC…", command=self.open_dlc_manager).pack(side="left")
+        ttk.Button(tools2, text="Open saves", command=self.open_saves).pack(side="left")
         r += 1
         r += 1
         self.pad_label = ttk.Label(right, text="", style="Muted.TLabel")
@@ -1397,7 +1459,7 @@ class Launcher(tk.Tk):
             ttk.Checkbutton(
                 frame, text=f"{basara4_cheats.CHEATS[cheat_id]['name']}  ·  by {basara4_cheats.AUTHOR}",
                 variable=var).pack(anchor="w", pady=4)
-        ttk.Label(frame, text="Cave dan hook tiap cheat dipisahkan agar semuanya bisa aktif bersamaan.",
+        ttk.Label(frame, text="Each cheat keeps its own code cave and hook, so all of them can be on together.",
                   style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
         source_row = ttk.Frame(frame, style="Panel.TFrame")
@@ -1469,15 +1531,15 @@ class Launcher(tk.Tk):
         saved_gpu = self.cfg.get("gpu_index", -1)
         self.gpu_var.set(next((name for idx, name, _ in SYSTEM_GPUS if idx == saved_gpu), SYSTEM_GPUS[0][1]))
 
-    def _audio_toggled(self):
-        if not self.audio_var.get():
-            self.wav_var.set(False)  # the capture belongs to the log
+    def _tracer_toggled(self):
+        if not self.tracer_var.get():
+            self.wav_var.set(False)  # the capture belongs to the Tracer
 
     def _wav_toggled(self):
         if not self.wav_var.get():
             return
         if messagebox.askyesno("WAV capture", WAV_WARNING, icon="warning", default="no", parent=self):
-            self.audio_var.set(True)
+            self.tracer_var.set(True)
         else:
             self.wav_var.set(False)
 
@@ -1505,9 +1567,9 @@ class Launcher(tk.Tk):
             game=self.game_var.get().strip(), display_mode=self.mode_var.get(), vsync=self.vsync_var.get(),
             rcas=self.rcas_var.get(), fps_limit=dict(FPS_LIMITS)[self.fps_var.get()],
             resolution=dict(RESOLUTIONS)[self.res_var.get()], upscale=dict(UPSCALERS)[self.up_var.get()],
-            anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.audio_var.get(),
-            audio_wav=self.audio_var.get() and self.wav_var.get(),
-            render_trace=self.render_trace_var.get(),
+            anisotropy=dict(ANISO)[self.aniso_var.get()], audio_log=self.tracer_var.get(),
+            audio_wav=self.tracer_var.get() and self.wav_var.get(),
+            render_trace=self.tracer_var.get(),
             gpu_index=selected_gpu_idx,
             input_mode=self.input_mode_var.get())
         save_config(self.cfg)
@@ -1796,7 +1858,7 @@ class Launcher(tk.Tk):
         self.version_label.config(text=f"v{VERSION}  (Update: {tag})", fg=GOLD)
         self.update_btn = tk.Button(
             self.mark_frame,
-            text=f"Update ke {tag}",
+            text=f"Update to {tag}",
             bg=GOLD,
             fg=BG,
             font=("Segoe UI", 9, "bold"),
@@ -1809,7 +1871,7 @@ class Launcher(tk.Tk):
         self.update_btn.pack(pady=(4, 0))
 
     def check_update_manual(self):
-        self.status.config(text="Memeriksa pembaruan...")
+        self.status.config(text="Checking for updates...")
 
         def run():
             info = check_latest_release()
@@ -1823,7 +1885,7 @@ class Launcher(tk.Tk):
             else:
                 self.after(0, lambda: (
                     self.status.config(text="Ready"),
-                    messagebox.showinfo("Update", f"Anda sudah menggunakan versi terbaru (v{VERSION}).")
+                    messagebox.showinfo("Update", f"You are already on the latest version (v{VERSION}).")
                 ))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1834,11 +1896,11 @@ class Launcher(tk.Tk):
         tag = self.update_info["tag"]
         size_mb = self.update_info["size"] / (1024 * 1024)
         if messagebox.askyesno(
-            "Update Tersedia",
-            f"Versi baru {tag} tersedia di GitHub!\nUkuran unduhan: ~{size_mb:.1f} MB.\n\n"
-            "Launcher akan mengunduh dan menerapkan update secara otomatis.\n"
-            "Data game (folder game\\) dan save data Anda (folder user\\) TIDAK akan terhapus.\n\n"
-            "Unduh dan pasang update sekarang?"
+            "Update Available",
+            f"Version {tag} is available on GitHub!\nDownload size: ~{size_mb:.1f} MB.\n\n"
+            "The launcher will download and apply the update automatically.\n"
+            "Your game data (the game\\ folder) and save data (the user\\ folder) will NOT be deleted.\n\n"
+            "Download and install the update now?"
         ):
             self._download_and_apply_update(self.update_info)
 
@@ -1850,8 +1912,8 @@ class Launcher(tk.Tk):
         win.resizable(False, False)
         win.grab_set()
 
-        tk.Label(win, text=f"Mengunduh Pembaruan {info['tag']}...", bg=BG, fg=GOLD, font=("Segoe UI", 11, "bold")).pack(pady=(18, 8))
-        status_lbl = tk.Label(win, text="Menghubungkan ke GitHub...", bg=BG, fg=FG, font=("Segoe UI", 9))
+        tk.Label(win, text=f"Downloading update {info['tag']}...", bg=BG, fg=GOLD, font=("Segoe UI", 11, "bold")).pack(pady=(18, 8))
+        status_lbl = tk.Label(win, text="Connecting to GitHub...", bg=BG, fg=FG, font=("Segoe UI", 9))
         status_lbl.pack(pady=(0, 8))
 
         prog = ttk.Progressbar(win, orient="horizontal", length=360, mode="determinate")
@@ -1881,7 +1943,7 @@ class Launcher(tk.Tk):
                             tot_mb = total / (1024 * 1024)
                             win.after(0, lambda p=percent, c=cur_mb, t=tot_mb: (
                                 prog.configure(value=p),
-                                status_lbl.configure(text=f"Mengunduh: {c:.1f} MB / {t:.1f} MB ({p}%)")
+                                status_lbl.configure(text=f"Downloading: {c:.1f} MB / {t:.1f} MB ({p}%)")
                             ))
 
                 win.after(0, lambda: self._apply_update_and_restart(win))
@@ -1903,13 +1965,13 @@ class Launcher(tk.Tk):
             "setlocal enabledelayedexpansion\r\n"
             "title Basara 4 PC - Updater\r\n"
             "cd /d \"%~dp0\"\r\n"
-            "echo Menunggu launcher menutup...\r\n"
+            "echo Waiting for the launcher to close...\r\n"
             "timeout /t 2 /nobreak >nul\r\n"
             "set \"ZIP=%~dp0updates\\update.zip\"\r\n"
             "set \"EXTRACT=%~dp0updates\\extract\"\r\n"
             "set \"DEST=%~dp0..\"\r\n"
             "if not exist \"!ZIP!\" exit /b 1\r\n"
-            "echo Mengekstrak pembaruan...\r\n"
+            "echo Extracting the update...\r\n"
             "if exist \"!EXTRACT!\" rmdir /s /q \"!EXTRACT!\"\r\n"
             "mkdir \"!EXTRACT!\"\r\n"
             "tar -xf \"!ZIP!\" -C \"!EXTRACT!\" 2>nul\r\n"
@@ -1922,7 +1984,7 @@ class Launcher(tk.Tk):
             "        if exist \"%%~fD\\Sengoku Basara 4.exe\" set \"SRC=%%~fD\"\r\n"
             "    )\r\n"
             ")\r\n"
-            "echo Menerapkan file baru...\r\n"
+            "echo Applying the new files...\r\n"
             "if exist \"!SRC!\\_internal\" xcopy /e /y /i \"!SRC!\\_internal\" \"!DEST!\\_internal\" >nul\r\n"
             "if exist \"!SRC!\\bin\" xcopy /e /y /i \"!SRC!\\bin\" \"!DEST!\\bin\" >nul\r\n"
             "if exist \"!SRC!\\scripts\" xcopy /e /y /i \"!SRC!\\scripts\" \"!DEST!\\scripts\" >nul\r\n"
@@ -1933,7 +1995,7 @@ class Launcher(tk.Tk):
             "if exist \"!SRC!\\LICENSE\" copy /y \"!SRC!\\LICENSE\" \"!DEST!\\\" >nul\r\n"
             "rmdir /s /q \"!EXTRACT!\" 2>nul\r\n"
             "del /f /q \"!ZIP!\" 2>nul\r\n"
-            "echo Memulai versi baru...\r\n"
+            "echo Starting the new version...\r\n"
             "start \"\" \"!DEST!\\Sengoku Basara 4.exe\"\r\n"
             "del /f /q \"%~f0\" 2>nul\r\n"
             "exit /b 0\r\n"
@@ -2002,6 +2064,20 @@ class Launcher(tk.Tk):
             errors.append(f"{what}: {basara4_report.reason(exc)}")
             return basara4_report.unknown(basara4_report.reason(exc))
 
+    def _clean_tracer_files(self):
+        """Once, when the launcher starts: remove the F11 pictures and trace folders of sessions whose reports are no
+        longer kept (basara4_report.clean_tracer_files says exactly which). Never while a game of this launcher
+        runs, and a failure here only shows in the status line: the launcher and the game go on."""
+        if self.proc is not None and self.proc.poll() is None:
+            return
+        try:
+            result = basara4_report.clean_tracer_files(REPORTS, CAPTURES_DIR, RENDER_TRACES)
+            text = result.summary()
+        except Exception as exc:  # whatever it was, the launcher opens
+            text = f"Tracer cleanup stopped: {basara4_report.reason(exc)}."
+        if text:
+            self.status.config(text=text)
+
     def _start_session_report(self, game):
         """Write this session's report just before the game starts, so it exists even when the game
         never writes a log line. Returns a status notice when it could not be written; never raises."""
@@ -2028,6 +2104,12 @@ class Launcher(tk.Tk):
                 part("vulkan", lambda: vulkan_info(VULKAN, gpu_id), errors), part("settings", settings, errors),
                 part("content", lambda: content_info(self.cfg), errors))
             self.session_report["collect_errors"] = errors
+            # What belongs to this session, so a zip made later (Report, the crash window, after the launcher
+            # was closed and opened again) takes this session's files and no other's.
+            self.session_report["tracer"] = {
+                "on": bool(self.cfg.get("render_trace") or self.cfg.get("audio_log")),
+                "trace_folder": self.trace_session.name if self.trace_session else None,
+                "audio_log": bool(self.cfg.get("audio_log")), "started_epoch": now.timestamp()}
             name, n = f"session-{now:%Y%m%d-%H%M%S}", 1
             while (REPORTS / f"{name}.json").exists():
                 n += 1
@@ -2068,6 +2150,9 @@ class Launcher(tk.Tk):
                                        collect_errors=list(report.get("collect_errors") or []) + [f"finish: {why}"])
             self.session_tail = None
             self.stop_note = (self.stop_note + f" Session report incomplete ({why}).").strip()
+        # the end of the session's files: nothing written after this belongs to it
+        self.session_report["tracer"] = dict(self.session_report.get("tracer") or {},
+                                             ended_epoch=datetime.datetime.now().timestamp())
         try:
             self._write_session_report()
             if crashed:
@@ -2086,13 +2171,33 @@ class Launcher(tk.Tk):
             return None
         return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
-    def send_report(self, parent=None):
-        """Save report: one zip with the session report, the masked logs and this session's newest
-        capture; then Explorer shows it and the "Report saved" window says how to post it. Returns the zip path.
+    @staticmethod
+    def _last_session_report():
+        """The newest session report on disk: a session from before this launcher run, such as one that
+        ended unfinished (the launcher closed, or the PC froze). None when there is none."""
+        try:
+            paths = sorted(REPORTS.glob("session-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            return None
+        for path in paths:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and "schema" in data:
+                return data
+        return None
+
+    def send_report(self, parent=None, description=None):
+        """Save report: one zip with the session report, the masked logs and this session's captures; then Explorer
+        shows it and the "Report saved" window says how to post it. Returns the zip path. `description` is what
+        the player typed in the Report window (None: not asked, as in the crash window); it goes into the report
+        like every other text, after it is hidden, and in its own section marked as the player's own words.
         A crash dump never goes in the zip: a minidump holds the process environment (account and
         computer names, every user variable, tokens included), which cannot be masked. It stays in
         user\\crash; the report names it and its size so the team can ask for it privately."""
-        report = self.session_report or basara4_report.unknown("no game session in this launcher run")
+        report = (self.session_report or self._last_session_report()
+                  or basara4_report.unknown("no game session in this launcher run"))
         if not isinstance(report, dict) or "schema" not in report:
             errors = []
             report = {"schema": basara4_report.SCHEMA, "status": "no-session", "note": report,
@@ -2102,6 +2207,8 @@ class Launcher(tk.Tk):
                           VULKAN, game_gpu_id(self.cfg.get("gpu_index", -1), SYSTEM_GPUS)), errors),
                       "collect_errors": errors}
         report = dict(report)
+        note = basara4_report.clean_note(description)
+        report["user_note"] = note
         log = report.get("log") if isinstance(report.get("log"), dict) else {}
         dump = Path(log["crash_dump"]) if log.get("crash_dump") else None
         if dump is None or not dump.is_file():
@@ -2115,27 +2222,118 @@ class Launcher(tk.Tk):
             report["crash_dump_kept_on_pc"] = {"file": dump.name, "bytes": size, "folder": "user\\crash"}
             withheld.append(f"crash/{dump.name} ({size} bytes): " + ("kept on the PC, not included because it can hold personal data; sent only when the team asks, "
                 "in a private message"))
-        capture = self._newest_since(CAPTURES_DIR, "*")
-        binaries = [(f"captures/{capture.name}", capture)] if capture else []
-        logs = [(name, path) for name, path in (("last_run.log", LOG), ("audio_debug.log", AUDIO_LOG),
-                                                ("prepare.log", PREPARE_LOG)) if path.is_file()]
+        # The files of THIS session, picked by what the report says about it (its trace folder, its start and
+        # end), most important first; the zip is held to ZIP_BUDGET_BYTES and lists what did not fit.
+        art = session_artifacts(report)
+        withheld += art.notes
         target = REPORTS / f"report-{datetime.datetime.now():%Y%m%d-%H%M%S}.zip"
         try:
             basara4_report.make_zip(target, report,
                                     basara4_report.render_text(report, getattr(self, "session_tail", None),
-                                                               sections=[("Render trace", render_trace_summary())]),
-                                    self._masker(), logs=logs, binaries=binaries, withheld=withheld)
+                                                               sections=[("Render trace", render_trace_summary(report))]),
+                                    self._masker(), logs=art.logs, binaries=art.binaries, withheld=withheld,
+                                    max_total_bytes=basara4_report.ZIP_BUDGET_BYTES, priority=art.priority or 1)
+        except basara4_report.PrivacyError as exc:
+            # the typed text is kept for the next try: the player may only need to take a name out of it
+            self.last_description = note.get("text", "")
+            hint = ("\n\nIf your name is in what you typed in the description, take it out and try again."
+                    if note.get("text") else "")
+            messagebox.showerror("Report not saved",
+                                 f"The report was not saved: {exc}.{hint}\n\nNothing was written, and nothing "
+                                 "leaves your PC.", parent=parent or self)
+            return None
         except OSError as exc:
             messagebox.showerror("Report not saved",
                                  ("The report could not be saved in the user\\reports "
                                                           "folder.") + f"\n\n{exc.strerror or exc}",
                                  parent=parent or self)
             return None
+        self.last_description = ""  # the report is made: what was typed is in it
         # Explorer first, then the dialog: the dialog is the newest window and stays above Explorer, which
         # may draw its window a moment later.
         shown = self.show_report_file(target, parent or self)
         self._show_report_saved(target, parent or self, file_shown=shown)
         return target
+
+    def on_report(self):
+        """The Report button: asks what the player saw and pressed (optional), then makes the report. Cancelling the
+        window makes no report; leaving it empty makes one without a description."""
+        text = self.ask_description()
+        if text is None:
+            return
+        # Compressing the big pictures takes a few seconds: the busy cursor says so, instead of a window that seems
+        # stuck. Only here: the crash window's Save report keeps its timing (its layout tests depend on it).
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            self.send_report(description=text)
+        finally:
+            self.config(cursor="")
+
+    def ask_description(self):
+        """Shows the description window and waits for it. Returns the typed text, or None when it was cancelled."""
+        open_window = getattr(self, "describe_window", None)
+        if open_window is not None and open_window.winfo_exists():
+            open_window.lift()  # a second press of Report must not open a second window
+            return None
+        win = self._describe_window()
+        self.describe_window = win
+        self.wait_window(win)
+        self.describe_window = None
+        return win.result
+
+    def _describe_window(self):
+        """The window before Report: one small text box, one counter, and two buttons of the same size. It is a
+        window of its own, so the launcher window and the other dialogs keep their size."""
+        win = tk.Toplevel(self)
+        win.title("Report")
+        win.configure(bg=BG)
+        win.transient(self)
+        win.resizable(False, False)
+        win.result = None
+        tk.Label(win, text="What did you see, and what did you press? (optional)", bg=BG, fg=FG,
+                 font=("Segoe UI", 10, "bold"), wraplength=520, justify="left").pack(padx=18, pady=(16, 4), anchor="w")
+        tk.Label(win, text="Say what went wrong and which buttons or keys you pressed. Your account name and PC name "
+                           "are hidden automatically. You can leave this empty.", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9), wraplength=520, justify="left").pack(padx=18, pady=(0, 8), anchor="w")
+        text = tk.Text(win, width=64, height=7, wrap="word", font=("Segoe UI", 10), bg=PANEL, fg=FG,
+                       insertbackground=FG, relief="flat", padx=8, pady=6, undo=True)
+        text.pack(padx=18, anchor="w")
+        counter = tk.Label(win, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
+        counter.pack(padx=18, pady=(2, 0), anchor="e")
+        win.text, win.counter = text, counter
+
+        def changed(_event=None):
+            if not text.edit_modified():
+                return
+            text.edit_modified(False)
+            over = len(text.get("1.0", "end-1c")) - basara4_report.NOTE_MAX_CHARS
+            if over > 0:  # typing or pasting past the limit: the end is cut off
+                text.delete(f"end-1c-{over}c", "end-1c")
+            counter.config(text=f"{len(text.get('1.0', 'end-1c'))} / {basara4_report.NOTE_MAX_CHARS}")
+        text.bind("<<Modified>>", changed)
+        if self.last_description:
+            text.insert("1.0", self.last_description)
+        text.edit_modified(True)
+        changed()
+
+        def finish(value):
+            win.result = value
+            win.destroy()
+        buttons = ttk.Frame(win, style="TFrame", padding=(14, 10, 14, 14))
+        buttons.pack(fill="x")
+        win.cancel = ttk.Button(buttons, text="Cancel", style="Dialog.TButton", command=lambda: finish(None))
+        win.ok = ttk.Button(buttons, text="Make report", style="DialogAccent.TButton",
+                            command=lambda: finish(text.get("1.0", "end-1c")))
+        win.cancel.pack(side="right")
+        win.ok.pack(side="right", padx=(0, 8))
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+        win.bind("<Escape>", lambda _event: finish(None))
+        win.lift()
+        win.focus_force()
+        text.focus_set()
+        win.grab_set()
+        return win
 
     def show_report_file(self, target, parent=None):
         """Shows the saved zip in Explorer, selected. When Explorer cannot select it, its folder is opened; when
@@ -2348,17 +2546,17 @@ class Launcher(tk.Tk):
         top_frame = ttk.Frame(win, style="Panel.TFrame", padding=12)
         top_frame.pack(fill="x", padx=14, pady=(12, 6))
 
-        tk.Label(top_frame, text="⚙️ Pengaturan Kontrol Keyboard & Mouse", bg=PANEL, fg=GOLD, font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        tk.Label(top_frame, text="Klik tombol untuk mengubah tombol pemetaan. Tekan tombol Keyboard atau Mouse untuk mengikat.", bg=PANEL, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        tk.Label(top_frame, text="⚙️ Keyboard & Mouse Control Settings", bg=PANEL, fg=GOLD, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        tk.Label(top_frame, text="Click a button to change its binding. Press a keyboard key or a mouse button to bind it.", bg=PANEL, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
         # Mouse Settings Bar
         mouse_bar = ttk.Frame(top_frame, style="Panel.TFrame")
         mouse_bar.pack(fill="x", pady=(10, 0))
-        ttk.Checkbutton(mouse_bar, text="Aktifkan Kamera Mouse (Mouse Look)", variable=mouse_cam_var).pack(side="left")
+        ttk.Checkbutton(mouse_bar, text="Enable Mouse Look (mouse camera)", variable=mouse_cam_var).pack(side="left")
 
         sens_frame = ttk.Frame(mouse_bar, style="Panel.TFrame")
         sens_frame.pack(side="right")
-        ttk.Label(sens_frame, text="Sensitivitas: ", style="Panel.TLabel").pack(side="left")
+        ttk.Label(sens_frame, text="Sensitivity: ", style="Panel.TLabel").pack(side="left")
         sens_lbl = ttk.Label(sens_frame, text=f"{mouse_sens_var.get()}%", style="Panel.TLabel", width=5)
         sens_lbl.pack(side="right")
         def on_sens_scroll(val):
@@ -2426,7 +2624,7 @@ class Launcher(tk.Tk):
             active_listening[0] = action_name
             btn = btn_widgets.get(action_name)
             if btn:
-                btn.config(text="[ TEKAN TOMBOL... ]", bg=RED, fg="#fff")
+                btn.config(text="[ PRESS A KEY... ]", bg=RED, fg="#fff")
 
             def on_key_event(event):
                 # Translate tkinter keysym to SDL scancode name
@@ -2496,7 +2694,7 @@ class Launcher(tk.Tk):
         notice_frame.pack(fill="x", pady=(8, 4), padx=4)
         tk.Label(
             notice_frame,
-            text="ℹ️ Pergerakan Karakter otomatis terikat pada W, A, S, D (Standar PC). Kamera mouse mengontrol analog kanan.",
+            text="ℹ️ Character movement is bound to W, A, S, D (PC standard). The mouse camera controls the right analog stick.",
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 8, "italic")
@@ -2514,7 +2712,7 @@ class Launcher(tk.Tk):
             sens_lbl.config(text="100%")
             for k, b in btn_widgets.items():
                 b.config(text=format_binding_display(cur_map.get(k, "")), bg="#2c2824", fg=GOLD)
-            messagebox.showinfo("Reset Preset", "Pengaturan kontrol berhasil dikembalikan ke Preset Default PC!", parent=win)
+            messagebox.showinfo("Reset Preset", "The controls were reset to the PC default preset!", parent=win)
 
         def save_and_close():
             self.cfg["keymap"] = cur_map
@@ -2522,17 +2720,17 @@ class Launcher(tk.Tk):
             self.cfg["mouse_sens"] = int(mouse_sens_var.get())
             save_config(self.cfg)
             win.destroy()
-            messagebox.showinfo("Tersimpan", "Pengaturan kontrol Keyboard & Mouse berhasil disimpan!", parent=self)
+            messagebox.showinfo("Saved", "The Keyboard & Mouse controls were saved!", parent=self)
 
-        ttk.Button(bottom_bar, text="🔄 Reset ke Default PC", command=reset_defaults).pack(side="left", padx=4)
-        ttk.Button(bottom_bar, text="Batal", command=win.destroy).pack(side="right", padx=4)
-        ttk.Button(bottom_bar, text="💾 Simpan Pengaturan", style="Play.TButton", command=save_and_close).pack(side="right", padx=4)
+        ttk.Button(bottom_bar, text="🔄 Reset to PC Default", command=reset_defaults).pack(side="left", padx=4)
+        ttk.Button(bottom_bar, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(bottom_bar, text="💾 Save Settings", style="Play.TButton", command=save_and_close).pack(side="right", padx=4)
 
     def _check_exit_error(self, code):
         if code in (0, None) or not LOG.is_file():
             return None
         self._show_crash_dialog(code)
-        return f"Game crash (exit code {code & 0xFFFFFFFF:#x}). Silakan cek jendela diagnostik."
+        return f"Game crash (exit code {code & 0xFFFFFFFF:#x}). Please check the diagnostics window."
 
     def _poll(self):
         if self.proc and self.proc.poll() is not None:
@@ -2572,9 +2770,17 @@ class Launcher(tk.Tk):
         env = os.environ.copy()
         env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
         USER.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen([str(exe), str(MAPPING)] + extra, env=env, creationflags=0x00000010)  # new console
-        self.status.config(text="Follow the prompts in the mapper window, then press PLAY.")
-        self.after(4000, self._pad_text)
+        window = getattr(self, "pad_window", None)
+        if window is not None and window.winfo_exists():
+            # one mapper at a time (a second one would fight over the same file): the open window switches
+            # to what this button maps, unless it is mapping now
+            window.set_sticks_only("--sticks" in extra)
+            window.lift()
+            return
+        self.pad_window = basara4_controller.ControllerWindow(
+            self, exe, MAPPING, env, sticks_only="--sticks" in extra, on_saved=self._pad_text,
+            on_reset=self.reset_map, colors={"bg": BG, "panel": PANEL, "fg": FG, "accent": GOLD})
+        self.status.config(text="Map the controller in the Controller window, then press PLAY.")
 
     def reset_map(self):
         if MAPPING.exists() and messagebox.askyesno("Reset mapping", "Delete the saved controller mapping?"):
@@ -2591,7 +2797,7 @@ class Launcher(tk.Tk):
         if AUDIO_LOG.exists():
             os.startfile(AUDIO_LOG)
         else:
-            messagebox.showinfo("Audio log", "No audio log yet. Tick \"Audio debug log\", then start the game.")
+            messagebox.showinfo("Audio log", "No audio log yet. Tick \"Tracer\", then start the game.")
 
     def _finish_trace_session(self):
         """After a traced game ends, keep its last_run.log next to its render trace; return a notice on failure."""
@@ -2608,7 +2814,7 @@ class Launcher(tk.Tk):
         if log.exists():
             os.startfile(log)
         else:
-            messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Render debug trace\", then start the game.")
+            messagebox.showinfo("Render trace log", "No render trace log yet. Tick \"Tracer\", then start the game.")
 
     def open_captures(self):
         CAPTURES_DIR.mkdir(parents=True, exist_ok=True)

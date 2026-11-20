@@ -29,7 +29,7 @@ Launcher options
   Upscaling         Off, or FSR 1 to the window size
   Frame limit       60 (default), 90, 120, 144, 165, 240, Unlimited
   VSync, sharpening (RCAS), anisotropic filtering 2x-16x
-  Controller        Map controller / Map sticks only / Reset mapping
+  Controller        Controller Mapping (Map all, Map sticks only, Reset)
   Credits           shows NOTICE.md
 
 Frame rates above 60
@@ -47,16 +47,27 @@ In-game menu
   Insert, or R3 + L2 on the controller. F12 takes a screenshot. L1/R1 or Q/E switch tabs.
 
 Controller
-  XInput and SDL-supported pads work directly. "Map controller" can customize any pad, lets you
+  XInput and SDL-supported pads work directly. "Controller Mapping" opens the Controller window: press
+  Map all, press each button when it is asked for, then Done saves. It can customize any pad, lets you
   select one when multiple are connected, and keeps mappings for other pads. To make Xbox A act
   as Circle, press Xbox B at the Cross prompt and Xbox A at the Circle prompt.
+  For the sticks the window shows which way to push. Afterwards it shows what the game will receive
+  from each stick: if that goes another way than your thumb, tick Flip, or map the stick again.
 
 Problems
-  Attach user\last_run.log (and user\prepare.log if the preparation failed) to your report.
+  After a crash, press Save report in the window that appears. It makes one zip in user\reports and shows it
+  in a folder window; drag that zip into your post on Discord. The zip holds your PC specs, settings and the
+  logs of that session with your account and folder names hidden, and no crash dump.
 
-Audio problems (missing music or voices)
-  Tick "Audio debug log" in the launcher and play until the problem happens. user\audio_debug.log has one line
-  per audio event: the sound ports, the sound-engine voices (what type, how long, whether they reach the
-  output), loud/silent windows, and the sound files and stages opened. Send that file with last_run.log.
-  The previous run's log is kept as audio_debug.previous.log. A log stops growing at 64 MB.
-  To read it yourself: python tools/audio_log_summary.py user/audio_debug.log (from the source repository).
+Graphics, shader and audio problems (a glitch, missing music or voices)
+  Tick Tracer in the launcher and play until the problem happens. Press F11 when you see it (it saves a
+  screenshot and the state of the frame), close the game, and press Report next to Tracer. A small window asks
+  "What did you see, and what did you press?": a few words (up to 1000 characters, optional) help most. Your
+  account and PC name are hidden in them like everywhere else. The zip then also holds the whole render trace,
+  the audio log (user\audio_debug.log, one line per audio event), every F11 capture of that session, and a note
+  of anything left out. Only files of that session go in, and the zip stays below 9 MB: text first,
+  screenshots last, with a list of what did not fit. The F11 screenshots are compressed inside the zip so that
+  several fit (the files in user\captures are not changed): without loss when there is room, otherwise every
+  colour value is rounded by at most a few of 255; report.txt lists each picture and which of the two was used.
+  Raw audio (WAV) never goes in the zip. "+ WAV capture" is for developers.
+  To read the audio log yourself: python tools/audio_log_summary.py user/audio_debug.log (from the source repository).

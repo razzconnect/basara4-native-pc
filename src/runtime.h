@@ -65,6 +65,9 @@ uintptr_t runtime_offline_resolve(const char *name);
 int runtime_audio_log_enabled(void);
 void runtime_audio_log(const char *fmt, ...) __attribute__((format(printf,1,2)));
 uint64_t runtime_audio_log_ms(void); /* milliseconds on the audio log's clock */
+/* A capture was requested (F11): writes capture.marker to the audio log and has the 100 ms level lines for the
+ * 15 s before and after it written (audio.level). Does nothing while the audio log is off. */
+void runtime_audio_marker(const char *reason);
 void runtime_file_report(void);
 void runtime_file_configure(const char *app0, const char *user);
 int runtime_file_mount(const char *guest, const char *host);

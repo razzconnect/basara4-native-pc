@@ -80,7 +80,7 @@ def main():
     user = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("user")
     log = user / "audio_debug.log"
     if not log.is_file():
-        sys.exit(f"{log} not found (tick 'Audio debug log' in the launcher and play)")
+        sys.exit(f"{log} not found (tick 'Tracer' in the launcher and play)")
     events = list(parse(log))
     if not events:
         sys.exit("empty audio log")

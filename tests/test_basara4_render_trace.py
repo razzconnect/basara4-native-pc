@@ -67,7 +67,10 @@ class Basara4RenderTraceLauncherTest(unittest.TestCase):
                 button_texts = {
                     w.cget("text") for w in widgets if isinstance(w, ttk.Button)
                 }
-                self.assertIn("Render debug trace", check_texts)
+                self.assertIn("Tracer", check_texts)  # one option for the render trace and the audio log
+                self.assertNotIn("Render debug trace", check_texts)
+                self.assertNotIn("Audio debug log", check_texts)
+                self.assertIn("Report", button_texts)
                 self.assertIn("Open render log", button_texts)
                 self.assertIn("Open captures", button_texts)
 
@@ -79,13 +82,15 @@ class Basara4RenderTraceLauncherTest(unittest.TestCase):
                     self.assertNotIn("SPARTAN_FRAME_CAPTURE_KEY", env_off)
 
                 # Enable checkbox -> persisted to config and propagated to env.
-                app.render_trace_var.set(True)
+                app.tracer_var.set(True)
                 app._collect()
                 saved = json.loads(config.read_text(encoding="utf-8"))
                 self.assertTrue(saved["render_trace"])
+                self.assertTrue(saved["audio_log"])  # the one option sets both
                 env_on = app._env()
                 self.assertEqual(env_on["SPARTAN_RENDER_TRACE"], str(trace_log))
                 self.assertEqual(env_on["SPARTAN_FRAME_CAPTURE_KEY"], "1")
+                self.assertIn("SPARTAN_AUDIO_DEBUG", env_on)
 
                 # A started traced run writes into its own session folder.
                 app.trace_session = user_dir / "render_traces" / "20261114-210509"

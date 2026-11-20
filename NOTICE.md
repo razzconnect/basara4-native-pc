@@ -32,7 +32,7 @@ Copyright (C) 2026 Razz, released under the GNU GPL v2 or later.
   crashes the decoder.
 - **Packaging** (`packaging/basara4/`): the script that assembles the Windows folder, its readmes and the
   DLL list.
-- **Audio debug log** (`SPARTAN_AUDIO_DEBUG`, `tools/audio_log_summary.py`, the launcher's "Audio debug log" option).
+- **Audio debug log** (`SPARTAN_AUDIO_DEBUG`, `tools/audio_log_summary.py`, the launcher's Tracer option).
 - **Diagnostics**: the `SPARTAN_NGS2_TRACE`, `SPARTAN_AVPLAYER_TRACE`, `SPARTAN_TIME_TRACE` and
   `SPARTAN_FILE_TRACE` environment switches (off by default).
 

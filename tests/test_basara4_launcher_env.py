@@ -41,7 +41,7 @@ class UpscaleTests(unittest.TestCase):
         self.assertEqual(sorted(v for _n, v in bl.RESOLUTIONS), sorted(sizes))
         for label, name in bl.RESOLUTIONS:
             self.assertTrue(label.startswith(sizes[name].replace("x", " x ") + "  ("), (label, name))
-        self.assertIn(("860 x 480  (480p - Super Kentang)", "480p"), bl.RESOLUTIONS)
+        self.assertIn(("860 x 480  (480p - Super Potato)", "480p"), bl.RESOLUTIONS)
 
     def test_the_game_runs_without_the_temporal_upscalers(self):
         # FSR 1 and RCAS reach the runtime through basara4.ini (fsr1=, rcas=); the environment
