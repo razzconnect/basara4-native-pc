@@ -118,7 +118,7 @@ The launcher detects extracted DLC under the `DLC` folder beside the installatio
 | **Anisotropic Filtering**| Off, 2x, 4x, 8x, 16x | Texture filtering quality for oblique camera angles. |
 | **Frame Limit** | 60 (Default), 90, 120, 144, 165, 240, Unlimited | Overrides engine cap using automated signature patching. |
 | **VSync** | Enabled / Disabled | Synchronize buffer swaps to display refresh rate. |
-| **Tracer** | Enabled / Disabled | Records the render trace, the F11 captures and the audio log (`user\audio_debug.log`, Ngs2 voice and bus diagnostics) of a session; the **Report** button next to it zips them. |
+| **Tracer** | Enabled / Disabled | Records the render trace, the F11 captures and the audio log (`user\audio_debug.log`, Ngs2 voice and bus diagnostics) of a session; the **Report** button next to it zips them. The launcher keeps the Tracer files of the last 20 sessions and removes older ones when it starts. |
 | **Cheats** | Gold, special coin, growth points, weapon points, weapon rank points | GoldHEN cheats by **Q8Despair** for CUSA01159 update 01.02. All cheats can be enabled together; the launcher separates their trampolines to avoid patch address conflicts. |
 
 ---
@@ -216,12 +216,23 @@ python packaging/basara4/make_package.py --out G:/basara4-windows --update
 
 ## Troubleshooting & Logs
 
-When reporting issues or bugs, please attach the relevant logs from the `user\` folder:
-- **`user\last_run.log`**: Core runtime diagnostic log (initialization, GPU shader compiling, crash traceback).
+To report a problem, make the report zip from the launcher:
+- **Crash:** press **Save report** in the window that appears. It makes one zip in `user\reports` and shows it in Explorer; **Open Discord** opens the bug-reports channel, where you drag the zip into your post. Nothing is uploaded automatically.
+- **Graphics, shader or audio problem:** tick **Tracer**, play until the problem happens, press **F11** when you see it, close the game with **Stop game**, then press **Report** and say what you saw and pressed (optional).
+
+Send **only the zip**. It holds your PC specs, settings and the logs of that session with your account and folder names hidden (with Tracer also the render trace, the audio log and the F11 pictures), never a crash dump or a WAV capture, and it stays under 9 MiB. The hiding has limits: 1-2 letter names in free text, names stuck to letters or digits, a Windows profile name that differs from the account name, paths with spaces and PNG metadata are not checked, so look through the zip if in doubt.
+
+The raw files in `user\` are **not masked: do not send them**. They are for your own reading:
+- **`user\last_run.log`**: Core runtime diagnostic log (initialization, GPU shader compiling, crash traceback); **Open log** opens it.
 - **`user\prepare.log`**: Output from the image preparation and relocation stage.
 - **`user\audio_debug.log`**: Detailed Ngs2 voice allocations, streaming feeds, and buffer status (enable "Tracer" in launcher).
+- **`user\render_traces\`**, **`user\captures\`** (Tracer) and **`user\crash\*.dmp`** (part of the game's memory).
 
-To summarize audio logs from command line:
+Never send game files (the dump, `.pkg`, `eboot.bin`, or anything from `game\`).
+
+The launcher keeps the Tracer files of the last 20 sessions (normal sessions count too) and removes older ones when it starts: copy F11 pictures you want to keep first. `user\audio_wav` (the developer WAV capture, never part of the zip) is not removed automatically; the launcher asks before deleting it.
+
+To summarize your own audio log from command line:
 ```bash
 python tools/audio_log_summary.py user/audio_debug.log
 ```
